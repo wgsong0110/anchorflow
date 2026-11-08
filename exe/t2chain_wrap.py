@@ -2,6 +2,8 @@
 
 사용: python exe/t2chain_wrap.py --tc M <speed4_wrap 인자...> <실행기.py> <실행기 인자...>   (--tb 시간 예산 인자가 뒤 감싸개에 있어야 함)
   --tc M   비트 합: 0 진단만 (결과 불변) · 1 누적 이월 (마감 시각) · 4 한 프레임 이월 · 2 자른 걸음 몸 전체 후퇴 오일러 -> <out>/t2c.jsonl
+  (맨 앞 인자가 감싸개 경로 (…_wrap.py) 면 그것으로 넘김 -- 예: --tc M exe/rtrender1_wrap.py --rr ... <speed4_wrap 인자...>)
+  비트 8: 앞 프레임 렌더 (rtrender1 갱신 + 래스터화) 시간을 예산 한도에서 뺌 (rtrender1_wrap 판에서만 뜻이 있음).
 --tc 가 없으면 이 모듈을 안 부름 (소스·그래프 그대로).
 """
 import os
@@ -23,5 +25,8 @@ if "tc" in OPT:
     from anchorflow import fem_t2chain as TC
     TC.install(OPT["tc"], out)
 
-sys.argv = [os.path.join(HERE, "speed4_wrap.py")] + argv
+if argv and argv[0].endswith("_wrap.py"):                                             # 다음 감싸개를 직접 준 판 (예: exe/rtrender1_wrap.py -> speed4_wrap)
+    sys.argv = [os.path.join(HERE, os.path.basename(argv[0]))] + argv[1:]
+else:
+    sys.argv = [os.path.join(HERE, "speed4_wrap.py")] + argv
 runpy.run_path(sys.argv[0], run_name="__main__")

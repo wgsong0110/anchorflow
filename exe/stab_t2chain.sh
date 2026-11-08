@@ -32,6 +32,21 @@ dfl() { local s=$1 x=" $2 "                                                     
   x="${x// F / E @e3w 1 @e5r 2 @e5a 2 }"
   case $s in M*) x="${x// E / D @tb 16.7 @tb_m 0.8 @tb_w 2 @inv 1 }";; *) x="${x// E / D @tb 16.7 @tb_m 0.8 @tb_w 2 }";; esac
   x="${x// D / $DFL }"; case $s in M*) [[ "$x" == *" $DFL "* ]] && x="$x --sp2 31";; esac; echo "$x"; }
+W=/home/dkta/work
+RD=/dev/shm/dkta/t2chain; mkdir -p $RD                                                       # 이 묶음이 만드는 정답 궤적 (렌더 카메라·0 프레임) 자리
+gtd() { local n=$1 d; for d in /dev/shm/dkta/ag_data/gt_$n $RD/gt_$n; do [ -f $d/meta.json ] && [ -f $d/sim_0000000000.h5 ] && { echo $d; return; }; done; echo $RD/gt_$n; }
+mkgt() { local n=$1 d=$2; shift 2; [ -f $d/meta.json ] && return                              # exe/stab_rtrender1.sh 와 같은 변환 (CPU, 앞 1 프레임), 남의 것은 읽기만
+  CUDA_VISIBLE_DEVICES="" $PY -u exe/pg_h5_to_pt.py "$@" --out_pt $RD/tmp_$n.pt --out_dir $d --out_dir_n 1 > $RD/mkgt_$n.log 2>&1; rm -f $RD/tmp_$n.pt; }
+GTW=$(gtd wolf); GTB=$(gtd bread); GTM=$(gtd wm)
+WMM=$W/gfmodel/watermelon; [ -d $WMM/point_cloud ] || WMM=$W/gfmodel/model/watermelon; WCF=$W/wm2/gf/config.json
+FGT=$W/lbours/ficus_v0/gt
+rr_of() { case $1 in                                                                         # 절 CM54 실시간 렌더 (가장 빠른 결과 불변 갱신: PG 1, 수박 2)
+  L) echo "--rr pg --rr_shape lego --rr_traj $W/lbdata/test_low/L000 --rr_cfg $W/lbdata/config.json --rr_fast 1";;
+  F) echo "--rr pg --rr_shape ficus --rr_traj $FGT --rr_cfg $FGT/config.json --rr_fast 1";;
+  W) echo "--rr pg --rr_shape wolf --rr_traj $GTW --rr_cfg $GTW/config.json --rr_fast 1";;
+  B) echo "--rr pg --rr_shape bread --rr_traj $GTB --rr_cfg $GTB/config.json --rr_fast 1";;
+  M3) echo "--rr gf --rr_shape watermelon --rr_traj $GTM --rr_cfg $WCF --rr_model $WMM --rr_gf $W/GaussianFluent --rr_fast 2";;
+esac; }
 dg_of() { case $1 in M*) echo "--erec";; W) echo "--hgt --dump --dump_part";; F) echo "--dump";; *) echo "";; esac; }
 log() { echo "[$(date '+%F %T')] $*" >> $O/t2chain_$STG.log; rclone copyto $O/t2chain_$STG.log $RO/t2chain_$STG.log -q; }
 up() { rclone copy $O/$1 $RO/$1 -q --transfers 8 --exclude pred.pt; }
@@ -47,10 +62,10 @@ claim() { local me=$1 g f p
   done; return 1; }
 claim_wait() { local g; while :; do g=$(claim $1) && { echo $g; return; }; sleep 30; done; }
 run() {   # run 이름 씬 방식 카드 플래그
-  local n=$1 s=$2 md=$3 g=$4 x="$(dfl $2 "$5")" c b wo="" w2="" w3="" w4="" w5="" tc=""
+  local n=$1 s=$2 md=$3 g=$4 x="$(dfl $2 "$5")" c b wo="" w2="" w3="" w4="" w5="" tc="" rr=""
   [ -f $O/$n/summary.json ] && return
-  tc="$(echo " $x " | grep -o '@tc [0-9]*' | awk '{print $2}')"
-  wo="$(echo " $x " | grep -o '@[a-z0-9_]* [0-9.e+-]*' | grep -v '^@\(e[235]\|s4\|tc\)' | sed 's/^@/--/' | tr '\n' ' ')"
+  tc="$(echo " $x " | grep -o '@tc [0-9]*' | awk '{print $2}')"; rr="$(echo " $x " | grep -o '@rr [0-9]*' | awk '{print $2}')"
+  wo="$(echo " $x " | grep -o '@[a-z0-9_]* [0-9.e+-]*' | grep -v '^@\(e[235]\|s4\|tc\|rr\)' | sed 's/^@/--/' | tr '\n' ' ')"
   w4="$(echo " $x " | grep -o '@s4[a-z0-9_]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"
   w5="$(echo " $x " | grep -o '@e5[a-z0-9_]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"
   w2="$(echo " $x " | grep -o '@e2[a-z0-9_]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"
@@ -58,7 +73,8 @@ run() {   # run 이름 씬 방식 카드 플래그
   x="$(echo " $x " | sed 's/@[a-z0-9_]* [0-9.e+-]*//g')"
   b="$(base_of $s)"; [ -n "$(nw "$x")" ] && b="${b/--newton 2/--newton $(nw "$x")}" && x="$(echo "$x" | sed 's/--newton [0-9]*//g')"
   c="$b $(dg_of $s) $x"
-  c="exe/t2chain_wrap.py --tc ${tc:-0} $w4 exe/escape4_wrap.py $w5 $w3 $w2 $wo $c"
+  if [ "${rr:-0}" = 1 ]; then c="exe/t2chain_wrap.py --tc ${tc:-0} exe/rtrender1_wrap.py $(rr_of $s) $w4 exe/escape4_wrap.py $w5 $w3 $w2 $wo $c"
+  else c="exe/t2chain_wrap.py --tc ${tc:-0} $w4 exe/escape4_wrap.py $w5 $w3 $w2 $wo $c"; fi
   rm -rf $O/$n; mkdir -p $O/$n; echo "AF_E1_DG=1 $PY -u $c --out $O/$n" > $O/$n/cmd.txt
   nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader > $O/$n/apps_at_start.txt 2>&1; echo "카드 $g 계산 프로세스 $(nvidia-smi -i $g --query-compute-apps=pid --format=csv,noheader | grep -c .)" >> $O/$n/apps_at_start.txt; nvidia-smi --query-gpu=index,uuid,utilization.gpu,memory.used --format=csv,noheader >> $O/$n/apps_at_start.txt; cat /proc/loadavg >> $O/$n/apps_at_start.txt
   log "$n 카드 $g 시작 (부하 $(cut -d' ' -f1 /proc/loadavg), /dev/shm $(df --output=pcent /dev/shm | tail -1 | tr -d ' '))"
@@ -69,13 +85,19 @@ run() {   # run 이름 씬 방식 카드 플래그
     CELLW=$(grep -aom1 "셀 [0-9.]* m" $O/$n/log.txt | awk '{print $2}')
     $PY exe/speed1_bbox.py $AG/wolf.pt $CELLW $O/$n/pred.pt > $O/$n/bbox.txt 2>&1; fi
   [ $s = F ] && [ -f $O/$n/pred.pt ] && $PY exe/fem_p_period.py --data $FI --pred $O/$n/pred.pt > $O/$n/period.txt 2>&1
-  log "$n rc=$rc $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200) $(tail -1 $O/$n/period.txt 2>/dev/null) $(grep -a 'rror' $O/$n/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
+  log "$n rc=$rc 렌더 기록 $(wc -l < $O/$n/rr.jsonl 2>/dev/null) $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200) $(tail -1 $O/$n/period.txt 2>/dev/null) $(grep -a 'rror' $O/$n/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
   up $n
   if [ -f $O/$n/pred.pt ]; then                                                              # 덤프: R2 에 올리고 크기 확인 뒤 로컬 사본만 지움
     rclone copyto $O/$n/pred.pt $RO/$n/pred.pt -q
     [ "$(rclone size $RO/$n/pred.pt --json 2>/dev/null | grep -o '"bytes":[0-9]*' | cut -d: -f2)" = "$(stat -c %s $O/$n/pred.pt)" ] && rm -f $O/$n/pred.pt && log "$n pred.pt R2 확인 뒤 로컬 사본 지움"
   fi; }
 SPEC=$(grep -v '^#' exe/t2chain_spec.txt | awk -v s=$STG '$1==s')
+if echo "$SPEC" | grep -q '@rr 1'; then
+  mkgt wolf $GTW --h5_dir $W/topo/pg_wolf_sand --config $W/PhysGaussian/config/wolf_config.json
+  mkgt bread $GTB --h5_dir $W/topo/pg_bread_plastic --config $W/topo/bread_plastic_config.json
+  mkgt wm $GTM --h5_dir $W/wm2/gf/simulation_ply --config $W/wm2/gf/config.json --allow_nonfinite
+  log "렌더 자료: ficus 궤적 $FGT wolf $GTW ($(ls $GTW/meta.json 2>&1)) bread $GTB ($(ls $GTB/meta.json 2>&1)) 수박 $GTM ($(ls $GTM/meta.json 2>&1)) 모델 $WMM"
+fi
 log "단계 $STG 시작: 판 $(echo "$SPEC" | grep -c .), 동시 카드 최대 $NPAR, 노드 계산 프로세스 $(nvidia-smi --query-compute-apps=pid --format=csv,noheader | grep -c .)"
 while read -r st n s md x; do
   [ -z "$n" ] && continue; [ -f $O/$n/summary.json ] && continue
@@ -91,8 +113,10 @@ case $STG in *k)                                                                
     grep -q "절 CM56 t2chain\] 모드" $O/$n/log.txt || { OK=0; log "[연기] $n CM56 줄 없음"; }
     [ ! -s $O/$n/t2c_err.txt ] && [ "$(wc -l < $O/$n/t2c.jsonl 2>/dev/null || echo 0)" -ge 5 ] || { OK=0; log "[연기] $n t2c.jsonl 없음/오류"; }
     [ -s $O/$n/e1.jsonl ] && [ ! -s $O/$n/e1_err.txt ] || { OK=0; log "[연기] $n e1 없음/오류"; }
-    case " $x " in *" @tc "[2367]*) $PY -c "import json,sys; L=[json.loads(l) for l in open('$O/$n/t2c.jsonl')]; m=max(q['ins'] for q in L); print('$n tc_all 넣은 수', m, '자른 걸음 몸 전체', sum(q['nall'] for q in L), '자름', sum(q['cut'] for q in L)); sys.exit(0 if m > 0 else 1)" >> $O/t2chain_$STG.log 2>&1 || { OK=0; log "[연기] $n tc_all 안 들어감"; };; esac
+    tcv=$(echo " $x " | grep -o '@tc [0-9]*' | awk '{print $2}'); if (( ${tcv:-0} & 2 )); then $PY -c "import json,sys; L=[json.loads(l) for l in open('$O/$n/t2c.jsonl')]; m=max(q['ins'] for q in L); print('$n tc_all 넣은 수', m, '자른 걸음 몸 전체', sum(q['nall'] for q in L), '자름', sum(q['cut'] for q in L)); sys.exit(0 if m > 0 else 1)" >> $O/t2chain_$STG.log 2>&1 || { OK=0; log "[연기] $n tc_all 안 들어감"; }; fi
     $PY -c "import json; L=[json.loads(l) for l in open('$O/$n/t2c.jsonl')]; print('$n 잔고 ms', [q['bank'] for q in L][:12], '한도', [q['lim'] for q in L][:12], '자름', [q['cut'] for q in L][:12])" >> $O/t2chain_$STG.log 2>&1
+    case " $x " in *" @rr 1"*) [ "$(wc -l < $O/$n/rr.jsonl 2>/dev/null || echo 0)" -ge 5 ] || { OK=0; log "[연기] $n rr.jsonl 없음"; }
+      $PY -c "import json,sys; L=[json.loads(l) for l in open('$O/$n/t2c.jsonl')]; r=[q.get('rms') for q in L]; print('$n 렌더 ms (TC_RMS)', r[:12]); sys.exit(0 if max(v or 0 for v in r) > 0 else 1)" >> $O/t2chain_$STG.log 2>&1 || { OK=0; log "[연기] $n TC_RMS 0"; };; esac
   done <<< "$SPEC"
   log "[연기] OK=$OK"; [ $OK = 1 ] || { echo "연기 실패 $STG $(date '+%F %T')" > $O/t2chain.FAIL; rclone copy $O $RO -q --include t2chain.FAIL; };;
 esac

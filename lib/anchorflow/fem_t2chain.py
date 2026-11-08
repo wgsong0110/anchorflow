@@ -10,6 +10,9 @@
   1 누적 이월 (마감 시각): 프레임 n 의 예산 = (B − m) + Σ_{k<n} (B − t_k).  t_k = 앞 프레임의 GPU 시계 프레임 시간 (첫 시도 첫 커널 -> 마지막 시도 끝, 다시 하기·쪼개기 포함),
      B = 16.7 ms. 시뮬이 실시간 시계보다 앞서 있는 만큼만 더 풀고, 뒤처지면 그만큼 덜 품 -> 프레임 시간 누적 합 ≤ n·B + (마지막 프레임 초과분). 그래프 밖 프레임 (첫 프레임·다시 캡처) 은 셈에서 뺌.
   4 한 프레임 이월: 프레임 n 의 예산 = (B − m) + (B − t_{n−1}) -- 바로 앞 프레임이 남긴 (또는 넘긴) 시간만. 이웃 두 프레임 합 ≤ 2B + 초과분.
+  8 렌더 몫 빼기 (조정자 11-08 추가: 실시간 기준 = 시뮬 + 가우시안 갱신 + 래스터화 ≤ 16.7 ms, 절 CM54): 예산 한도에서 바로 앞 프레임의 실측 렌더 시간 r_{n−1}
+     (exe/rtrender1_wrap.py 의 (b) 갱신 + (c) 래스터화, CUDA 이벤트) 을 뺌 -> 한도 = (B − m) − r_{n−1}. 비트 1·4 와 함께면 이월 셈의 프레임 시간도 t_k = 시뮬 + 렌더.
+     (씬별 상수로 빼는 판은 감싸개 인자 --tb 를 16.7 − 렌더 몫으로 낮춰 돌림 -- 이 모듈 밖.)
   2 자른 걸음 몸 전체 후퇴 오일러: 예산으로 자른 걸음이 덜 풀림으로 판정되면 (cj_end, 절 CM24 판정 2) 걸음 끝 갱신을 --ue_loc 노드 집합 S 가 아니라 몸 전체 노드에
      후퇴 오일러 (U1 = y, v1 = (y − U)/h, 가속도 기억 0) 로 -- 절 CM35 비트 32 (무너진 걸음 ‖g‖²/F² > 1e6 이면 몸 전체) 와 같은 갱신을 '예산으로 자름' 에도.
      HHT 가속도 기억·속도 외삽이 덜 풀린 y 를 다음 프레임 관성 예측으로 넘기지 않게 함. 자르지 않은 걸음 (풀림·뉴턴 상한) 은 그대로.
@@ -31,18 +34,18 @@ NIT = 16
 _T0_OLD = """    if (TB_NEWF) { TB_T0 = n; TB_NEWF = 0; TB_FR = (TB_FR + 1) & 7; TB_MIT[TB_FR] = 0ull; TB_MTL[TB_FR] = 0ull; TB_CUT = 0; TB_GATES = 0; }
     TB_RUN = 0; TB_TP = n; TB_CS = 0;"""
 _T0_NEW = """    if (TB_NEWF) {
-        if (TC_PEND) { long long d_ = TC_BF - (long long)(TB_TE - TB_T0); TC_LAST = d_; if (TC_MODE & 4) TC_BANK = d_; else TC_BANK += d_; }   // 절 CM56: 앞 (그래프 안) 프레임 몫 이월
+        if (TC_PEND) { long long d_ = TC_BF - (long long)(TB_TE - TB_T0) - ((TC_MODE & 8) ? TC_RMS : 0ll); TC_LAST = d_; if (TC_MODE & 4) TC_BANK = d_; else TC_BANK += d_; }   // 절 CM56: 앞 (그래프 안) 프레임 몫 이월
         TC_PEND = 1; TC_NALL = 0; TC_NCK = 0;
         TB_T0 = n; TB_NEWF = 0; TB_FR = (TB_FR + 1) & 7; TB_MIT[TB_FR] = 0ull; TB_MTL[TB_FR] = 0ull; TB_CUT = 0; TB_GATES = 0; }
     TB_RUN = 0; TB_TP = n; TB_CS = 0; TC_CK = 0; for (int i_ = 0; i_ < 3*TC_NIT; i_++) TC_IT[i_] = -1.0;   // 진단은 시도마다 (마지막 시도가 남음)"""
 _GATE_OLD = "    if (tb_now() - TB_T0 + ci + ct > B) { CT[0] = 1; *SKIP = 1; TB_CUT++; TB_CS = 1; }"
-_GATE_NEW = """    long long lim_ = (long long)B + ((TC_MODE & 5) ? TC_BANK : 0ll);                 // 절 CM56 비트 1·4: 이월 잔고만큼 한도를 옮김 (음수면 줄임)
+_GATE_NEW = """    long long lim_ = (long long)B + ((TC_MODE & 5) ? TC_BANK : 0ll) - ((TC_MODE & 8) ? TC_RMS : 0ll);   // 절 CM56 비트 1·4: 이월 잔고만큼 한도를 옮김 (음수면 줄임), 비트 8: 앞 프레임 렌더 시간을 뺌
     TC_LIM = lim_;
     if ((long long)(tb_now() - TB_T0 + ci + ct) > lim_) { CT[0] = 1; *SKIP = 1; TB_CUT++; TB_CS = 1; if (TC_MODE & 2) { TC_CK = 1; TC_NCK++; } }"""
 _GLOB_OLD = "__device__ int TB_NEWF, TB_RUN, TB_CUT, TB_FR, TB_GATES, TB_CS;"
 _GLOB_NEW = _GLOB_OLD + """
 #define TC_NIT %d
-__device__ long long TC_BANK, TC_BF, TC_LAST, TC_LIM;
+__device__ long long TC_BANK, TC_BF, TC_LAST, TC_LIM, TC_RMS;
 __device__ int TC_PEND, TC_CK, TC_MODE, TC_NALL, TC_NCK;
 __device__ double TC_IT[3*TC_NIT];""" % NIT
 _TAIL = """
@@ -70,6 +73,7 @@ def patch_src(src):
 
 
 class TC:
+    rms = None
     fn = {}
     log = None
     out = "."
@@ -104,8 +108,9 @@ def install(mode, out):
         _g("TC_BF", np.int64)[0] = int(round(float(B) * 1e6))
         _g("TC_BANK", np.int64)[0] = 0
         _g("TC_PEND", np.int32)[0] = 0
+        _g("TC_RMS", np.int64)[0] = 0
         TC.log = open(os.path.join(out_, "t2c.jsonl"), "w")
-        print(f"[절 CM56 t2chain] 모드 {MODE} (1 누적 이월 · 4 한 프레임 이월 · 2 자른 걸음 몸 전체 후퇴 오일러; 0 = 진단만), B {B} ms 여유 {m} ms 자리 {where}", flush=True)
+        print(f"[절 CM56 t2chain] 모드 {MODE} (1 누적 이월 · 4 한 프레임 이월 · 2 자른 걸음 몸 전체 후퇴 오일러 · 8 앞 프레임 렌더 시간 빼기; 0 = 진단만), B {B} ms 여유 {m} ms 자리 {where}", flush=True)
     S3.tb_install = tb_install
 
     from . import fem_an_rt as ART
@@ -125,6 +130,44 @@ def install(mode, out):
                 f_.write(traceback.format_exc()[-2000:] + "\n")
         return r
     S3.inv_counts = inv_counts
+    _hook_render()
+
+
+class _RLog:
+    """rtrender1 의 rr.jsonl 파일 객체를 감싸 프레임 기록 (b 갱신 + c 래스터화 ms) 을 가로챔 -> 장치 TC_RMS (다음 프레임 예산에 씀)."""
+    def __init__(s, f):
+        s.f = f
+
+    def write(s, line):
+        try:
+            q = json.loads(line)
+            r = float(q["b"]) + float(q["c"])
+            TC.rms = r
+            if S3.TB.mod is not None:
+                _g("TC_RMS", np.int64)[0] = int(round(r * 1e6))
+        except Exception:
+            pass
+        return s.f.write(line)
+
+    def flush(s):
+        return s.f.flush()
+
+
+def _hook_render():
+    """rtrender1 (절 CM54) 가 있으면 프레임 렌더 시간을 TC_RMS 로 (비트 8 일 때 예산에 씀; 아니면 기록만)."""
+    try:
+        from . import rtrender1 as RR
+    except Exception:
+        return
+    o_f = RR._frame
+
+    def _frame(s, upd, ras):
+        r = o_f(s, upd, ras)
+        lg = RR.ST.get("log")
+        if lg is not None and not isinstance(lg, _RLog):
+            RR.ST["log"] = _RLog(lg)
+        return r
+    RR._frame = _frame
 
 
 def _wrap_k(cls):
@@ -157,6 +200,6 @@ def frame_rec(s):
     nall = int(_g("TC_NALL", np.int32)[0])
     rec = dict(bank=round(int(_g("TC_BANK", np.int64)[0]) * 1e-6, 3), last=round(int(_g("TC_LAST", np.int64)[0]) * 1e-6, 3),
                lim=round(int(_g("TC_LIM", np.int64)[0]) * 1e-6, 3), cut=int(S3.TB.g("TB_CUT", np.int32)[0]), nck=int(_g("TC_NCK", np.int32)[0]),
-               nall=nall, ins=int(getattr(s, "_tc_nins", 0)), it=rows)
+               nall=nall, ins=int(getattr(s, "_tc_nins", 0)), rms=int(_g("TC_RMS", np.int64)[0]) * 1e-6, it=rows)
     TC.log.write(json.dumps(rec) + "\n"); TC.log.flush()
     _ = torch

@@ -15,7 +15,9 @@ spec = [l.split(None, 4) for l in open(os.path.join(HERE, "t2chain_spec.txt")) i
 spec = [s + [""] * (5 - len(s)) for s in spec]
 LIM = 1000.0 / 60.0
 SCN = {"L": "레고", "W": "wolf", "F": "ficus", "B": "bread", "M3": "수박"}
-CFG = {"0": "C0 대조 (F + A3)", "1": "K1 누적 이월", "4": "K4 한 프레임 이월", "2": "K2 자른 걸음 몸 전체 후퇴 오일러", "3": "K1 + K2", "6": "K4 + K2"}
+CFG = {"0": "C0 대조 (F + A3, 시뮬만 예산 16.7)", "1": "K1 누적 이월", "4": "K4 한 프레임 이월", "2": "K2 자른 걸음 몸 전체 후퇴 오일러",
+       "Rc": "Rc 예산 16.7 − 씬 렌더 몫 (상수)", "8": "Rf 예산 16.7 − 앞 프레임 렌더", "9": "K1f = Rf + 누적 이월 (시뮬 + 렌더)", "12": "K4f = Rf + 한 프레임 이월 (시뮬 + 렌더)", "10": "K2f = Rf + 자른 걸음 몸 전체 후퇴 오일러"}
+ORDER = ("0", "1", "4", "2", "Rc", "8", "9", "12", "10")
 
 
 def jl(n, f):
@@ -59,7 +61,8 @@ def fmt(x, d=2):
 
 def tc_of(x):
     t = x.split()
-    return t[t.index("@tc") + 1] if "@tc" in t else "0"
+    c = t[t.index("@tc") + 1] if "@tc" in t else "0"
+    return "Rc" if (c == "0" and "@tb" in t) else c
 
 
 def run_info(n, sc):
@@ -76,6 +79,13 @@ def run_info(n, sc):
     r["max"] = max(ms) if ms else None
     r["over"] = sum(1 for m in ms if m > LIM)
     r["ms_n"] = len(ms)
+    RR = jl(n, "rr.jsonl")
+    tot = [q["tot"] for q in RR if q.get("t", 0) >= 2 and q.get("tot") is not None and math.isfinite(q["tot"])]
+    r["tmean"] = sum(tot) / len(tot) if tot else None
+    r["tmax"] = max(tot) if tot else None
+    r["tover"] = sum(1 for m in tot if m > LIM) if tot else None
+    rb = [q["b"] + q["c"] for q in RR if q.get("t", 0) >= 2]
+    r["rmean"] = sum(rb) / len(rb) if rb else None
     cut = [int((S3[i] if i < len(S3) else {}).get("cut", 0) or 0) > 0 for i in range(len(F))]
     fail = [bool(sum((q.get("uf") or {}).get("fail", [0]))) for q in F]
     r["ncut"] = sum(cut)
@@ -134,17 +144,17 @@ def mean(v):
 
 rows = {}
 for st, n, sc, md, x in spec:
-    if st == "s0k" or not os.path.isdir(os.path.join(O, n)):
+    if st.startswith("s0") or not os.path.isdir(os.path.join(O, n)):
         continue
     rows.setdefault((sc, tc_of(x)), []).append(run_info(n, sc))
 
 print("# 절 CM56 묶음 t2chain -- 시간 예산 T2 덜 풀린 걸음 연쇄 끊기, 공통 후보 F + A3 위\n")
 print(__doc__.split("\n", 1)[1])
 print("## 씬 × 정의 (판마다 빈 카드 하나)\n")
-print("| 씬 | 정의 | 판 | 발산 | 오차 % 평균 [범위] | 씬 지표 | 평균 ms (판 평균의 범위) | 최악 ms | > 16.7 프레임 (판 합 / 판당 최대) | 자른 프레임 판당 평균 | 연쇄 최대 | 빠른 노드 최대 | 이탈 최대 | 노드 상자 최대 | 끝 잔고 ms (K1·K4) |")
-print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+print("| 씬 | 정의 | 판 | 발산 | 오차 % 평균 [범위] | 씬 지표 | 시뮬 평균 ms (판 범위) · 최악 · > 16.7 합 | **시뮬 + 렌더 평균 ms (판 범위)** | **최악 ms** | **> 16.7 프레임 (판 합 / 판당 최대)** | 렌더 평균 ms | 자른 프레임 판당 평균 | 연쇄 최대 | 빠른 노드 최대 | 이탈 최대 | 노드 상자 최대 | 끝 잔고 ms |")
+print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 for sc in ("L", "W", "F", "B", "M3"):
-    for tc in ("0", "1", "4", "2", "3", "6"):
+    for tc in ORDER:
         R = rows.get((sc, tc))
         if not R:
             continue
@@ -161,9 +171,13 @@ for sc in ("L", "W", "F", "B", "M3"):
             met = "-"
         means = [r["mean"] for r in ok]
         mx = max((r["max"] for r in ok if r["max"] is not None), default=None)
-        print(f"| {SCN[sc]} | {CFG.get(tc, tc)} | {len(R)} | {nd} | {fmt(mean(errs))} [{rng(errs)}] | {met} | {rng(means)} | {fmt(mx, 1)} | {sum(r['over'] for r in ok)} / {max((r['over'] for r in ok), default='-')} | "
+        tm = [r["tmean"] for r in ok]
+        tx = max((r["tmax"] for r in ok if r["tmax"] is not None), default=None)
+        tov = [r["tover"] for r in ok if r["tover"] is not None]
+        print(f"| {SCN[sc]} | {CFG.get(tc, tc)} | {len(R)} | {nd} | {fmt(mean(errs))} [{rng(errs)}] | {met} | {rng(means)} · {fmt(mx, 1)} · {sum(r['over'] for r in ok)} | "
+              f"{rng(tm)} | {fmt(tx, 1)} | {sum(tov) if tov else '-'} / {max(tov) if tov else '-'} | {fmt(mean([r['rmean'] for r in ok]))} | "
               f"{fmt(mean([r['ncut'] for r in R]), 1)} | {max(r['chain'] for r in R)} | {max((r['nfast'] or 0) for r in R)} | {max((r['nfar'] or 0) for r in R)} | {max((r['nn'] or 0) for r in R)} | "
-              f"{rng([r['bank_end'] for r in R], 0) if tc in ('1', '4', '3', '6') else '-'} |")
+              f"{rng([r['bank_end'] for r in R], 0) if tc in ('1', '4', '9', '12') else '-'} |")
 print()
 
 print("## 연쇄 기록 (발산 판과 빠른 노드 > 1000 판: 첫 빠른 노드 프레임 앞 6 ~ 뒤 4; 프레임 번호 = fem t + 1)\n")
@@ -191,8 +205,8 @@ for (sc, tc), R in sorted(rows.items()):
         print()
 
 print("## 판별\n")
-print("| 판 | 씬 | 정의 | 결과 | 프레임 | 오차 % | 지표 | 평균 ms | 최악 ms | > 16.7 | 자른 프레임 | 덜 풀린 프레임 | 연쇄 최대 | 몸 전체 BE 걸음 | 빠른 노드 최대 | 이탈 최대 | 상자 최대 | 잔고 끝 · 최소 ms | 시작 카드 다른 프로세스 |")
-print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+print("| 판 | 씬 | 정의 | 결과 | 프레임 | 오차 % | 지표 | 시뮬 평균 ms | 시뮬 최악 ms | 시뮬 > 16.7 | 합계 평균 · 최악 · > 16.7 | 자른 프레임 | 덜 풀린 프레임 | 연쇄 최대 | 몸 전체 BE 걸음 | 빠른 노드 최대 | 이탈 최대 | 상자 최대 | 잔고 끝 · 최소 ms | 시작 카드 다른 프로세스 |")
+print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 for st, n, sc, md, x in spec:
     if not os.path.isdir(os.path.join(O, n)):
         continue
@@ -204,5 +218,5 @@ for st, n, sc, md, x in spec:
         for l in open(p):
             if l.startswith("카드 "):
                 cp = l.split("계산 프로세스")[-1].strip()
-    print(f"| {n} | {SCN.get(sc, sc)} | {tc_of(x)} | {r['res']} | {r['fr']} | {fmt(r['err'])} | {met} | {fmt(r['mean'])} | {fmt(r['max'], 1)} | {r['over']} | {r['ncut']} | {r['nfail']} | {r['chain']} | {r['nall']} | "
+    print(f"| {n} | {SCN.get(sc, sc)} | {tc_of(x)} | {r['res']} | {r['fr']} | {fmt(r['err'])} | {met} | {fmt(r['mean'])} | {fmt(r['max'], 1)} | {r['over']} | {fmt(r['tmean'])} · {fmt(r['tmax'], 1)} · {r['tover']} | {r['ncut']} | {r['nfail']} | {r['chain']} | {r['nall']} | "
           f"{r['nfast']} | {r['nfar']} | {r['nn']} | {fmt(r['bank_end'], 0)} · {fmt(r['bank_min'], 0)} | {cp} |")

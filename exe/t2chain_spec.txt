@@ -10,148 +10,281 @@ s0k kF4 F z F @s4w 1 @s4y 1 @s4x 2 @tc 4 --frames 12
 s0k kB1 B z F @s4w 1 @s4y 1 @s4x 2 @tc 1 --frames 12
 s0k kM2 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 2 --frames 12
 s0k kM0 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 0 --frames 12
-# s1 본 실행: 정의마다 레고 16 · wolf 4 · ficus 4 · bread 4 · 수박 8 (정의를 번갈아 -- 시간대 치우침 없게)
-s1 LC0_1 L z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 LK1_1 L z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 LK4_1 L z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 LK2_1 L z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 LC0_2 L z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 LK1_2 L z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 LK4_2 L z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 LK2_2 L z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 LC0_3 L z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 LK1_3 L z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 LK4_3 L z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 LK2_3 L z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 LC0_4 L z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 LK1_4 L z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 LK4_4 L z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 LK2_4 L z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 LC0_5 L z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 LK1_5 L z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 LK4_5 L z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 LK2_5 L z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 LC0_6 L z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 LK1_6 L z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 LK4_6 L z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 LK2_6 L z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 LC0_7 L z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 LK1_7 L z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 LK4_7 L z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 LK2_7 L z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 LC0_8 L z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 LK1_8 L z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 LK4_8 L z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 LK2_8 L z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 LC0_9 L z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 LK1_9 L z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 LK4_9 L z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 LK2_9 L z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 LC0_10 L z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 LK1_10 L z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 LK4_10 L z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 LK2_10 L z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 LC0_11 L z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 LK1_11 L z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 LK4_11 L z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 LK2_11 L z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 LC0_12 L z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 LK1_12 L z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 LK4_12 L z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 LK2_12 L z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 LC0_13 L z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 LK1_13 L z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 LK4_13 L z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 LK2_13 L z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 LC0_14 L z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 LK1_14 L z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 LK4_14 L z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 LK2_14 L z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 LC0_15 L z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 LK1_15 L z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 LK4_15 L z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 LK2_15 L z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 LC0_16 L z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 LK1_16 L z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 LK4_16 L z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 LK2_16 L z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 MC0_1 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 MK1_1 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 MK4_1 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 MK2_1 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 MC0_2 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 MK1_2 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 MK4_2 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 MK2_2 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 MC0_3 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 MK1_3 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 MK4_3 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 MK2_3 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 MC0_4 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 MK1_4 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 MK4_4 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 MK2_4 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 MC0_5 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 MK1_5 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 MK4_5 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 MK2_5 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 MC0_6 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 MK1_6 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 MK4_6 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 MK2_6 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 MC0_7 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 MK1_7 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 MK4_7 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 MK2_7 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 MC0_8 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 MK1_8 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 MK4_8 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 MK2_8 M3 z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 WC0_1 W z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 WK1_1 W z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 WK4_1 W z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 WK2_1 W z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 WC0_2 W z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 WK1_2 W z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 WK4_2 W z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 WK2_2 W z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 WC0_3 W z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 WK1_3 W z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 WK4_3 W z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 WK2_3 W z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 WC0_4 W z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 WK1_4 W z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 WK4_4 W z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 WK2_4 W z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 FC0_1 F z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 FK1_1 F z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 FK4_1 F z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 FK2_1 F z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 FC0_2 F z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 FK1_2 F z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 FK4_2 F z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 FK2_2 F z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 FC0_3 F z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 FK1_3 F z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 FK4_3 F z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 FK2_3 F z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 FC0_4 F z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 FK1_4 F z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 FK4_4 F z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 FK2_4 F z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 BC0_1 B z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 BK1_1 B z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 BK4_1 B z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 BK2_1 B z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 BC0_2 B z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 BK1_2 B z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 BK4_2 B z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 BK2_2 B z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 BC0_3 B z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 BK1_3 B z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 BK4_3 B z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 BK2_3 B z F @s4w 1 @s4y 1 @s4x 2 @tc 2
-s1 BC0_4 B z F @s4w 1 @s4y 1 @s4x 2 @tc 0
-s1 BK1_4 B z F @s4w 1 @s4y 1 @s4x 2 @tc 1
-s1 BK4_4 B z F @s4w 1 @s4y 1 @s4x 2 @tc 4
-s1 BK2_4 B z F @s4w 1 @s4y 1 @s4x 2 @tc 2
+# s0k2 연기 (조정자 11-08 추가: 렌더 포함 기준) -- @rr 1 = rtrender1 렌더 (PG 갱신 1, 수박 갱신 2) 를 같은 프로세스에서, @tb 16.7 − 씬 렌더 몫 = 상수 판, @tc 비트 8 = 앞 프레임 렌더 시간 빼기
+s0k2 kL9 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9 --frames 12
+s0k2 kM8 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8 --frames 12
+s0k2 kWc W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.8 --frames 12
+s0k2 kF12 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12 --frames 12
+s0k2 kB10 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10 --frames 12
+s0k2 kM10 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10 --frames 12
+# s1 본 실행 (모든 판 렌더 켬 = 단독 합계 시간): 시뮬만 예산 (@tb 16.7) C0·K1·K4·K2, 렌더 몫 상수 Rc (@tb 16.7 − 몫: 레고 2.5 · ficus 1.8 · wolf 1.9 · bread 1.0 · 수박 4.0), 렌더 몫 프레임마다 Rf (@tc 8)·K1f (9)·K4f (12)·K2f (10)
+s1 LC0_1 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 LK1_1 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 LK4_1 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 LK2_1 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 LRc_1 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.2
+s1 LRf_1 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 LK1f_1 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 LK4f_1 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 LK2f_1 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 LC0_2 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 LK1_2 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 LK4_2 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 LK2_2 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 LRc_2 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.2
+s1 LRf_2 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 LK1f_2 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 LK4f_2 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 LK2f_2 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 LC0_3 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 LK1_3 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 LK4_3 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 LK2_3 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 LRc_3 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.2
+s1 LRf_3 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 LK1f_3 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 LK4f_3 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 LK2f_3 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 LC0_4 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 LK1_4 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 LK4_4 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 LK2_4 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 LRc_4 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.2
+s1 LRf_4 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 LK1f_4 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 LK4f_4 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 LK2f_4 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 LC0_5 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 LK1_5 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 LK4_5 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 LK2_5 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 LRc_5 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.2
+s1 LRf_5 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 LK1f_5 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 LK4f_5 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 LK2f_5 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 LC0_6 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 LK1_6 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 LK4_6 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 LK2_6 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 LRc_6 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.2
+s1 LRf_6 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 LK1f_6 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 LK4f_6 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 LK2f_6 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 LC0_7 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 LK1_7 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 LK4_7 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 LK2_7 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 LRc_7 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.2
+s1 LRf_7 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 LK1f_7 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 LK4f_7 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 LK2f_7 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 LC0_8 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 LK1_8 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 LK4_8 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 LK2_8 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 LRc_8 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.2
+s1 LRf_8 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 LK1f_8 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 LK4f_8 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 LK2f_8 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 LC0_9 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 LK1_9 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 LK4_9 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 LK2_9 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 LRc_9 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.2
+s1 LRf_9 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 LK1f_9 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 LK4f_9 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 LK2f_9 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 LC0_10 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 LK1_10 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 LK4_10 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 LK2_10 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 LRc_10 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.2
+s1 LRf_10 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 LK1f_10 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 LK4f_10 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 LK2f_10 L z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 MC0_1 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 MK1_1 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 MK4_1 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 MK2_1 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 MRc_1 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 12.7
+s1 MRf_1 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 MK1f_1 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 MK4f_1 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 MK2f_1 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 MC0_2 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 MK1_2 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 MK4_2 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 MK2_2 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 MRc_2 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 12.7
+s1 MRf_2 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 MK1f_2 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 MK4f_2 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 MK2f_2 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 MC0_3 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 MK1_3 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 MK4_3 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 MK2_3 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 MRc_3 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 12.7
+s1 MRf_3 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 MK1f_3 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 MK4f_3 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 MK2f_3 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 MC0_4 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 MK1_4 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 MK4_4 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 MK2_4 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 MRc_4 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 12.7
+s1 MRf_4 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 MK1f_4 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 MK4f_4 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 MK2f_4 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 MC0_5 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 MK1_5 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 MK4_5 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 MK2_5 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 MRc_5 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 12.7
+s1 MRf_5 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 MK1f_5 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 MK4f_5 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 MK2f_5 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 MC0_6 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 MK1_6 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 MK4_6 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 MK2_6 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 MRc_6 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 12.7
+s1 MRf_6 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 MK1f_6 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 MK4f_6 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 MK2f_6 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 MC0_7 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 MK1_7 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 MK4_7 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 MK2_7 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 MRc_7 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 12.7
+s1 MRf_7 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 MK1f_7 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 MK4f_7 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 MK2f_7 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 MC0_8 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 MK1_8 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 MK4_8 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 MK2_8 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 MRc_8 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 12.7
+s1 MRf_8 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 MK1f_8 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 MK4f_8 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 MK2f_8 M3 z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 WC0_1 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 WK1_1 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 WK4_1 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 WK2_1 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 WRc_1 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.8
+s1 WRf_1 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 WK1f_1 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 WK4f_1 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 WK2f_1 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 WC0_2 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 WK1_2 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 WK4_2 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 WK2_2 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 WRc_2 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.8
+s1 WRf_2 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 WK1f_2 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 WK4f_2 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 WK2f_2 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 WC0_3 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 WK1_3 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 WK4_3 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 WK2_3 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 WRc_3 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.8
+s1 WRf_3 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 WK1f_3 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 WK4f_3 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 WK2f_3 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 WC0_4 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 WK1_4 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 WK4_4 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 WK2_4 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 WRc_4 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.8
+s1 WRf_4 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 WK1f_4 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 WK4f_4 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 WK2f_4 W z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 FC0_1 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 FK1_1 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 FK4_1 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 FK2_1 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 FRc_1 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.9
+s1 FRf_1 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 FK1f_1 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 FK4f_1 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 FK2f_1 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 FC0_2 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 FK1_2 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 FK4_2 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 FK2_2 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 FRc_2 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.9
+s1 FRf_2 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 FK1f_2 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 FK4f_2 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 FK2f_2 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 FC0_3 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 FK1_3 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 FK4_3 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 FK2_3 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 FRc_3 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.9
+s1 FRf_3 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 FK1f_3 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 FK4f_3 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 FK2f_3 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 FC0_4 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 FK1_4 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 FK4_4 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 FK2_4 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 FRc_4 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 14.9
+s1 FRf_4 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 FK1f_4 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 FK4f_4 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 FK2f_4 F z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 BC0_1 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 BK1_1 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 BK4_1 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 BK2_1 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 BRc_1 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 15.7
+s1 BRf_1 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 BK1f_1 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 BK4f_1 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 BK2f_1 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 BC0_2 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 BK1_2 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 BK4_2 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 BK2_2 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 BRc_2 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 15.7
+s1 BRf_2 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 BK1f_2 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 BK4f_2 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 BK2f_2 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 BC0_3 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 BK1_3 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 BK4_3 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 BK2_3 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 BRc_3 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 15.7
+s1 BRf_3 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 BK1f_3 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 BK4f_3 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 BK2f_3 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
+s1 BC0_4 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0
+s1 BK1_4 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 1
+s1 BK4_4 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 4
+s1 BK2_4 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 2
+s1 BRc_4 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 0 @tb 15.7
+s1 BRf_4 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 8
+s1 BK1f_4 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 9
+s1 BK4f_4 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 12
+s1 BK2f_4 B z F @s4w 1 @s4y 1 @s4x 2 @rr 1 @tc 10
