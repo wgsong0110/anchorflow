@@ -16,7 +16,8 @@ export CUPY_CACHE_DIR=/dev/shm/dkta/cache/cupy_wmcrack1_$STG XDG_CACHE_HOME=/dev
 for st in ${STG//,/ }; do                                                                   # 단계 여럿 = 쉼표로 이어 차례로 (연기 실패면 멈춤)
   [ -f $O/wmcrack1.FAIL ] && { say "실패 표식 있음 -- $st 안 함"; break; }
   say "단계 $st 시작"
-  bash exe/stab_wmcrack1.sh $O $R $st < /dev/null > $O/stab_$st.out 2>&1
+  if [ $st = vid ]; then VO=/dev/shm/dkta/wmcrack1_vid; mkdir -p $VO; bash exe/stab_wmcrack1_vid.sh $VO $R < /dev/null > $O/stab_$st.out 2>&1   # 영상: h5 는 /dev/shm (결과 디렉토리 밖이라 5 분 복사에 안 섞임), 렌더 뒤 지움
+  else bash exe/stab_wmcrack1.sh $O $R $st < /dev/null > $O/stab_$st.out 2>&1; fi
   say "단계 $st 끝 rc=$?"
 done
 rclone copy $O $R --exclude "go_*.END" -q

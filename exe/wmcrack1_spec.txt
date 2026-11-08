@@ -7,20 +7,18 @@ s0k kC M3 r P1X @wc1k 1 --ksplit 4 --frames 8
 s0k kV M3 r P1X @wc1k 1 --ksplit 4 --ws3 1 --ws3_lj 1 --ws3_pf 1 --frames 8
 s0k kK M3 r P1XK --K 16 @tb 1000 --frames 6
 s0k kR M3 r P1X --rm_sub 1 --ws2 1 --frames 6
-# s1 (1) 진단: P1X 그대로 2 판 · 갈래 기록 (--rm_sub 1 = n 1 등분, 절 CM41 'D 식') · 첫 접촉을 시간으로 푼 판 (--K 8·16·32 고정, 예산 끔; K 16 은 예산 켬도)
+# s1 (1) 진단: P1X 그대로 2 판 · 갈래 기록 (--rm_sub 1 = n 1 등분, 절 CM41 'D 식') · 첫 접촉을 시간으로 푼 판 (--K 8·16 고정, 예산 끔; s0k kK 는 K 16 이 f5 에 Sq 비유한으로 발산)
 s1 dP_1 M3 r P1X
 s1 dP_2 M3 r P1X
 s1 dR_1 M3 r P1X --rm_sub 1 --ws2 1
 s1 dK8_1 M3 r P1XK --K 8 @tb 1000
-s1 dK16_1 M3 r P1XK --K 16 @tb 1000
-s1 dK32_1 M3 r P1XK --K 32 @tb 1000
-s1 dK16t_1 M3 r P1XK --K 16
 s1 dK16w_1 M3 r P1XK --K 16 @tb 1000 --rm_sub 1 --ws2 1
-# s1 (2) 후보 미리보기 (각 2 판): C = 접촉 CFL (첫 시도 K = 접촉 입자 한 걸음 이동 ≤ 노드 한 칸, 상한 2^--ksplit), V = C + 수렴 (εN) 걸음만 손상 변수 확정, VF = V + 확정 안 한 프레임 입자 logJp 유지
+# s1 (2) 후보 미리보기 (각 2 판): C = 접촉 CFL (첫 시도 K = 접촉 입자 한 걸음 이동 ≤ 노드 한 칸, 상한 2^--ksplit; C8 = 상한 8, C = 상한 16),
+#   V2 = C + 덜 풀린 걸음 (절 CM24 판정, --ws3 2) 은 손상 변수 확정 안 함, V2F = V2 + 확정 안 한 프레임 입자 logJp 유지 (s0k kV: εN 판정 (--ws3 1) 은 K 16 첫 접촉에서도 한 걸음도 안 닿아 손상 0 -> 뺌)
 s1 C8_1 M3 r P1X @wc1k 1
 s1 C_1 M3 r P1X @wc1k 1 --ksplit 4
 s1 C_2 M3 r P1X @wc1k 1 --ksplit 4
-s1 V_1 M3 r P1X @wc1k 1 --ksplit 4 --ws3 1 --ws3_lj 1
-s1 V_2 M3 r P1X @wc1k 1 --ksplit 4 --ws3 1 --ws3_lj 1
-s1 VF_1 M3 r P1X @wc1k 1 --ksplit 4 --ws3 1 --ws3_lj 1 --ws3_pf 1
-s1 VF_2 M3 r P1X @wc1k 1 --ksplit 4 --ws3 1 --ws3_lj 1 --ws3_pf 1
+s1 V2_1 M3 r P1X @wc1k 1 --ksplit 4 --ws3 2 --ws3_lj 1
+s1 V2_2 M3 r P1X @wc1k 1 --ksplit 4 --ws3 2 --ws3_lj 1
+s1 V2F_1 M3 r P1X @wc1k 1 --ksplit 4 --ws3 2 --ws3_lj 1 --ws3_pf 1
+s1 V2F_2 M3 r P1X @wc1k 1 --ksplit 4 --ws3 2 --ws3_lj 1 --ws3_pf 1

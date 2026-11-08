@@ -3,7 +3,7 @@
 사용: python exe/wmcrack1_wrap.py [--wc1sv 1] [--wc1k 1] <ghost6_wrap 인자...> <실행기.py> <실행기 인자...>
   --wc1sv 1  진단 (결과 불변): --wsh_sv 프레임마다 입자 (원래 순서) 탄성 F 의 특이값 σ1..3 · det F -> <out>/wsh/fs_<프레임>.npz (float32).
              층별·입자별 RM 갈래 (압축 꼭짓점·인장 꼭짓점·타원)·응집력 p0 를 정답 (GF h5 f_tensor + gt_jp) 과 같은 식으로 보려고 (exe/wmcrack1_prof.py).
-  --wc1k 1   후보 K (접촉 CFL, 정의 변경): 쪼개기 (split_step) 첫 시도의 걸음 수 K0 를 1 대신
+  --wc1k 1   후보 K (접촉 CFL, 정의 변경; 옛 실행기 split_step·새 실행기 split_step 둘 다, 바닥 없는 씬 (ficus·bread) 은 K_req 0 = 그대로): 쪼개기 (split_step) 첫 시도의 걸음 수 K0 를 1 대신
              K_req = ⌈ max_{p ∈ C} (−v_n,p) h / Δx ⌉ 이상의 가장 작은 2 의 거듭제곱으로 (상한 = 기존 쪼개기 버퍼 2^--ksplit).
              C = 프레임 시작 속도로 이 프레임 안에 바닥 장벽 띠 (d ≤ d̂) 에 들어가는 입자 (d_p + v_n,p h ≤ d̂, v_n,p < 0),
              v_n = 바닥 법선 속도, Δx = 노드 간격 (|A[:,0]|), d̂ = 장벽 두께 (0.5 x 정답 격자 dx, 실행기 WBAR 와 같은 식).
@@ -69,22 +69,34 @@ if int(float(CAND.get("wc1sv", 0))):
 
 if int(float(CAND.get("wc1k", 0))):
     import torch
-    from anchorflow import fem_ao_rt as AORT
-    fp = _arg("--floor_plane", "")
-    assert fp, "--wc1k 는 지금 옛 실행기 (수박, --floor_plane) 만"
-    _q = [float(q) for q in fp.split(",")]
-    NR = torch.tensor(_q[3:], dtype=torch.float64); NR = NR / NR.norm()
-    PN = float(NR @ torch.tensor(_q[:3], dtype=torch.float64))
-    # 장벽 두께 d̂ = 0.5 x 정답 격자 dx x --bar_dhmul (실행기 WBAR DH 와 같은 식); 정답 격자 dx = grid_lim / n_grid (config)
+    SIM = next((q for q in argv if q.endswith(".py")), "")
+    NEW = os.path.basename(SIM) == "fem_an_rt_sim.py"                                   # 새 실행기 (레고·wolf·ficus·bread) / 옛 실행기 (수박)
     _d = torch.load(_arg("--data"), map_location="cpu", weights_only=False)
     _cfg = _d["cfg"]
-    DH = 0.5 * float(_cfg.get("grid_lim", 2.0)) / int(_cfg.get("n_grid", 100)) * float(_arg("--bar_dhmul", 1.0)) if "--fl_bar" in argv else 0.0
     del _d
+    DXG = float(_cfg.get("grid_lim", 2.0)) / int(_cfg.get("n_grid", 100))
+    FLR = _arg("--floor", "none" if NEW else "vel")
+    if FLR == "vel":
+        fp = _arg("--floor_plane", "")
+        if fp:
+            _q = [float(q) for q in fp.split(",")]
+            PT, NV = _q[:3], _q[3:]
+        else:
+            pl = [b for b in _cfg["boundary_conditions"] if b.get("type") == "surface_collider"][0]
+            PT, NV = [float(q) for q in pl["point"]], [float(q) for q in pl["normal"]]
+        NR = torch.tensor(NV, dtype=torch.float64); NR = NR / NR.norm()
+        PN = float(NR @ torch.tensor(PT, dtype=torch.float64))
+        # 장벽 두께 d̂ = 0.5 x 정답 격자 dx (x --bar_dhmul, 옛 실행기 WBAR DH · 새 실행기 FL DH 와 같은 식); 장벽 없는 바닥은 0
+        DH = 0.5 * DXG * float(_arg("--bar_dhmul", 1.0)) if "--fl_bar" in argv else 0.0
+    else:
+        NR = None; PN = 0.0; DH = 0.0
     WLOG = os.environ.get("AF_WC1_LOG", "1") == "1"
     ST = dict(fi=0)
 
     def k_req(s, h):
-        """접촉 CFL K_req (실수) 와 C 크기."""
+        """접촉 CFL K_req (실수) 와 C 크기 (바닥 없는 씬은 0)."""
+        if NR is None:
+            return 0.0, 0
         x = s.x.reshape(-1, 3).double(); v = s.v.reshape(-1, 3).double()
         n = NR.to(x.device)
         d = x @ n - PN
@@ -110,19 +122,14 @@ if int(float(CAND.get("wc1k", 0))):
                 f.write(json.dumps(dict(t=ST["fi"], kreq=r, nC=nC, d0=d0, cap=cap)) + "\n")
         return d0
 
-    o_split = AORT.split_step
-
-    def split_step(s, t, h, sub_dt, depth):
-        ST["fi"] = int(round(t / h))
-        d0 = depth0(s, h)
-        if d0 == 0:
-            return o_split(s, t, h, sub_dt, depth)
+    def loop(s, t, h, d0, depth, setK, nfail, ksw):
+        """원래 split_step 과 같은 몸통, 시작만 d0 (d0 > 0 시도는 쪼갠 시도라 --ks_rho·--ks_it 덮어쓰기도 같음)."""
         bk = s._bk()
         tries, tot, redo = [], 0.0, False
-        wf = getattr(s, "wf", {})
-        base = (s.ga_c, s.nt, s.cg)
+        base = (s.ga_c, s.nt, s.cg) if ksw else None
+        wf = getattr(s, "wf", {}) if ksw else {}
         K = 1
-        for dp in range(d0, max(depth, d0) + 1):                                       # 원래 split_step 과 같은 몸통, 시작만 d0
+        for dp in range(d0, max(depth, d0) + 1):
             K = 1 << dp
             if dp > d0:
                 s._rs(bk)
@@ -130,19 +137,44 @@ if int(float(CAND.get("wc1k", 0))):
                 s.ga_c = wf["ks_ga"]
             if wf.get("ks_nt"):
                 s.nt, s.cg = int(wf["ks_nt"]), int(wf["ks_cg"])
-            AORT.set_K_ga(s, K, h, sub_dt)
+            setK(K)
             redo = s.step(t) or redo
             ms = float(s.last_ms)
-            nf = AORT.C3.nfail(s, s.ufl, s.ufg, K)
+            nf = nfail(K)
             tries.append((K, nf, ms))
             tot += ms
             if nf == 0 or not math.isfinite(ms):
                 break
-        s.ga_c, s.nt, s.cg = base
+        if base is not None:
+            s.ga_c, s.nt, s.cg = base
         s.last_ms = tot
         return redo, K, tries
-    AORT.split_step = split_step
-    print(f"[절 CM59] --wc1k: 접촉 CFL 첫 시도 걸음 수 (바닥 법선 {NR.tolist()}, PN {PN:.6g}, 장벽 두께 d̂ {DH:.6g} m)", flush=True)
+
+    if NEW:
+        from anchorflow import fem_an_rt as ART
+        o_split = ART.split_step
+
+        def split_step(s, t, h, depth):
+            ST["fi"] = int(round(t / h))
+            if s.ga and getattr(s, "ga_first", False):                                    # 원래 함수의 첫 프레임 예외 그대로
+                return o_split(s, t, h, depth)
+            d0 = depth0(s, h)
+            if d0 == 0:
+                return o_split(s, t, h, depth)
+            return loop(s, t, h, d0, depth, lambda K: ART.set_K_an(s, K, h), lambda K: ART.C3.nfail(s, s.cjl, s.cjg, K), False)
+        ART.split_step = split_step
+    else:
+        from anchorflow import fem_ao_rt as AORT
+        o_split = AORT.split_step
+
+        def split_step(s, t, h, sub_dt, depth):
+            ST["fi"] = int(round(t / h))
+            d0 = depth0(s, h)
+            if d0 == 0:
+                return o_split(s, t, h, sub_dt, depth)
+            return loop(s, t, h, d0, depth, lambda K: AORT.set_K_ga(s, K, h, sub_dt), lambda K: AORT.C3.nfail(s, s.ufl, s.ufg, K), True)
+        AORT.split_step = split_step
+    print(f"[절 CM59] --wc1k: 접촉 CFL 첫 시도 걸음 수 ({'새' if NEW else '옛'} 실행기, 바닥 법선 {None if NR is None else NR.tolist()}, PN {PN:.6g}, 장벽 두께 d̂ {DH:.6g} m)", flush=True)
 
 sys.argv = [os.path.join(HERE, "ghost6_wrap.py")] + argv
 runpy.run_path(sys.argv[0], run_name="__main__")
