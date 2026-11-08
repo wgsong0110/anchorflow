@@ -32,3 +32,18 @@ s1 cSN_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2s 1 @w2n 1 --fl_pt
 s1 cSN_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2s 1 @w2n 1 --fl_pt
 s1 cSN_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2s 1 @w2n 1 --fl_pt
 s1 cSN_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2s 1 @w2n 1 --fl_pt
+# ---- s2 (s1 뒤): 고착 노드 면 빼기 (gs) 를 후보 쪽으로 -- S + gs · S + N + gs (각 4), N + PT2 + gs 2 판 더; 대조 진단: G' 에서 시작점 장벽 에너지 규칙 뺌 (~--y0eb, 절 CM52 dNE) 2 · 같은 것 + N + PT2 + gs 2
+s2 cSG_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2s 1 @w2gs 1 --fl_pt
+s2 cSG_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2s 1 @w2gs 1 --fl_pt
+s2 cSG_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2s 1 @w2gs 1 --fl_pt
+s2 cSG_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2s 1 @w2gs 1 --fl_pt
+s2 cSNG_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2s 1 @w2n 1 @w2gs 1 --fl_pt
+s2 cSNG_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2s 1 @w2n 1 @w2gs 1 --fl_pt
+s2 cSNG_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2s 1 @w2n 1 @w2gs 1 --fl_pt
+s2 cSNG_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2s 1 @w2n 1 @w2gs 1 --fl_pt
+s2 mG_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2gs 1 @w2n 1 --fl_pt --fl_bst 2
+s2 mG_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2gs 1 @w2n 1 --fl_pt --fl_bst 2
+s2 dE_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 ~--y0eb
+s2 dE_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 ~--y0eb
+s2 dEG_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 ~--y0eb @w2gs 1 @w2n 1 --fl_pt --fl_bst 2
+s2 dEG_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 ~--y0eb @w2gs 1 @w2n 1 --fl_pt --fl_bst 2
