@@ -688,6 +688,52 @@ def yl4_counts(s):
     return o
 
 
+# ======================= (G) 파이썬 쓰레기 모으기 (GC) 를 프레임 재생 창 밖으로 (결과 불변 -- GPU 계산 안 건드림) =======================
+# 나눈 그래프 (--xg) 는 구간 경계마다 호스트가 CT[0] 등을 읽고 다음 구간을 띄우므로, 그 사이 파이썬 GC 가 돌면 GPU 가 그만큼 놀고 재생 시간 (e0~e1) 에 들어감
+#   (시간 예산 T2 도 그 시간을 반복 시간으로 셈). --s4g 1 = 기록만 (프레임 재생 창 안에서 돈 GC 세대·시간 -> s4.jsonl 'gc'),
+#   2 = 첫 프레임 앞 gc.collect + gc.freeze (그때까지 객체를 영구 세대로) + 프레임 재생 창 (split_col 들어감~나옴) 동안 gc.disable (창 밖에서 다시 켬).
+class GC4:
+    mode = 0
+    ev = []
+    t0 = None
+    win = False
+    frozen = False
+
+
+def gc_install(mode):
+    import gc
+    import time
+    GC4.mode = int(mode)
+
+    def cb(phase, info):
+        if not GC4.win:
+            return
+        if phase == "start":
+            GC4.t0 = time.perf_counter()
+        elif GC4.t0 is not None:
+            GC4.ev.append([int(info.get("generation", -1)), round(1e3 * (time.perf_counter() - GC4.t0), 3)])
+            GC4.t0 = None
+    gc.callbacks.append(cb)
+
+
+def gc_enter():
+    import gc
+    if GC4.mode >= 2:
+        if not GC4.frozen:
+            gc.collect(); gc.freeze(); GC4.frozen = True
+        gc.disable()
+    GC4.win = True
+
+
+def gc_exit():
+    import gc
+    GC4.win = False
+    if GC4.mode >= 2:
+        gc.enable()
+    e, GC4.ev = GC4.ev, []
+    return e
+
+
 # ======================= 프레임 기록 =======================
 def frame_install(out):
     """쪼개기 함수 (프레임 진입) 를 감싸 프레임마다 s4.jsonl 한 줄 (단계 시간 · S1 셈)."""
@@ -702,13 +748,18 @@ def frame_install(out):
                 torch.cuda.synchronize()
                 sp_g("SP_N", np.int32)[0] = 0
                 torch.cuda.synchronize()
+            if dep[0] == 0 and GC4.mode:
+                gc_enter()
             dep[0] += 1
             try:
                 r = fn(s, *a, **kw)
             finally:
                 dep[0] -= 1
+                gce = gc_exit() if (dep[0] == 0 and GC4.mode) else None
             if dep[0] == 0 and isinstance(s, AORT.AORTSolver):
                 rec = dict(t=fr[0])
+                if gce is not None:
+                    rec["gc"] = gce
                 fr[0] += 1
                 if SP.on:
                     rec["sp"] = sp_frame()

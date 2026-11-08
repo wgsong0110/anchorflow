@@ -80,3 +80,30 @@ s4 hLA2 L h FH @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
 s4 hWA2 W h FH @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
 s4 hFA2 F h FH @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
 s4 hBA2 B h FH @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+# ---- s5k·s5: G (GC 를 재생 창 밖으로), 긴 '구간 사이' 프레임 확인 (기록만 @s4g 1), 최종 후보 단독·분포, L·wolf 결정적 해시 (W̄·R2·A2 는 결정적 판을 막아 D 바탕 @tb 1000)
+s5k kG M3 n F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2 --frames 14
+s5 zFG1 M3 z F @s4g 1
+s5 zFA2G M3 z F @s4w 1 @s4y 1 @s4x 2 @s4g 2
+s5 zFAE2G M3 z F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
+s5 pFAE2G M3 p F @s4p 1 @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
+s5 pFAE2Gb M3 p F @s4p 1 @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
+s5 pFA2G M3 p F @s4p 1 @s4w 1 @s4y 1 @s4x 2 @s4g 2
+s5 nFA2G_1 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4g 2
+s5 nFA2G_2 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4g 2
+s5 nFA2G_3 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4g 2
+s5 nFA2G_4 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4g 2
+s5 nFAE2G_1 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
+s5 nFAE2G_2 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
+s5 nFAE2G_3 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
+s5 nFAE2G_4 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
+s5 hLD L h D @tb 1000 @tb_m 0.8 @tb_w 2
+s5 hLDA L h D @tb 1000 @tb_m 0.8 @tb_w 2 @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
+s5 hWD W h D @tb 1000 @tb_m 0.8 @tb_w 2
+s5 hWDA W h D @tb 1000 @tb_m 0.8 @tb_w 2 @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
+s5 hFDA F h FH @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
+s5 hBDA B h FH @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
+s5 zW0 W z F
+s5 zLG L z F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
+s5 zWG W z F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
+s5 zFiG F z F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
+s5 zBG B z F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2

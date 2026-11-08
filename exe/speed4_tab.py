@@ -56,6 +56,9 @@ def run_row(d):
         r["ws4"] = [sum(q["ws4"][k] for q in S4) for k in ("round", "clean", "bad")]
     if S4 and "yl4" in S4[0]:
         r["ws4"] = (r.get("ws4") or []) + ["S2"] + [sum(q["yl4"][k] for q in S4) for k in ("chk", "clean", "bad")]
+    if S4 and "gc" in S4[0]:
+        g = [e for q in S4 for e in q.get("gc", [])]
+        r["gc"] = [len(g), sum(1 for e in g if e[0] == 2), round(max((e[1] for e in g), default=0.0), 2)]
     if S4 and "x1" in S4[0]:
         v = [q["x1"] if isinstance(q["x1"], list) else [q["x1"], 0, 0] for q in S4]
         r["x1"] = [sum(a[i] for a in v) for i in range(3)]
@@ -69,8 +72,8 @@ def f(v, p=2):
 dirs = sorted(d for d in glob.glob(os.path.join(O, "*")) if os.path.isdir(d) and os.path.exists(os.path.join(d, "cmd.txt")))
 print("# 절 CM50 speed4 표\n")
 print("## 판별 (시간 = 그래프 재생 GPU ms, 프레임 3~; 16.7 넘는 프레임 수; 다시 한 프레임 = 시도 2 이상; 손상 = 끝 프레임 logJp > 0 몫)\n")
-print("| 판 | 프레임 | 발산 | 오차 % | 평균 ms | 최대 ms (프레임) | > 16.7 | 다시 한 프레임 | 끝 손상 % | 노드 상자 최대 | 끝 해시 | 시작 카드 다른 프로세스 | S1 라운드·깨끗·어긋남 | 꼬리 건너뜀·X2·X3e4 |")
-print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+print("| 판 | 프레임 | 발산 | 오차 % | 평균 ms | 최대 ms (프레임) | > 16.7 | 다시 한 프레임 | 끝 손상 % | 노드 상자 최대 | 끝 해시 | 시작 카드 다른 프로세스 | S1 라운드·깨끗·어긋남 | 꼬리 건너뜀·X2·X3e4 | 재생 창 안 GC (수·2 세대·최대 ms) |")
+print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 rows = []
 for d in dirs:
     try:
@@ -80,7 +83,7 @@ for d in dirs:
         continue
     rows.append(r)
     print(f"| {r['n']} | {r['fr']} | {r['div'] or 0} | {f(100 * r['err'] if r['err'] is not None else None)} | {f(r['mean'])} | {f(r['mx'], 1)} ({r['mxf']}) | {r['over']} | {r['redo']} | "
-          f"{f(100 * r['lj'] if r['lj'] is not None else None)} | {r['nn']} | {r['sha']} | {r['card']} | {r.get('ws4', '-')} | {r.get('x1', '-')} |")
+          f"{f(100 * r['lj'] if r['lj'] is not None else None)} | {r['nn']} | {r['sha']} | {r['card']} | {r.get('ws4', '-')} | {r.get('x1', '-')} | {r.get('gc', '-')} |")
 
 # ---- 단계 기록 판
 for d in dirs:
