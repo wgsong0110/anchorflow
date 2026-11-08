@@ -99,3 +99,14 @@ s2 zF_E F z E
 s2 zF_RA F z E @e3w 1 @e5r 1 @e5a 1
 s2 zB_E B z E
 s2 zB_RA B z E @e3w 1 @e5r 1 @e5a 1
+# s3 진단 다시 (D5 에 고정 노드 몫 더함: 비활성 표본점의 W̄ 무게 중 pm 2 노드 몫 · 바닥 밑 한 칸 넘는 입자의 27 노드 무게 중 pm 2 몫) -- E+W̄ 2 · E+W̄+R+A 4 · V2NF+W̄+R+A 4
+s3 dW_1 M3 g E @e3w 1
+s3 dW_2 M3 g E @e3w 1
+s3 dRA_1 M3 g E @e3w 1 @e5r 1 @e5a 1
+s3 dRA_2 M3 g E @e3w 1 @e5r 1 @e5a 1
+s3 dRA_3 M3 g E @e3w 1 @e5r 1 @e5a 1
+s3 dRA_4 M3 g E @e3w 1 @e5r 1 @e5a 1
+s3 dfRA_1 M3 g V2NF @e3w 1 @e5r 1 @e5a 1
+s3 dfRA_2 M3 g V2NF @e3w 1 @e5r 1 @e5a 1
+s3 dfRA_3 M3 g V2NF @e3w 1 @e5r 1 @e5a 1
+s3 dfRA_4 M3 g V2NF @e3w 1 @e5r 1 @e5a 1

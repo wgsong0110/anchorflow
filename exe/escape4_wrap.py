@@ -140,6 +140,24 @@ if os.environ.get("AF_E5_DG", "0") == "1":
             rec.update(bar_end_max=float((dbar - dend).abs()[A1].max()) if bool(A1.any()) else None,
                        bar_pos_act_le0=int((A1 & (dbar > 0) & ~(dend > 0)).sum()), act_end_le0=int((A1 & ~(dend > 0)).sum()))
         rec.update(nbelow=int((ok & (hp1 < 0)).sum()), zmin=float(hp1[ok].min()) if bool(ok.any()) else None, inact=int((has & (bact == 0)).sum()))
+        # 고정 노드 (pm 2 = m_n < mthr, 관성 예측에 묶임) 몫: 비활성 표본점 (W̄ 무게) · 깊은 입자 (바닥 밑 한 칸 넘음, 입자 B-스플라인 무게)
+        pmv = getattr(s, "pm", None)
+        if pmv is not None:
+            fixn = (pmv[:nn] == 2).double()
+            inq = torch.nonzero(has & (bact == 0)).squeeze(1)
+            if inq.numel() and wq is not None:
+                cb_ = s.cb.reshape(-1, 3).long()
+                ids_ = _nid(cb_[inq // 8], nb1, nb2).clamp(0, nn - 1)
+                Wi = wq.reshape(27, -1)[:, :nq].t().double()[inq]
+                rec["inact_fix"] = [round(float(v), 3) for v in (Wi * fixn[ids_]).sum(1)[:8]]
+                rec["inact_d0"] = [round(float(v), 4) for v in da0[inq][:8]]
+                rec["inact_m"] = [round(float(v), 5) for v in (M[inq] / M[has].median())[:8]]
+            deep = torch.nonzero(ok & (hp1 < -0.02)).squeeze(1)
+            if deep.numel():
+                pb_ = s.Np.reshape(-1, 3)[:N].long()[deep]
+                w_ = _w27(fx[deep])
+                fd = (w_.double() * fixn[_nid(pb_, nb1, nb2).clamp(0, nn - 1)]).sum(1)
+                rec.update(ndeep=int(deep.numel()), deep_fix_med=round(float(fd.median()), 3), deep_fix_min=round(float(fd.min()), 3))
         if dq is not None:
             rec.update(dsum=float((M * dl)[has].sum() / M[has].sum()), dmax=float(dl[has].abs().max()), dneg=float(dl[has].min()), dpos=float(dl[has].max()))
             cn = getattr(s, "e5cnt", None)
