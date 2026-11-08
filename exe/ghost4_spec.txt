@@ -119,3 +119,98 @@ s3 rL_T3_5 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
 s3 rL_T3_6 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
 s3 rL_T3_7 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
 s3 rL_T3_8 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
+# s4: 최종 후보 둘 -- P3X = 방식 3 (내부 칸-경계 칸 면) + 구속 노드 면 빼기 + 질량, P1X = 방식 1 (3x3x3 열림) + 구속 노드 면 빼기 + 질량 (γ̄ 1e-1).
+#     수박 8 · 레고·ficus·wolf·bread 4 + 대조 F 2 (수박 대조 4), 단독 a · b; 레고 원인 가르기 (F 대조 8 은 위 대조와 함께, 방식 1 예산 끔 4). s3 의 /tmp 꽉 참 실패 판 다시.
+s4 mP3X_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 mP3X_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 mP3X_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 mP3X_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 mP3X_5 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 mP3X_6 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 mP3X_7 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 mP3X_8 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rL_P3X_1 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rL_P3X_2 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rL_P3X_3 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rL_P3X_4 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rF_P3X_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rF_P3X_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rF_P3X_3 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rF_P3X_4 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rW_P3X_1 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rW_P3X_2 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rW_P3X_3 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rW_P3X_4 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rB_P3X_1 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rB_P3X_2 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rB_P3X_3 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rB_P3X_4 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rL_P3X_5 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rL_P3X_6 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rL_P3X_7 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 rL_P3X_8 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 mP1X_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 mP1X_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 mP1X_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 mP1X_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 mP1X_5 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 mP1X_6 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 mP1X_7 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 mP1X_8 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rL_P1X_1 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rL_P1X_2 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rL_P1X_3 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rL_P1X_4 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rF_P1X_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rF_P1X_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rF_P1X_3 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rF_P1X_4 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rW_P1X_1 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rW_P1X_2 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rW_P1X_3 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rW_P1X_4 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rB_P1X_1 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rB_P1X_2 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rB_P1X_3 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rB_P1X_4 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rL_P1X_5 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rL_P1X_6 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rL_P1X_7 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 rL_P1X_8 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 mF4_1 M3 g E @e3w 1 @e5r 2 @e5a 2
+s4 mF4_2 M3 g E @e3w 1 @e5r 2 @e5a 2
+s4 mF4_3 M3 g E @e3w 1 @e5r 2 @e5a 2
+s4 mF4_4 M3 g E @e3w 1 @e5r 2 @e5a 2
+s4 rF_F4_1 F nd E @e3w 1 @e5r 2 @e5a 2
+s4 rF_F4_2 F nd E @e3w 1 @e5r 2 @e5a 2
+s4 rW_F4_1 W nd E @e3w 1 @e5r 2 @e5a 2
+s4 rW_F4_2 W nd E @e3w 1 @e5r 2 @e5a 2
+s4 rB_F4_1 B nd E @e3w 1 @e5r 2 @e5a 2
+s4 rB_F4_2 B nd E @e3w 1 @e5r 2 @e5a 2
+s4 rL_F4_1 L nd E @e3w 1 @e5r 2 @e5a 2
+s4 rL_F4_2 L nd E @e3w 1 @e5r 2 @e5a 2
+s4 rL_F4_3 L nd E @e3w 1 @e5r 2 @e5a 2
+s4 rL_F4_4 L nd E @e3w 1 @e5r 2 @e5a 2
+s4 rL_F4_5 L nd E @e3w 1 @e5r 2 @e5a 2
+s4 rL_F4_6 L nd E @e3w 1 @e5r 2 @e5a 2
+s4 rL_F4_7 L nd E @e3w 1 @e5r 2 @e5a 2
+s4 rL_F4_8 L nd E @e3w 1 @e5r 2 @e5a 2
+s4 rL_NB4_1 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @tb 1000
+s4 rL_NB4_2 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @tb 1000
+s4 rL_NB4_3 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @tb 1000
+s4 rL_NB4_4 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @tb 1000
+s4 zmF4 M3 z E @e3w 1 @e5r 2 @e5a 2
+s4 zmP3X M3 z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 zmP1X M3 z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 zlF4 L z E @e3w 1 @e5r 2 @e5a 2
+s4 zlP3X L z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 zlP1X L z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 zfF4 F z E @e3w 1 @e5r 2 @e5a 2
+s4 zfP3X F z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 zfP1X F z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 zwF4 W z E @e3w 1 @e5r 2 @e5a 2
+s4 zwP3X W z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 zwP1X W z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s4 zbF4 B z E @e3w 1 @e5r 2 @e5a 2
+s4 zbP3X B z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4x 1
+s4 zbP1X B z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
