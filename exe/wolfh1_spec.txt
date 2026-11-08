@@ -57,3 +57,8 @@ s3 gNPT2_1 W nd F @h1n 1 --fl_pt --fl_bst 2 @g3 1e-1
 s3 gNPT2_2 W nd F @h1n 1 --fl_pt --fl_bst 2 @g3 1e-1
 s3 gNPT2_3 W nd F @h1n 1 --fl_pt --fl_bst 2 @g3 1e-1
 s3 gNPT2_4 W nd F @h1n 1 --fl_pt --fl_bst 2 @g3 1e-1
+# ---- s4 영상용 N 판 (--dump_F) + 단독 시간 a · b (F 대조, N)
+s4 vN_1 W nd F @h1n 1 --dump_F
+s4 zF W z F
+s4 zN W z F @h1n 1
+# ---- s5 영상 렌더 (exe/wolfh1_pre_s5.sh -> exe/stab_wolffix_vid.sh 절차 그대로: dF_1 = F, vN_1 = N)
