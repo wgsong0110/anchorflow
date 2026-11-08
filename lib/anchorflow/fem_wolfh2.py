@@ -12,7 +12,7 @@ s  (--w2s 1)  S (정의 변경, --fl_pt 위): 팔분 표본점 q 의 고착 몫 
      적분은 [−1.5, 1.5] 64 점 중점 규칙 (이산화; 받침 밖 (d_q − 1.5 δ ≥ 1.5 dx_정답) 이면 정확히 0 이라 건너뜀). 문턱·클램프 없음 (fminf(w, 1) 은 기존 PT 와 같은 반올림 막이).
      걸음 쪼개기 (ksplit frac < 1) 에서도 κ 는 프레임 값 (기존 --fl_pt 와 같은 한계).
 gk0 (--w2gk0 1)  진단 (기전 가르기): ghost penalty 강성 k = 0 (고스트 질량만 남김).
-gs  (--w2gs 1)   진단·후보: 면 36 노드 중 바닥 고착 몫 an > 0 인 노드가 있는 면을 뺌 (P1X 의 구속 노드 면 빼기 @g4x 와 같은 꼴; 걸음마다 rt_floor_n 뒤, 프레임 면 표지 위 멱등).
+gs  (--w2gs 1)   진단·후보: 면 36 노드 중 바닥 고착 몫 an > 0 인 노드가 있는 면을 뺌 (P1X 의 구속 노드 면 빼기 @g4x 와 같은 꼴; 걸음마다 rt_floor_n·mt_floor_n 뒤, 프레임 면 표지 위 멱등).
 """
 import atexit
 import json
@@ -128,7 +128,7 @@ def install(n=0, s=0, gk0=0, gs=0, cell=None, out="."):
 
             def k(s_, name, nn, args, b=128, _k=_k):
                 r = _k(s_, name, nn, args, b)
-                if name == "rt_floor_n" and getattr(s_, "g3fm", None) is not None:
+                if name in ("rt_floor_n", "mt_floor_n") and getattr(s_, "g3fm", None) is not None:      # 재질 판 (wolf 모래) 은 mt_floor_n
                     if getattr(s_, "w2cnt", None) is None:
                         s_.w2cnt = torch.zeros(2, device=s_.dev, dtype=torch.int32)
                         ST["sol"] = s_

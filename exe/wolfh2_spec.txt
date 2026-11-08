@@ -2,7 +2,8 @@
 # ---- s0k 연기 (각 무리의 첫 판; 새 코드 경로 컴파일·훅 확인): S · 강성 0 · 고착 노드 면 빼기
 s0k cS_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2s 1 --fl_pt
 s0k mM_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2gk0 1 @w2n 1 --fl_pt --fl_bst 2
-s0k mS_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2gs 1 @w2n 1 --fl_pt --fl_bst 2
+# (첫 시도 mS_1 은 훅 이름이 rt_floor_n 뿐이라 wolf (재질 판 mt_floor_n) 에서 면 빼기 0 -- 연기 실패, 판 설정은 gNPT2 와 같음; 커밋 e3baed1)
+s0k2 mG_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2gs 1 @w2n 1 --fl_pt --fl_bst 2
 # ---- s1 할 일 1 (G' 대조 2 · G'+N · G'+PT2 · G'+N+PT2 각 4) + 할 일 2 기전 (G'+N+PT2 에서 벌점만 바꿈, 각 2: 벌점 없음 · 강성만 · 질량만 · 고착 노드 면 빼기) + 할 일 3 후보 (S · S+N)
 s1 gC_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8
 s1 gC_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8
@@ -23,7 +24,7 @@ s1 mX_2 W nd F A3 @hc 5 @rr 1 @tc 8 @w2n 1 --fl_pt --fl_bst 2
 s1 mK_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @g4m 0 @w2n 1 --fl_pt --fl_bst 2
 s1 mK_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @g4m 0 @w2n 1 --fl_pt --fl_bst 2
 s1 mM_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2gk0 1 @w2n 1 --fl_pt --fl_bst 2
-s1 mS_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2gs 1 @w2n 1 --fl_pt --fl_bst 2
+s1 mG_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2gs 1 @w2n 1 --fl_pt --fl_bst 2
 s1 cS_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2s 1 --fl_pt
 s1 cS_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2s 1 --fl_pt
 s1 cS_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w2s 1 --fl_pt
