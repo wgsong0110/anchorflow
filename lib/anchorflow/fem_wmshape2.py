@@ -8,7 +8,8 @@
   [56] 이 커밋에서 logJp 가 0 을 넘은 가우스 점 수 · [57] 그 점들의 변형 증분 합 · [58] 등분 n > 1 인 점 수 · [59] Σ n · [60] 변형 증분 최대 (int 비트 최대).
   + 입자: 손상 입자·새 손상 입자의 탄성 J·전체 부피 비 J·Jp 분위, logJp 크기 구간 (0~0.01·0.01~0.1·0.1~0.4·> 0.4) 몫.
 후보 (a) --ws2_eps ε (> 0): 가우스 점마다 등분 수 n = clamp(⌈‖sym(∇U − ∇U0)‖ / ε⌉, 1, --rm_sub) (elem·commit 같은 식이라 같은 n; --rm_sub 가 상한).
-후보 (b) --ws2_fc 'N,C' : 첫 접촉 프레임 (프레임 끝 입자 최저 높이 < --ws2_fch 가 처음인 프레임) 을 되돌려 뉴턴·PCG 상한 N·C 로 다시 (그래프 따로),
+후보 (a2) --ws2_yc c (> 0): n = clamp(⌈(κ |tr Δε| + 2μ |dev Δε|) / (c · p0(logJp))⌉, 1, --rm_sub) -- 한 번의 RM 시험 응력 이동이 항복면 크기 p0 의 c 배를 넘지 않게 (소성 부분 걸음 표준 기준).
+후보 (b) --ws2_fc 'N,C' : 첫 접촉 프레임 (보통 풀이 뒤 입자 최저 높이 < --ws2_fch 이고 입자 에너지가 0.1 J 넘게 준 첫 프레임) 을 되돌려 뉴턴·PCG 상한 N·C 로 다시 (그래프 따로),
   그 결과 입자 에너지 (운동 + 중력 위치 + SNH 탄성) 가 프레임 시작보다 --ws2_fctol J 넘게 늘면 버리고 보통 결과를 받음 (에너지 생성 없음 조건).
 """
 import math
@@ -44,11 +45,20 @@ __device__ float w2_de(const float* A0, const float* A1) {
     for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float d = 0.5f*((A1[a*3+b] - A0[a*3+b]) + (A1[b*3+a] - A0[b*3+a])); e += d*d; }
     return sqrtf(e);
 }
-__device__ int w2_n(const float* A0, const float* A1, const float* prm) {
+__device__ int w2_n(const float* A0, const float* A1, const float* prm, float lj) {
     int n = (int)(prm[12] + 0.5f); if (n < 1) n = 1;
-#if AF_W2EPS_ON
-    float e = w2_de(A0, A1);
+#if AF_W2EPS_ON == 1
+    float e = w2_de(A0, A1);                                                      // (a1) 변형 증분 / ε
     int m = (int)ceilf(e / AF_W2EPS);
+    if (!(m >= 1)) m = 1;
+    if (m < n) n = m;
+#elif AF_W2EPS_ON == 2
+    float tr = (A1[0] - A0[0]) + (A1[4] - A0[4]) + (A1[8] - A0[8]), dv = 0.f;     // (a2) 시험 응력 증분 (κ |tr Δε| + 2μ |dev Δε|) / (c · 항복면 크기 p0(logJp))
+    for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float d = 0.5f*((A1[a*3+b] - A0[a*3+b]) + (A1[b*3+a] - A0[b*3+a])) - (a == b ? tr/3.f : 0.f); dv += d*d; }
+    float ds = prm[2]*fabsf(tr) + 2.f*prm[0]*sqrtf(dv);
+    float p0 = prm[2]*(0.00001f + sinhf(prm[6]*fmaxf(-lj, 0.f)));
+    float r = ds / (AF_W2EPS * p0);
+    int m = (r < 1e6f) ? (int)ceilf(r) : n;
     if (!(m >= 1)) m = 1;
     if (m < n) n = m;
 #endif
@@ -57,12 +67,12 @@ __device__ int w2_n(const float* A0, const float* A1, const float* prm) {
 __device__ __forceinline__ int w2_bin(float v, float lo) { int b = (int)floorf((log10f(fmaxf(v, 1e-30f)) - lo)*2.f); return b < 0 ? 0 : (b > 15 ? 15 : b); }
 """
 N_OLD = "    int n = (int)(prm[12] + 0.5f); if (n < 1) n = 1;\n"
-N_NEW = "    int n = w2_n(A0, A1, prm);                                                   // 절 CM41: 등분 수 (--ws2_eps 이면 변형 증분에서)\n"
+N_NEW = "    int n = w2_n(A0, A1, prm, lj);                                                   // 절 CM41: 등분 수 (--ws2_eps 이면 변형 증분에서)\n"
 RM_OLD = "        bool ch = (prm[15] > 0.5f) ? false : pl_rm(mat, se, prm, ys, lj, al, dt);\n        any = any || ch;\n"
 RM_DIAG = ("        int br_ = (mat == 7) ? w2_br(se, prm, lj) : 4; float lj0_ = lj;\n"
            "        bool ch = (prm[15] > 0.5f) ? false : pl_rm(mat, se, prm, ys, lj, al, dt);\n        any = any || ch;\n"
            "        if (AF_W2B && mat == 7) { float dl_ = lj - lj0_;                       // 절 CM41 진단: 갈래별 logJp 증분\n"
-           "            if (dl_ > 1e-7f || dl_ < -1e-7f) { atomicAdd(&AF_W2B[br_*4 + (dl_ > 0.f ? 0 : 1)], dl_); atomicAdd(&AF_W2B[br_*4 + 2], 1.f);\n"
+           "            if (isfinite(dl_) && (dl_ > 1e-7f || dl_ < -1e-7f)) { atomicAdd(&AF_W2B[br_*4 + (dl_ > 0.f ? 0 : 1)], dl_); atomicAdd(&AF_W2B[br_*4 + 2], 1.f);\n"
            "                if (lj0_ <= 0.f && lj > 0.f) atomicAdd(&AF_W2B[br_*4 + 3], 1.f);\n"
            "                if (dl_ > 0.f) atomicAdd(&AF_W2B[24 + w2_bin(dl_, -6.f)], 1.f); } }\n")
 SUB_HEAD = "__device__ bool rms_sub("
@@ -73,7 +83,7 @@ COMMIT_POST_OLD = "    Sq[(size_t)q*4] = ys; Sq[(size_t)q*4+1] = lj; Sq[(size_t)
 COMMIT_POST_NEW = ("    if (AF_W2B && mat == 7) { float lq0_ = Sq[(size_t)q*4+1];                      // 절 CM41 진단: 점별 변형 증분·0 넘음·등분 수\n"
                    "        float A0_[9] = {0,0,0,0,0,0,0,0,0};\n"
                    "        for (int o=0;o<27;o++) { const float* bg = BG + (oc*27+o)*3; int id = ids[o]; for (int a=0;a<3;a++) { float ua = AQ_U0[id*3+a]; A0_[a*3] += ua*bg[0]; A0_[a*3+1] += ua*bg[1]; A0_[a*3+2] += ua*bg[2]; } }\n"
-                   "        float de_ = w2_de(A0_, A); int nn_ = w2_n(A0_, A, prm);\n"
+                   "        float de_ = w2_de(A0_, A); int nn_ = w2_n(A0_, A, prm, lq0_);\n"
                    "        atomicAdd(&AF_W2B[40 + w2_bin(de_, -5.f)], 1.f);\n"
                    "        if (lq0_ <= 0.f && lj > 0.f) { atomicAdd(&AF_W2B[56], 1.f); atomicAdd(&AF_W2B[57], de_); }\n"
                    "        if (nn_ > 1) atomicAdd(&AF_W2B[58], 1.f); atomicAdd(&AF_W2B[59], (float)nn_);\n"
@@ -92,10 +102,10 @@ def _fn_body(r, head):
     return i, j
 
 
-def src_apply(r, diag, eps):
-    """r = fem_wmfrac.apply 결과 (rmsub 판). diag = 진단, eps = 후보 (a) 문턱 (0 = 끔)."""
+def src_apply(r, diag, eps, mode=1):
+    """r = fem_wmfrac.apply 결과 (rmsub 판). diag = 진단, eps = 후보 (a) 문턱 (0 = 끔), mode 1 = 변형 증분 / ε, 2 = 시험 응력 증분 / (ε p0)."""
     assert SUB_HEAD in r, "절 CM41 은 --rm_sub 판 위에만"
-    r = r.replace("extern \"C\" {", "extern \"C\" {" + DECL + "\n#define AF_W2EPS_ON %d\n#define AF_W2EPS %.9ef" % (1 if eps > 0 else 0, float(eps) if eps > 0 else 1.0), 1)
+    r = r.replace("extern \"C\" {", "extern \"C\" {" + DECL + "\n#define AF_W2EPS_ON %d\n#define AF_W2EPS %.9ef" % ((mode if eps > 0 else 0), float(eps) if eps > 0 else 1.0), 1)
     i, j = _fn_body(r, SUB_HEAD)
     fn = r[i:j]
     fn = _rep(fn, N_OLD, N_NEW)
@@ -111,14 +121,14 @@ def src_apply(r, diag, eps):
     return r[:k] + body + r[e:]
 
 
-CFG = dict(diag=0, eps=0.0, fc=None, fch=0.02, fctol=0.01, fcn=1)
+CFG = dict(diag=0, eps=0.0, yc=0.0, fc=None, fch=0.02, fctol=0.01, fcn=1, fcde=0.1)
 
 
 def install(a):
     """소스·alloc·bind·_rs 감싸기 (S 만들기 전에)."""
     from . import fem_ao_rt as AORT
     from . import fem_wmfrac as WF
-    CFG.update(diag=int(a.ws2), eps=float(a.ws2_eps), fch=float(a.ws2_fch), fctol=float(a.ws2_fctol), fcn=int(a.ws2_fcn))
+    CFG.update(diag=int(a.ws2), eps=float(a.ws2_eps), yc=float(a.ws2_yc), fch=float(a.ws2_fch), fctol=float(a.ws2_fctol), fcn=int(a.ws2_fcn))
     if a.ws2_fc:
         CFG["fc"] = tuple(int(q) for q in a.ws2_fc.split(","))
     if getattr(AORT, "_ws2", False):
@@ -129,7 +139,7 @@ def install(a):
     def apply(r, wf):
         r = o_apply(r, wf)
         if int(wf.get("rmsub", 0)) > 0:
-            r = src_apply(r, CFG["diag"], CFG["eps"])
+            r = src_apply(r, CFG["diag"], CFG["eps"] or CFG["yc"], 2 if CFG["yc"] > 0 else 1)
         return r
     WF.apply = apply
     o_alloc = AORT.AORTSolver.alloc
@@ -199,11 +209,11 @@ def _fc_wrap(orig):
         bk = s._bk()
         E0 = energy(s)
         r = orig(s, t, h, sub_dt, depth, fn)
-        if not (ST["seen"] or hmin(s) < CFG["fch"]):
+        Ea = energy(s)
+        if not (ST["seen"] or (hmin(s) < CFG["fch"] and E0[0] - Ea[0] > CFG["fcde"])):   # 첫 접촉 = 바닥 가까이 + 보통 풀이가 에너지를 지운 첫 프레임
             return r
         ST["seen"] = True
         ms0 = float(s.last_ms)
-        Ea = energy(s)
         bka = s._bk()
         s._rs(bk)
         base = (s.nt, s.cg, s.graphs, s.graph)

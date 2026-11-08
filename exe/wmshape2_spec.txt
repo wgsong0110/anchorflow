@@ -30,3 +30,27 @@ s1 N32_1 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_k
 s1 N32_2 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 32
 s1 N32_3 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 32
 s1 N32_4 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 32
+# s2 (s1 뒤): C2 의 손상 과다 = 등분 n ≥ 2 면 모두 (N2 25.6 · N4 33 · N8 37 · N16 31 · N32 33 %, N1 3.8 %), 첫 접촉 뒤 f10~50 에 작은 부풂 (J·Jp 1.05~1.2) 으로 logJp 가 0 을 넘는 입자가 늘어남 (정답은 f6 뒤 손상 그대로)
+#   후보: Y1·Y4 = C2 + 등분 수를 시험 응력 증분 / 항복면 크기에서 (--ws2_yc 1·0.25) · B = C2 + 첫 접촉 두 프레임 뉴턴·PCG 20 + 에너지 조건 (--ws2_fc 20,20 --ws2_fcn 2) · PL = C2 + 입자 logJp 증분 보간 (--wsh_pl 1, 매 프레임 평균·보간이 손상을 이웃으로 번지게 하는 것 막기)
+s2 Y1_1 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_yc 1
+s2 Y1_2 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_yc 1
+s2 Y1_3 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_yc 1
+s2 Y1_4 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_yc 1
+s2 Y4_1 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_yc 0.25
+s2 Y4_2 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_yc 0.25
+s2 Y4_3 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_yc 0.25
+s2 Y4_4 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_yc 0.25
+s2 B_1 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2
+s2 B_2 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2
+s2 B_3 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2
+s2 B_4 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2
+s2 PL_1 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --wsh_pl 1
+s2 PL_2 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --wsh_pl 1
+s2 PL_3 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --wsh_pl 1
+s2 PL_4 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --wsh_pl 1
+s2 zN1 M3 z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 1
+s2 zN16 M3 z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 
+s2 zY1 M3 z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_yc 1
+s2 zY4 M3 z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_yc 0.25
+s2 zB M3 z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2
+s2 zPL M3 z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --wsh_pl 1

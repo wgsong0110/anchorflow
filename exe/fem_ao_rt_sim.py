@@ -159,6 +159,7 @@ ap.add_argument("--wsh_sv", default="", help="절 CM40 진단: 이 프레임들 
 ap.add_argument("--wsh_pl", type=int, default=0, help="절 CM40 후보: 1 = 입자 logJp = 프레임 시작 값 + 가우스 점 증분 보간 (--fp_interp 위; 0 이면 모듈 안 부름)")
 ap.add_argument("--ws2", type=int, default=0, help="절 CM41 진단 (결과 불변, lib/anchorflow/fem_wmshape2.py, --rm_sub 위): 커밋 RM 갈래별 logJp 증분·변형 증분 막대 -> fem.jsonl ws2")
 ap.add_argument("--ws2_eps", type=float, default=0.0, help="절 CM41 후보 (a): 가우스 점 등분 수 = clamp(ceil(|sym(grad U - grad U0)| / 이 값), 1, --rm_sub) (0 = 끔)")
+ap.add_argument("--ws2_yc", type=float, default=0.0, help="절 CM41 후보 (a2): 등분 수 = clamp(ceil((κ|tr Δε| + 2μ|dev Δε|) / (이 값 · p0(logJp))), 1, --rm_sub) (0 = 끔)")
 ap.add_argument("--ws2_fc", default="", help="절 CM41 후보 (b): 'N,C' 첫 접촉 프레임만 뉴턴·PCG 상한 N·C 로 다시, 에너지가 늘면 버림 (--wrx_col 위)")
 ap.add_argument("--ws2_fch", type=float, default=0.02, help="절 CM41 (b): 첫 접촉 = 프레임 끝 입자 최저 높이 < 이 값 (m) 이 처음인 프레임")
 ap.add_argument("--ws2_fctol", type=float, default=0.01, help="절 CM41 (b): 받는 조건 E 끝 <= E 시작 + 이 값 (J)")
@@ -174,7 +175,7 @@ if a.wsh_pl:                                                                    
     from anchorflow import fem_wmshape as WSHM
     WSHM.install_pl()
 WS2 = None
-if a.ws2 or a.ws2_eps > 0 or a.ws2_fc:                                          # 절 CM41 (소스·alloc 감싸기, 끄면 안 부름)
+if a.ws2 or a.ws2_eps > 0 or a.ws2_yc > 0 or a.ws2_fc:                                          # 절 CM41 (소스·alloc 감싸기, 끄면 안 부름)
     assert a.rm_sub > 0 and (not a.ws2_fc or (a.wrx and a.wrx_col)), "절 CM41 은 --rm_sub 위 (후보 b 는 --wrx_col 위)"
     from anchorflow import fem_wmshape2 as WS2
     WS2.install(a)
