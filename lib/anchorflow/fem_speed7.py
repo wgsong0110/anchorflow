@@ -183,7 +183,7 @@ __global__ void s7_bmin(const int* IP, const float* U, const float* ya, const fl
     float ta = (u0 + thinv*(ya[n*3] - u0))*n0 + (u1 + thinv*(ya[n*3+1] - u1))*n1 + (u2 + thinv*(ya[n*3+2] - u2))*n2;
     float t = ta; bool ok = isfinite(ta);
     if (yb) { float tb = (u0 + thinv*(yb[n*3] - u0))*n0 + (u1 + thinv*(yb[n*3+1] - u1))*n1 + (u2 + thinv*(yb[n*3+2] - u2))*n2; ok = ok && isfinite(tb); t = fminf(t, tb); }
-    if (!ok) t = -INFINITY;
+    if (!ok) t = __int_as_float(0xff800000);
     int b = ((i >> 2)*((nb1 + 3) >> 2) + (j >> 2))*((nb2 + 3) >> 2) + (k >> 2);
     atomicMin(&S7B[b], s7key(t));
 }
