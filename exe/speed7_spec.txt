@@ -1,0 +1,18 @@
+# 절 CM72 묶음 speed7 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_speed7.sh)
+# Gp = 공통 후보 G' = F (E + W̄ @e3w 1 + R2 @e5r 2 + A2 @e5a 2) + P1X (@g4 1e-1 @g4t 1 @g4x 1) + A3 (@s4w 1 @s4y 1 @s4x 2) + H5 (@hc 5) + Rf (@tc 8), 렌더 포함 (@rr 1: PG 갱신 1 · 수박 갱신 2).
+# Gpp = G'' = Gp + 절 CM67 (2) @mf2 1 · Hc = 공통 후보 H = Gpp + O (@s6o 1) + L (@s6l 1) + B (@s6b 1) + Rw (@s6rw 1) (절 CM65), 실행기 사본 exe/s6/.
+# @s7kp a,b = 프레임 a~b−1 커널 프로파일 (CUDA 활동만) · @s7nm 1 = mfix 프레임 진단 끔 (결과 불변) · --cap_mul M = 새 실행기 첫 할당 배수 (기본 2; 결정적 판 결과 불변, 넘침 다시 할당·다시 캡처만 줄어듦)
+# 방식: z = 단독 (계산 프로세스 0 인 카드 하나에 a · b 차례로) · q = 단독 a 만 · h = 결정적 끝 해시 (--det --fhash, 예산 @tb 1000 = 안 걸림; 짝 0 / 1) · g = 수박 비결정 + 진단
+# s0k 연기 (8 프레임)
+s0k kM M3 q Hc @s7kp 3,6 @s7nm 1 --frames 8
+s0k kB B q Hc @s7nm 1 --cap_mul 3 --frames 8
+# s1 수박 H 커널 프로파일 (프레임 3~99) + H 단독 (mfix 진단 켬 / 끔) + bread 첫 할당 배수 3 (f124 다시 캡처 미리) + 해시
+s1 pHM M3 q Hc @s7kp 3,100 @s7nm 1
+s1 zHM M3 z Hc
+s1 zNM M3 z Hc @s7nm 1
+s1 zHB B z Hc @s7nm 1
+s1 zCB B z Hc @s7nm 1 --cap_mul 3
+s1 hB0 B h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1 @mf2 1
+s1 hB1 B h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1 @mf2 1 --cap_mul 3
+s1 hL0 L h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1 @mf2 1
+s1 hL1 L h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1 @mf2 1 @s7nm 1
