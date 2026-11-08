@@ -34,19 +34,20 @@ F_b|F|E @e3w 1 @e5r 2 @e5a 2
 G_a|G|E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
 G_b|G|E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1"
 run() { local n=$1 x="$2" g=$3 Od=$O/$1 c
-  [ -f $Od/summary.json ] && return
+  [ "$(cat $Od/rc.txt 2>/dev/null)" = 0 ] && [ -s $Od/pred.pt ] && return                    # 끝난 판 (rc 0 + 덤프) 은 다시 안 돌림
   rm -rf $Od; mkdir -p $Od
   c="$(cmd_of $Od " $x ")"; echo "AF_E2_DG=1 AF_E5_DG=1 AF_E1_DG=1 AF_G1_DG=1 $PY -u $c" > $Od/cmd.txt
   nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader > $Od/apps_at_start.txt 2>&1
   log "$n 카드 $g 시작"
   env AF_E2_DG=1 AF_E5_DG=1 AF_E1_DG=1 AF_G1_DG=1 CUDA_VISIBLE_DEVICES=$g timeout 7200 $PY -u $c < /dev/null > $Od/log.txt 2>&1
-  log "$n rc=$? $(grep -ah '롤아웃\]' $Od/log.txt | tail -1 | cut -c1-200) $(grep -a 'rror' $Od/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
+  local rc=$?; echo $rc > $Od/rc.txt
+  log "$n rc=$rc 덤프 $(ls -la $Od/pred.pt 2>&1 | awk '{print $5}') $(grep -ah '롤아웃\]' $Od/log.txt | tail -1 | cut -c1-200) $(grep -a 'rror' $Od/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
   rclone copy $Od $RO/$n -q --transfers 8 --exclude pred.pt; }
 while IFS='|' read -r n v x; do
   ( me=$BASHPID; g=$(claim_wait $me); run $n "$x" $g; rm -f $CL/$g ) & sleep 5
 done <<< "$RUNS"
 wait
-log "판 끝"
+log "판 끝 (남은 자리 $(df -h --output=avail $O | tail -1))"
 # 판별 이탈 최대 수·거리 -> 고른 판
 $PY - $O <<'PYX' > $O/pick.json 2> $O/pick.err
 import json, os, sys
@@ -83,12 +84,13 @@ torch.save({"pred": P.contiguous(), "F": F.contiguous()}, sys.argv[2]); print("�
 PYX
   $PY -u exe/lb_roll_to_h5.py --dump $Od/pred_v.pt --traj $GTM --out $Od/h5_fem > $V/h5.log 2>&1; rm -f $Od/pred_v.pt
   (cd $W/GaussianFluent && CUDA_VISIBLE_DEVICES=$g $PY -u $CD/exe/wm_render.py --model_path $WMM --config $CFG --sim $Od/h5_fem --out $V/plain.mp4 < /dev/null > $V/r_plain.log 2>&1)
-  log "[렌더] $n plain $(ls -la $V/plain.mp4 2>&1 | awk '{print $5}') $(tail -1 $V/r_plain.log | cut -c1-160)"
+  log "[렌더] $n plain $(ls -la $V/plain.mp4 2>&1 | awk '{print $5}') $(tail -1 $V/r_plain.log | cut -c1-160) $(tail -1 $V/h5.log | cut -c1-120)"
+  rm -rf $Od/h5_fem                                                                        # 렌더용 변환본 (pred.pt 에서 다시 만들 수 있음) -- 자리 때문에 지움
   rclone copy $V $RO/$n/vj -q --transfers 8; }
 for v in E F G; do
   n=$($PY -c "import json; print(json.load(open('$O/pick.json'))['$v']['pick'] or '')")
   [ -n "$n" ] || { log "$v 고른 판 없음"; continue; }
-  ( me=$BASHPID; g=$(claim_wait $me); rend $n $g; rm -f $CL/$g ) & sleep 3
+  ( me=$BASHPID; g=$(claim_wait $me); rend $n $g; rm -f $CL/$g )                          # 차례로 (변환본 자리)
 done
 # 점 그림용 위치 (CPU; 정답 + 판 6 개 모두)
 CELL=$(grep -aom1 "셀 [0-9.]* m" $O/E_a/log.txt | awk '{print $2}'); [ -n "$CELL" ] || CELL=0.02
