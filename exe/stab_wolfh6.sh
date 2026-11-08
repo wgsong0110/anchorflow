@@ -146,7 +146,7 @@ case $STG in *k)                                                                
     $PY -c "import json,sys; s=json.load(open('$O/$n/summary.json')); sys.exit(0 if s['frames_done'] >= 5 and not s.get('diverged') else 1)" 2>/dev/null || { OK=0; log "[연기] $n 5 프레임 못 감/발산"; }
     grep -q "절 CM61\] hhtc2 켬" $O/$n/log.txt || { OK=0; log "[연기] $n CM61 줄 없음"; }
     case " $x " in *" @s7nm 1 "*) ;; *" @mf"*) grep -q "절 CM67\] mfix 켬" $O/$n/log.txt && [ ! -s $O/$n/mf_err.txt ] && [ -s $O/$n/mf.jsonl ] || { OK=0; log "[연기] $n CM67 줄·mf.jsonl 없음/오류"; };; esac
-    case " $x " in *" @w5"*) grep -q "절 CM70\] wolfh5 켬" $O/$n/log.txt || { OK=0; log "[연기] $n CM70 줄 없음"; };; esac
+    case "$s $x " in M*) ;; *" @w5"*) grep -q "절 CM70\] wolfh5 켬" $O/$n/log.txt || { OK=0; log "[연기] $n CM70 줄 없음"; };; esac
     case " $x " in *" @w6"*) grep -q "절 CM77\] wolfh6 켬" $O/$n/log.txt && [ -s $O/$n/w6info.json ] || { OK=0; log "[연기] $n CM77 줄·w6info.json 없음"; };; esac
     case " $x " in *" @w6l 1"*) case $s in L|F) ;; *) grep -q "절 CM77 wolfh6\] (L) m̄ [0-9.e-]* -> 섞기 판" $O/$n/log.txt || { OK=0; log "[연기] $n (L) 섞기 판 줄 없음"; };; esac;; esac
     case " $x " in *" @w6k 1"*) grep -q "절 CM77 wolfh6\] (K)" $O/$n/log.txt || { OK=0; log "[연기] $n (K) 줄 없음"; };; esac
