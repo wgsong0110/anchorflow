@@ -1,0 +1,23 @@
+# 절 CM77 묶음 wolfh6 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_wolfh6.sh; 낱말 H4n·Gpp·Gp·F·P1X·A3 는 stab 의 dfl 이 펼침)
+# H4n = 공통 후보 H4 의 결과 판 (H3 = Gpp + O·B·Rw '@s6o 1 @s6b 1 @s6rw 1' + A '@s7nm 1 @s7z 1 @s7p 1' + W '@s8w 1' + X3g '@s8g 1e6' (+ 새 실행기 --cap_mul 4), 가벼움 벌점 × κ '@l4 1 @l3 10 @l3sc 1 @l3fr 1'),
+#   다만 가벼운 판 L ('@s6l 1', 결과 불변 -- 실행기 사본 + 진단 끔) 은 진단 (이탈 E1·덤프·hc) 을 쓰려고 판정 판에서 뺌; 단독 z 판만 '@s6l 1' 을 붙임.
+# SC = 절 CM70 S_구속 + C '@w5s 1 @w5c 1'. (K) = '@w6k 1' P1X 강성 × κ (wolf κ 0 -> 강성 0, 나머지 κ 1). (L) = '@w6l 1' 가벼운 자유 노드 HHT·후퇴 오일러 섞기 l = m̄/(m+m̄).
+# s0k 연기 (8 프레임): wolf · 수박 (옛 실행기 섞기 판 컴파일) · bread · 레고 (m̄ 0 -> 원래 커널) + wolf 가벼운 판 단독 a (사슬 확인)
+s0k kBW W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1 --frames 8
+s0k kBM M3 g H4n @w6k 1 @w6l 1 @w5s 1 @w5c 1 @l3dg 1 --frames 8
+s0k kBB B nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1 --frames 8
+s0k kBL L nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1 --frames 8
+s0k zkBW W z H4n @s6l 1 @w5s 1 @w5c 1 @w6k 1 @w6l 1 --frames 8
+# s1 wolf: H4 대조 4 판 · H4 + SC + (K) 4 판 · H4 + SC + (K) + (L) 4 판 (각 _1 은 영상용 --dump_F)
+s1 H4_1 W nd H4n --dump_F
+s1 H4_2 W nd H4n
+s1 H4_3 W nd H4n
+s1 H4_4 W nd H4n
+s1 SCK_1 W nd H4n @w5s 1 @w5c 1 @w6k 1 --dump_F
+s1 SCK_2 W nd H4n @w5s 1 @w5c 1 @w6k 1
+s1 SCK_3 W nd H4n @w5s 1 @w5c 1 @w6k 1
+s1 SCK_4 W nd H4n @w5s 1 @w5c 1 @w6k 1
+s1 SCKL_1 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1 --dump_F
+s1 SCKL_2 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1
+s1 SCKL_3 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1
+s1 SCKL_4 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1
