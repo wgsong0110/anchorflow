@@ -1,0 +1,15 @@
+# 절 CM55 묶음 ghost5 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_ghost5.sh)
+# F = 공통 후보 F = E + W̄ (@e3w 1) + R2 (@e5r 2) + A2 (@e5a 2) (절 CM49); 수박 M3 은 + @inv 1 + --sp2 31 (셀 3), 바탕 --gq_mass.
+# @g4 g·@g4m·@g4t·@g4x = 절 CM53 그대로 (γ̄, 고스트 질량, 면 한정 방식, 구속 노드 면 빼기). @g5w 방식 = 면 가중 (절 CM55: 0 없음 · 1 φ_max(1−φ_min) · 2 Frei 외 2024 Σ½w_max^{1−2κ} · 3 1−½(φa+φb) · 4 φ_max), @g5wmax = 방식 2 의 w_max.
+# @g4fd = 검사 프레임 (면 집합·φ·가중·값 대 torch), @g4dump = 칸 덤프 프레임 (φ·칸 밀도·가중·네 방식 표지·입자 logJp·속도), @g5ed = 헤시안 몫 진단 프레임.
+# s0k 연기 + 진단: 가중 방식 1·2 검사 (다섯 씬), 결정적 해시 (γ̄ 0 + 가중), 수박 (b) 칸 덤프 + 헤시안 몫, ficus 방식 0 + 구속 빼기 헤시안 몫 + 덤프
+s0k kM1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 1 @g4fd 4,8 --frames 10
+s0k kL1 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 1 @g4fd 1,5 --frames 8
+s0k kW1 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 1 @g4fd 1,5 --frames 8
+s0k kB1 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 1 @g4fd 1,5 --frames 8
+s0k kF1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g5w 1 @g4fd 1,5 @g5ed 5 --frames 8
+s0k kM2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 2 @g4fd 4 --frames 8
+s0k kF2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g5w 2 @g4fd 1,5 --frames 8
+s0k dL0w L d E @tb 1000 @g4 0 @g4t 0 @g5w 1
+s0k dM_b M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4dump 5,8,10,12,14,16,20,30,50,100 @g5ed 5,10,14,20,50
+s0k dF_0x F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g4dump 60 @g5ed 15,30,45,60,90,120
