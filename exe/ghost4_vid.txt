@@ -1,0 +1,5 @@
+# 절 CM53 영상 판 (덤프 판으로 다시 돌림; 정답 칸은 R2 lbours/fem_cm/wmJd/gt_lj.mp4·gt_new_plain.mp4): F (공통 후보 F) · F + 벌점 P1X (γ̄ 1e-1, 방식 1 + 구속 노드 면 빼기 + 질량); 비결정이라 두 번 (완주한 쪽을 씀)
+F_a run E @e3w 1 @e5r 2 @e5a 2
+F_b run E @e3w 1 @e5r 2 @e5a 2
+P1X_a run E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+P1X_b run E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
