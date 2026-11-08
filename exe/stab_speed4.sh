@@ -112,9 +112,10 @@ R=[r for q in L for r in q.get('x2c',[]) if r['kind']=='같은 시도']
 bad=[]
 for r in R:
     for k,v in r.items():
-        if k in ('kind','coll','IP','bx','bx_snap'): continue
+        if k in ('kind','coll','IP','bx','bx_snap','y_snap','dq_snap'): continue
         if (isinstance(v,list) and (v[0]!=0 or v[3]!=0)) or (isinstance(v,int) and v!=0): bad.append((k,v))
-    if r.get('bx_snap') is None or r['bx_snap'][0]!=0: bad.append(('bx_snap',r.get('bx_snap')))
+    for k in ('bx_snap','y_snap','dq_snap'):
+        if r.get(k) is None or r[k][0]!=0: bad.append((k,r.get(k)))
 print('x2c 같은 시도', len(R), '어긋남', bad[:5])
 sys.exit(0 if R and not bad else 1)" >> $O/speed4_$STG.log 2>&1 || { OK=0; log "[연기] $nn X2 확인 실패"; };; esac
     case " $x " in *" @s4y 2"*) $PY -c "import json,sys; L=[json.loads(l) for l in open('$O/$nn/s4.jsonl')]; b=sum(q['yl4']['bad'] for q in L); r=sum(q['yl4']['chk'] for q in L); print('yl4 bad', b, 'chk', r); sys.exit(0 if b == 0 and r > 0 else 1)" >> $O/speed4_$STG.log 2>&1 || { OK=0; log "[연기] $nn S2 확인 실패"; };; esac

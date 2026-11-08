@@ -103,7 +103,7 @@ for d in dirs:
             for k, v in tq["cat"].items():
                 tot[k] = tot.get(k, 0.0) + v
             its.append(tq.get("it", {}))
-        kind = "다시 함" if len(tr) > 1 else "보통"
+        kind = "다시 함" if len((fl.get("ks") or {}).get("tries", [])) > 1 else "보통"
         if t >= 2:
             agg[kind].append(tot)
         ms = fl.get("ms")
@@ -162,11 +162,11 @@ for d in dirs:
     n = os.path.basename(d)
     same = [r for r in R if r["kind"] == "같은 시도"]
     redo = [r for r in R if r["kind"] == "다시"]
-    keys = [k for k in (same or redo)[0] if k not in ("kind", "coll", "IP", "bx_snap")]
+    keys = [k for k in (same or redo)[0] if k not in ("kind", "coll", "IP", "bx_snap", "y_snap", "dq_snap")]
     print(f"\n## X2 확인 {n}: (가) 같은 첫 시도의 걸음 시작 앞 대 uf_end 뒤 (비트 같아야, bx 는 걸음 안에서 옮겨짐 -> 사본이 걸음 시작 앞 값과 같은지 bx_snap) {len(same)} 프레임 · (나) X3c 로 프레임 처음부터 다시 한 시도의 걸음 시작 앞 대 첫 시도 값 (P2G 원자 합 순서만 다름) {len(redo)} 프레임\n")
     print("| 배열 | (가) 최대 |차| | (가) 다른 원소 프레임 수 | (나) 최대 |차| | (나) 최대 상대 차 |")
     print("|---|---|---|---|---|")
-    for k in keys + ["bx_snap"]:
+    for k in keys + ["bx_snap", "y_snap", "dq_snap"]:
         a = [r.get(k) for r in same if r.get(k) is not None]
         b = [r.get(k) for r in redo if r.get(k) is not None]
         fa = lambda v: v[0] if isinstance(v, list) else v

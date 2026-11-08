@@ -290,12 +290,15 @@ def ws4_counts(s):
 #   은 입자·노드 상태만 바꿈 -> 되돌리는 시도에서는 버려짐.
 # X1 (--s4x 1): K 1 그래프를 uf_end 뒤에서 한 번 더 나누고 ('x' 구간), 재생 때 '버려질 시도' 이면 그 경계에서 호스트가 넘침 (IP[13]) 0 · nfail > 0 을 읽어
 #   나머지 구간 (꼬리) 을 안 띄움. 판정·되돌림·다음 시도는 그대로 (같은 ufl·ufg 를 split_step 이 다시 읽음). 시간 예산 기록 tb_end 도 꼬리라 그 시도는 C_tail 표본을 안 냄.
-# X2 (--s4x 2, X1 포함): X3c 다시 하기 (켠 채 K 1) 를 프레임 처음 (P2G) 부터가 아니라 걸음 시작 ('s' 구간, ao_step0_ga 앞) 부터 같은 재생 안에서.
-#   근거: 걸음 시작 ~ uf_end 커널은 P2G 단계 산물 (U·vk·gaA·mn·mqn·Fq·Vq·mq·Sq·W̄ 재료·칸 표) 을 읽기만 하고 (aq_elem·en_phi_q 는 Fq·Sq const, U·vk·gaA 는 꼬리
-#   ao_stepend·aq_commit 만 씀 -- X1 로 꼬리를 안 띄움), 걸음 안에서 쓰는 노드 상태 (Ut·z0·y·yh·η·sk·pm·an·...) 는 ao_step0_ga·ao_floor_n 등이 모든 노드에 새로 씀.
-#   예외 = 표본점 버퍼 AF_BX (s.bx): R2·A2 (e5_sh, rt_bar_q mode 0) 가 걸음 시작에 제자리로 옮김 -> 's' 앞에서 사본 (그래프 안 복사), 다시 할 때 되돌림.
-#   프레임 시작에 0 으로 채우는 진단 셈 (cnt·qb·awst) 과 제어 (CT, AF_SKIP = rt_ctl op 0 과 같게) 도 되돌림. P2G 결과는 첫 시도 것 그대로 (원자 합 순서 한 판).
+# X2 (--s4x 2, X1 포함): X3c 다시 하기 (켠 채 K 1) 를 프레임 처음 (P2G) 부터가 아니라 바닥 노드 커널 ao_floor_n ('s' 구간) 부터 같은 재생 안에서.
+#   AF_WRXON 을 읽는 첫 커널이 ao_floor_n (절 CM38 후보 = 그 커널 몸통만 바꿈) 이고 그 앞 (P2G·가우스 점·노드 속도·ao_step0_ga·W̄ 모으기·R2 기준 옮김·띠 고착 an) 은
+#   켬·끔과 무관. 그 뒤 커널은 앞 산물 (U·vk·gaA·mn·mqn·Fq·Vq·mq·Sq·Ut·z0·an·W̄) 을 읽기만 하고 (aq_elem·en_phi_q 는 Fq·Sq const, U·vk·gaA·Fq·Sq 는 꼬리 ao_stepend·
+#   aq_commit 만 씀 -- X1 로 꼬리를 안 띄움), 걸음 안 노드 상태 (yh·η·sk·pm·...) 는 ao_floor_n 등이 모든 노드에 새로 씀 (확인 판 --s4x 3: 같은 시도 's' 앞 대 uf_end 뒤 비트 같음).
+#   예외 = ao_floor_n 이 읽고 다시 쓰는 y (ao_step0_ga 의 관성 예측), A2 가 걸음 시작 판정에서 옮기는 표본점 버퍼 AF_BX (s.bx) 와 δ (E5_DQ) -> 's' 앞에서 사본 (그래프 안
+#   복사), 다시 할 때 되돌림. 프레임 시작에 0 으로 채우는 진단 셈 (cnt·qb·awst) 과 제어 (CT, AF_SKIP = rt_ctl op 0 과 같게) 도 되돌림.
+#   P2G 산물은 첫 시도 것 그대로 (원래 다시 하기도 P2G 를 다시 해 원자 합 순서만큼 다른 값 -- 확인 판 상대 차 ≤ 2e-6).
 #   켠 채 K 1 도 무너지면 (depth > 0) 그 시도 꼬리도 X1 로 건너뛰고 K 2 부터는 split_step 과 같은 쪼개기 (입자 되돌림·프레임 처음부터).
+#   경계 읽기는 'x' 에서 한 번 (넘침·무너짐을 장치에서 모아 한 번 복사).
 # X3e4 (--s4e T, 결과 바뀜 -- 절 CM39.5 X3e 정의를 W̄·R2·A2 위로): X2 위에서 첫 시도 반복 0 시작 잔차 (ctl op 3 뒤, 'r' 경계) ‖g‖²/F² 가 T 를 넘거나 비유한이면
 #   바로 켜고 (AF_WRXON 1) 걸음 시작 ('s') 부터 다시 (X2 와 같은 되돌림 + 예산 시계 TB_RUN 0 -- 앞 반복 0 시간이 C_it 에 안 섞이게). 놓친 무너짐은 X2 경로.
 #   X3e 로 켠 시도가 끝에서 무너지면 같은 켬 K 1 을 되풀이하지 않고 K 2 쪼개기로.
@@ -308,20 +311,24 @@ class X1:
     x3e = 0
 
 
-def _e3sk(s, v):
-    import cupy as cp
-    try:
-        g = s.mod.get_global("X4_E3SK")
-    except Exception:
-        return
-    cp.ndarray((1,), dtype=cp.int32, memptr=g)[0] = int(v)
+def _x_read(s):
+    """'x' 경계 한 번 읽기: (넘침 IP[13], C3.nfail(K 1) > 0) -- nfail 과 같은 식을 장치에서."""
+    from . import fem_common3 as C3
+    T = float(getattr(s, "ksbig", 0.0) or 0.0)
+    fl, g2 = s.ufl[:1], s.ufg[:1]
+    c = ((fl > 0) & ~(g2 <= T)).int() if T > 0 else fl.int()
+    ov, cc = torch.cat((s.IP[13:14].int(), c)).tolist()
+    s._x4coll = cc > 0
+    return ov, cc
 
 
 def _restore(s):
     import cupy as cp
     torch.cuda.synchronize()
-    _e3sk(s, 1)
     s.bx.copy_(s._x2bx)
+    s.y.copy_(s._x2y)
+    if getattr(s, "_x2dq", None) is not None:
+        s.e5DQ.copy_(s._x2dq)
     s.cnt.zero_()
     if getattr(s, "aq", False):
         s.qb.zero_()
@@ -364,6 +371,10 @@ def _x2c_snap(s, first):
         else:
             m = n_
         o[nm] = t[:m].clone()
+    if not first:                                                                      # 's' 앞 사본 대조용 (걸음 안에서 바뀌는 배열 -- 일반 비교에서 뺌)
+        o["_y"] = s.y.reshape(-1)[:nn * 3].clone()
+        if getattr(s, "e5DQ", None) is not None:
+            o["_dq"] = s.e5DQ.reshape(-1)[:nq].clone()
     return o
 
 
@@ -409,13 +420,20 @@ def x1_install(level=1, x3e=0.0):
         elif X1.level >= 2 and getattr(s, "wbar", None) is not None:                 # 데움 (캡처 밖): 사본 버퍼를 지금 용량으로
             if getattr(s, "_x2bx", None) is None or s._x2bx.numel() != s.bx.numel():
                 s._x2bx = torch.empty_like(s.bx)
+            if getattr(s, "_x2y", None) is None or s._x2y.numel() != s.y.numel():
+                s._x2y = torch.empty_like(s.y)
+            dq = getattr(s, "e5DQ", None)
+            if dq is not None and (getattr(s, "_x2dq", None) is None or s._x2dq.numel() != dq.numel()):
+                s._x2dq = torch.empty_like(dq)
         return o_rec(s, t_frame, K)
 
     def k(s, name, n, args, b=128):
-        if X1.level >= 2 and name == "ao_step0_ga":
+        if X1.level >= 2 and name == "ao_floor_n":
             s._x1ks = int(getattr(s, "_x1ks", -1)) + 1
             if s._x1ks == 0 and getattr(s, "_x1K", 0) == 1 and getattr(s, "wbar", None) is not None:
-                s._x2bx.copy_(s.bx)                                                    # 걸음 시작 앞 표본점 버퍼 사본 (그래프 안)
+                s._x2bx.copy_(s.bx); s._x2y.copy_(s.y)                                 # 바닥 노드 커널 앞 사본 (그래프 안): 표본점 버퍼 (R2 옮긴 뒤) · 관성 시작점 y · A2 δ
+                if getattr(s, "_x2dq", None) is not None:
+                    s._x2dq.copy_(s.e5DQ)
                 if getattr(s, "_c3cap", None) is not None:
                     C3.mark(s, "s")
         r = o_k(s, name, n, args, b)
@@ -460,9 +478,9 @@ def x1_install(level=1, x3e=0.0):
         while i < len(self.segs):
             cond, g = self.segs[i]
             kd = self.k4[i]
-            if kd == "r" and st is not None and X1.T > 0 and not st["jump"] and st["won"] == 0 and si is not None and int(s.IP[13]) == 0:
-                g2, F2 = float(s.SC[1]), float(s.CD[2])
-                if not (g2 <= X1.T * F2):                                              # X3e4: 반복 0 시작 잔차로 무너짐 판정 -> 켜고 걸음 시작부터
+            if kd == "r" and st is not None and X1.T > 0 and not st["jump"] and st["won"] == 0 and si is not None:
+                g2, F2, ov = torch.cat((s.SC[1:2], s.CD[2:3], s.IP[13:14].double())).tolist()   # 한 번 읽기
+                if ov == 0 and not (g2 <= X1.T * F2):                                              # X3e4: 반복 0 시작 잔차로 무너짐 판정 -> 켜고 걸음 시작부터
                     ev = torch.cuda.Event(enable_timing=True); ev.record(); st["ev"] = ev
                     _restore(s)
                     from . import fem_speed3 as S3
@@ -478,12 +496,15 @@ def x1_install(level=1, x3e=0.0):
                 elif getattr(s, "_x2c", None) is not None:                              # X2 확인 (나): 다시 한 시도 (P2G 새로) 걸음 시작 앞 값 대 첫 시도 'x' 시점 값
                     X2C.rec.append(dict(kind="다시", **_x2c_cmp(s._x2c, _x2c_snap(s, False))))
                     s._x2c = None
-            if kd == "x" and int(s.IP[13]) == 0:
-                coll = C3.nfail(s, s.ufl, s.ufg, 1) > 0
+            if kd == "x" and _x_read(s)[0] == 0:
+                coll = s._x4coll
                 if X1.level == 3 and getattr(s, "_x1won", 1) == 0 and getattr(s, "_x2s", None) is not None:
                     xs = _x2c_snap(s, False)                                            # (가) 같은 시도 's' 대 'x' (bx 는 걸음 안에서 옮겨짐 -> 사본 대 's' 값을 따로)
                     r_ = _x2c_cmp(s._x2s, xs)
                     r_["bx_snap"] = _x2c_cmp(dict(IP=s._x2s["IP"], bx=s._x2s["bx"]), dict(IP=s._x2s["IP"], bx=s._x2bx.reshape(-1)[:s._x2s["bx"].numel()].clone())).get("bx")
+                    r_["y_snap"] = _x2c_cmp(dict(IP=s._x2s["IP"], U=s._x2s["_y"]), dict(IP=s._x2s["IP"], U=s._x2y.reshape(-1)[:s._x2s["_y"].numel()].clone())).get("U")
+                    if "_dq" in s._x2s:
+                        r_["dq_snap"] = _x2c_cmp(dict(IP=s._x2s["IP"], U=s._x2s["_dq"]), dict(IP=s._x2s["IP"], U=s._x2dq.reshape(-1)[:s._x2s["_dq"].numel()].clone())).get("U")
                     X2C.rec.append(dict(kind="같은 시도", coll=bool(coll), **r_))
                     s._x2s = None
                     if coll:
@@ -540,24 +561,6 @@ def x1_install(level=1, x3e=0.0):
     AORT.split_step = split_step
     if X1.level != 2:
         return
-    o_init = cls.__init__
-
-    def __init__(s, *a, **kw):                                                         # X2 다시 재생 구간의 W̄ 모으기 (e3_*, 걸음 시작 앞 산물만 읽음 -> 같은 값) 건너뛰기 표시
-        if not getattr(AORT, "_x2_src", False):
-            AORT._x2_src = True
-            o_s = AORT._src
-
-            def _src(*a_, **k_):
-                r_ = o_s(*a_, **k_)
-                if "e3_wq(" not in r_:
-                    return r_
-                r_ = r_.replace('extern "C" {', 'extern "C" {\n__device__ int X4_E3SK;\n', 1)
-                for nm in ("e3_wqz", "e3_wq", "e3_wqn"):
-                    r_ = _ins_body(r_, nm, " if (X4_E3SK) return;")
-                return r_
-            AORT._src = _src
-        return o_init(s, *a, **kw)
-    cls.__init__ = __init__
     o_col = WRX.split_col
 
     def split_col(s, t, h, sub_dt, depth, fn=None):
@@ -570,15 +573,10 @@ def x1_install(level=1, x3e=0.0):
         base = (s.ga_c, s.nt, s.cg)
         AORT.set_K_ga(s, 1, h, sub_dt)
         st = s._s4st = dict(jump=None, won=0, depth=int(depth), ev=None, nf0=None, e0=None)
-        _e3sk(s, 0)
-        torch.cuda.synchronize()
         try:
             redo = s.step(t)
         finally:
             s._s4st = None
-            torch.cuda.synchronize()
-            _e3sk(s, 0)
-            torch.cuda.synchronize()
         ms = float(s.last_ms)
         nf = C3.nfail(s, s.ufl, s.ufg, 1)
         if st["jump"] is None:
