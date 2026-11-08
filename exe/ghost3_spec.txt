@@ -1,0 +1,127 @@
+# 절 CM51 묶음 ghost3 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_ghost3.sh)
+# F = 공통 후보 F = E + W̄ (@e3w 1) + R2 (@e5r 2) + A2 (@e5a 2) (절 CM49), E = 공통 후보 D + T2 (@tb 16.7 @tb_m 0.8 @tb_w 2), 수박 M3 은 + @inv 1 + --sp2 31 (셀 3), 바탕 --gq_mass.
+# V2NF 바탕 = 절 CM46 V2NF (BW4 + --ws3 1 --ws3_win 1 --ws3_lj 1 --ws3_pf 1) + W̄ + R2 + A2 (절 CM49 V2NF + W̄ + R2 + A2). ficus·bread 는 장벽 바닥이 없어 W̄·R2·A2 해당 없음 (절 CM49 같은 값).
+# @g3 g = ghost penalty 3 (γ̄ = g 강성·질량 같이, 얇은 구조 면 빼기, 칸별 커널), @g3fd = 검사 프레임. 방식 g = 수박 --erec + D1·D2·D5, nd = 새 실행기 비결정 + 진단, d = 결정적 (--det --fhash), z = 단독 시간 a · b.
+# s0k 연기: 다섯 씬 + V2NF, 짧게, 검사 (값·집합·훅·시간)
+s0k kM M3 g E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1 @g3fd 4,8 --frames 10
+s0k kV M3 g V2NF @e3w 1 @e5r 2 @e5a 2 @g3 1e-1 @g3fd 4 --frames 8
+s0k kL L nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1 @g3fd 1,5 --frames 8
+s0k kW W nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1 @g3fd 1,5 --frames 8
+s0k kF F nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1 @g3fd 1,5 --frames 8
+s0k kB B nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1 @g3fd 1,5 --frames 8
+# s1: γ̄ 1e-1 -- 수박 F 8 · V2NF 8 + 대조 F 4 · V2NF 4, 회귀 레고·wolf·ficus·bread 4 + 대조 2, 결정적 해시 (E·F 대 γ̄ 0), 단독 a · b
+s1 mG1_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 mG1_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 mG1_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 mG1_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 mG1_5 M3 g E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 mG1_6 M3 g E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 mG1_7 M3 g E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 mG1_8 M3 g E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 vG1_1 M3 g V2NF @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 vG1_2 M3 g V2NF @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 vG1_3 M3 g V2NF @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 vG1_4 M3 g V2NF @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 vG1_5 M3 g V2NF @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 vG1_6 M3 g V2NF @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 vG1_7 M3 g V2NF @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 vG1_8 M3 g V2NF @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 mF_1 M3 g E @e3w 1 @e5r 2 @e5a 2
+s1 mF_2 M3 g E @e3w 1 @e5r 2 @e5a 2
+s1 mF_3 M3 g E @e3w 1 @e5r 2 @e5a 2
+s1 mF_4 M3 g E @e3w 1 @e5r 2 @e5a 2
+s1 vF_1 M3 g V2NF @e3w 1 @e5r 2 @e5a 2
+s1 vF_2 M3 g V2NF @e3w 1 @e5r 2 @e5a 2
+s1 vF_3 M3 g V2NF @e3w 1 @e5r 2 @e5a 2
+s1 vF_4 M3 g V2NF @e3w 1 @e5r 2 @e5a 2
+s1 rL_G1_1 L nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 rL_G1_2 L nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 rL_G1_3 L nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 rL_G1_4 L nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 rL_F1 L nd E @e3w 1 @e5r 2 @e5a 2
+s1 rL_F2 L nd E @e3w 1 @e5r 2 @e5a 2
+s1 rW_G1_1 W nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 rW_G1_2 W nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 rW_G1_3 W nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 rW_G1_4 W nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 rW_F1 W nd E @e3w 1 @e5r 2 @e5a 2
+s1 rW_F2 W nd E @e3w 1 @e5r 2 @e5a 2
+s1 rF_G1_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 rF_G1_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 rF_G1_3 F nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 rF_G1_4 F nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 rF_F1 F nd E @e3w 1 @e5r 2 @e5a 2
+s1 rF_F2 F nd E @e3w 1 @e5r 2 @e5a 2
+s1 rB_G1_1 B nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 rB_G1_2 B nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 rB_G1_3 B nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 rB_G1_4 B nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 rB_F1 B nd E @e3w 1 @e5r 2 @e5a 2
+s1 rB_F2 B nd E @e3w 1 @e5r 2 @e5a 2
+s1 dL_E L d E @tb 1000
+s1 dL_E0 L d E @tb 1000 @g3 0
+s1 dL_F L d E @e3w 1 @e5r 2 @e5a 2 @tb 1000
+s1 dL_F0 L d E @e3w 1 @e5r 2 @e5a 2 @tb 1000 @g3 0
+s1 dW_E W d E @tb 1000
+s1 dW_E0 W d E @tb 1000 @g3 0
+s1 dW_F W d E @e3w 1 @e5r 2 @e5a 2 @tb 1000
+s1 dW_F0 W d E @e3w 1 @e5r 2 @e5a 2 @tb 1000 @g3 0
+s1 dF_E F d E @tb 1000
+s1 dF_E0 F d E @tb 1000 @g3 0
+s1 dF_F F d E @e3w 1 @e5r 2 @e5a 2 @tb 1000
+s1 dF_F0 F d E @e3w 1 @e5r 2 @e5a 2 @tb 1000 @g3 0
+s1 dB_E B d E @tb 1000
+s1 dB_E0 B d E @tb 1000 @g3 0
+s1 dB_F B d E @e3w 1 @e5r 2 @e5a 2 @tb 1000
+s1 dB_F0 B d E @e3w 1 @e5r 2 @e5a 2 @tb 1000 @g3 0
+s1 zmF M3 z E @e3w 1 @e5r 2 @e5a 2
+s1 zmG1 M3 z E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 zvF M3 z V2NF @e3w 1 @e5r 2 @e5a 2
+s1 zvG1 M3 z V2NF @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 zLF L z E @e3w 1 @e5r 2 @e5a 2
+s1 zLG1 L z E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 zWF W z E @e3w 1 @e5r 2 @e5a 2
+s1 zWG1 W z E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 zFF F z E @e3w 1 @e5r 2 @e5a 2
+s1 zFG1 F z E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+s1 zBF B z E @e3w 1 @e5r 2 @e5a 2
+s1 zBG1 B z E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1
+# s2: γ̄ 3e-2 -- 수박 F 8 · V2NF 8, 회귀 4 씬 4 판, 단독 a · b
+s2 mG2_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 mG2_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 mG2_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 mG2_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 mG2_5 M3 g E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 mG2_6 M3 g E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 mG2_7 M3 g E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 mG2_8 M3 g E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 vG2_1 M3 g V2NF @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 vG2_2 M3 g V2NF @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 vG2_3 M3 g V2NF @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 vG2_4 M3 g V2NF @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 vG2_5 M3 g V2NF @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 vG2_6 M3 g V2NF @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 vG2_7 M3 g V2NF @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 vG2_8 M3 g V2NF @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 rL_G2_1 L nd E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 rL_G2_2 L nd E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 rL_G2_3 L nd E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 rL_G2_4 L nd E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 rW_G2_1 W nd E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 rW_G2_2 W nd E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 rW_G2_3 W nd E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 rW_G2_4 W nd E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 rF_G2_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 rF_G2_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 rF_G2_3 F nd E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 rF_G2_4 F nd E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 rB_G2_1 B nd E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 rB_G2_2 B nd E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 rB_G2_3 B nd E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 rB_G2_4 B nd E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 zmG2 M3 z E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 zvG2 M3 z V2NF @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 zLG2 L z E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 zWG2 W z E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 zFG2 F z E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+s2 zBG2 B z E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
