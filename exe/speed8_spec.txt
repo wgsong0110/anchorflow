@@ -1,9 +1,9 @@
 # 절 CM74 묶음 speed8 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_speed8.sh). H2 = Hc @s7nm 1 @s7z 1 @s7p 1 (+ 새 실행기 --cap_mul 4) (절 CM72 공통 후보).
 # W = 워프 모으기 @s8w 1 (확인 판 2), G = X3g @s8g 1e6 (반복 1 시작 잔차로 무너짐 판정, 결과 바뀜), I = 반복 1 을 예산 문 뒤로 --xit_from 1 (결과 바뀜)
-s0k kW2 M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 2 @s7src 1 --frames 20
-s0k kW1 M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 --frames 20
-s0k kG M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s8g 1e6 --frames 20
-s0k kI M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 --xit_from 1 --frames 20
+s0k kW2b M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 2 @s7src 1 --frames 20
+s0k kW1b M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 --frames 20
+s0k kGb M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s8g 1e6 --frames 20
+s0k kIb M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 --xit_from 1 --frames 20
 s1 vW_1 M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 2
 s1 vW_2 M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 2
 s1 vW_3 M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 2
