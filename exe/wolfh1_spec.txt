@@ -66,3 +66,5 @@ s4 zN W z F @h1n 1
 s6 vN_1 W nd F @h1n 1 --dump_F
 s6 zF2 W z F
 s6 zN2 W z F @h1n 1
+# ---- s8 영상용 N 판 다시 (s4 vN_1 은 summary 는 썼으나 pred.pt 쓰기 실패라 s6 이 건너뜀) -> s9 렌더 (exe/wolfh1_pre_s9.sh)
+s8 vN2_1 W nd F @h1n 1 --dump_F
