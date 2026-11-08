@@ -80,8 +80,8 @@ s2 dW_E2 W d E @tb 1000
 s2 dW_0 W d E @tb 1000 @g2 0
 s2 dL_E L d E @tb 1000
 s2 dL_0 L d E @tb 1000 @g2 0
-s2 dF_E F d E @tb 1000
-s2 dF_0 F d E @tb 1000 @g2 0
+s2 dF2_E F d E @tb 1000
+s2 dF2_0 F d E @tb 1000 @g2 0
 # s3 (2) 수박 표본 늘림: 대조 4 판 + g 1e-1 4 판 + g 1e-2 4 판
 s3 mW_5 M3 g E @e3w 1
 s3 mW_6 M3 g E @e3w 1

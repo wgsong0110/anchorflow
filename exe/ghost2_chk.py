@@ -80,8 +80,8 @@ print()
 print("## 결정적 해시 (예산 안 걸림 @tb 1000): E 대 E + ghost (g = 0)\n")
 print("| 씬 | 판 | 프레임 | 끝 해시 | 첫 다른 프레임 (대 E) | g2info 벌점 커널 넣은 수 |")
 print("|---|---|---|---|---|---|")
-for sc in "WLFBM":
-    ns = [n for n in runs() if n.startswith(f"d{sc}_")]
+for sc in sorted({n.split("_")[0] for n in runs() if n.startswith("d") and "_" in n}):
+    ns = [n for n in runs() if n.split("_")[0] == sc]
     if not ns:
         continue
     base = None
