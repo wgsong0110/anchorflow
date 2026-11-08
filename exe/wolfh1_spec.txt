@@ -62,3 +62,7 @@ s4 vN_1 W nd F @h1n 1 --dump_F
 s4 zF W z F
 s4 zN W z F @h1n 1
 # ---- s5 영상 렌더 (exe/wolfh1_pre_s5.sh -> exe/stab_wolffix_vid.sh 절차 그대로: dF_1 = F, vN_1 = N)
+# ---- s6 (s4 다시: /dev/shm 넘침으로 실패) -- 앞 단계 스크립트 exe/wolfh1_pre_s6.sh 가 덤프를 /tmp 로 옮긴 뒤 영상용 N 판 + 단독 시간 a · b
+s6 vN_1 W nd F @h1n 1 --dump_F
+s6 zF2 W z F
+s6 zN2 W z F @h1n 1
