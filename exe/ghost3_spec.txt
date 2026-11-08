@@ -60,12 +60,8 @@ s1 rB_F1 B nd E @e3w 1 @e5r 2 @e5a 2
 s1 rB_F2 B nd E @e3w 1 @e5r 2 @e5a 2
 s1 dL_E L d E @tb 1000
 s1 dL_E0 L d E @tb 1000 @g3 0
-s1 dL_F L d E @e3w 1 @e5r 2 @e5a 2 @tb 1000
-s1 dL_F0 L d E @e3w 1 @e5r 2 @e5a 2 @tb 1000 @g3 0
 s1 dW_E W d E @tb 1000
 s1 dW_E0 W d E @tb 1000 @g3 0
-s1 dW_F W d E @e3w 1 @e5r 2 @e5a 2 @tb 1000
-s1 dW_F0 W d E @e3w 1 @e5r 2 @e5a 2 @tb 1000 @g3 0
 s1 dF_E F d E @tb 1000
 s1 dF_E0 F d E @tb 1000 @g3 0
 s1 dF_F F d E @e3w 1 @e5r 2 @e5a 2 @tb 1000

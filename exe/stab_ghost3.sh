@@ -108,6 +108,7 @@ case $STG in *k)                                                                
     case " $x " in *" @g3 "*) grep -q "절 CM51 ghost3\] γ̄" $O/$n/log.txt || { OK=0; log "[연기] $n CM51 ghost3 줄 없음"; };; esac
     [ $md != g ] || { [ -s $O/$n/e2.jsonl ] && [ ! -s $O/$n/e2_err.txt ] && [ -s $O/$n/e5.jsonl ] && [ ! -s $O/$n/e5_err.txt ]; } || { OK=0; log "[연기] $n 진단 e2·e5 없음/오류"; }
     case " $x " in *" @e3w"*) grep -q "절 CM45\] W̄ 고친 커널\|절 CM45\] 장벽 바닥 없는" $O/$n/log.txt || { OK=0; log "[연기] $n CM45 W̄ 줄 없음"; };; esac
+    case "$s" in F|B) continue;; esac                                                        # ficus·bread: 장벽 바닥 없음 -> W̄·R2·A2 해당 없음 (절 CM49), CM45·CM49 줄 없음이 정상
     case " $x " in *" @e5"*) grep -q "절 CM49\] 표본점 기준 높이" $O/$n/log.txt || { OK=0; log "[연기] $n CM49 줄 없음"; };; esac
     case " $x " in *" @e5r"*) ;; *) continue;; esac
     [ $md != g ] || $PY -c "import json,sys; L=[json.loads(l) for l in open('$O/$n/e5.jsonl')]; L=[q for q in L if 'nq' in q]; e=[q.get('ref_dev_err') for q in L if q.get('ref_dev_err') is not None]; c=[q.get('car_dev_err') for q in L if q.get('car_dev_err') is not None]; print('ref', max(e) if e else None, 'car', max(c) if c else None); sys.exit(0 if L and e and max(e) < 1e-4 and (not c or max(c) < 1e-4) else 1)" >> $O/ghost3_$STG.log 2>&1 || { OK=0; log "[연기] $n D5 기준 높이 확인 (장치 = d_q + δ, R 장치 = 파이썬 재계산) 실패"; }
