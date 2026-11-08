@@ -211,7 +211,8 @@ def hcof(fl):
     b = re.search(r"@l3sc ([0-9]+)", fl)
     c = re.search(r"@l3fr ([0-9]+)", fl)
     d = re.search(r"@l3r0 ([0-9]+)", fl)
-    return (float(a.group(1)) if a else 0.0, int(b.group(1)) if b else 0, int(c.group(1)) if c else 1, int(d.group(1)) if d else 0)
+    e = bool(re.search(r"@w5s 1", fl) and re.search(r"@w5c 1", fl))
+    return (float(a.group(1)) if a else 0.0, int(b.group(1)) if b else 0, int(c.group(1)) if c else 1, int(d.group(1)) if d else 0, e)
 
 
 FRL = {0: "λ_free", 1: "(A)", 2: "(B)"}
@@ -219,10 +220,11 @@ FRL = {0: "λ_free", 1: "(A)", 2: "(B)"}
 
 class _HCN(dict):
     def get(self, h, d=None):
-        g, sc, fr, r0 = h if isinstance(h, tuple) else (h, 0, 1, 0)
+        g, sc, fr, r0, e = h if isinstance(h, tuple) else (h, 0, 1, 0, False)
+        b = "G'' + S_구속 + C" if e else "G''"
         if r0:
-            return "G'' (진단 전용, λ 몫 0)"
-        return "G''" if not g else f"G'' + {FRL[fr]} γ̄_L {g:g} {'P1X 밖만' if sc else '전부'}"
+            return b + " (진단 전용, λ 몫 0)"
+        return b if not g else f"{b} + {FRL[fr]} γ̄_L {g:g} {'P1X 밖만' if sc else '전부'}"
 
 
 HCN = _HCN()
@@ -412,6 +414,46 @@ if rows:
     print("## 다른 씬 (비결정 판 + 단독 렌더 포함 a · b)\n")
     print("| 씬 | 정의 | 판 | 발산 | 오차 % 평균 [범위] | 씬 지표 | 빠른 노드 (> 3 m/s) 최대 · 이탈 판 (최대 개) | 충돌 걸음 (그중 HHT 뒤집힘 H4, 몸 뒤집힘 H5) / 걸음 · 바꾼 노드 합 최대 | 단독 렌더 포함 평균 / 최악 ms (> 16.7 프레임) a · b |")
     print("|---|---|---|---|---|---|---|---|---|")
+    print("\n".join(rows))
+    print()
+
+# ---- wolf 높이·낙하 몫 (절 CM70 표 형식 일부; 낙하 몫 = exe/wolfh4_relfall.py τ [.04,.08) · [.16,.24) · [.32,.48) s, 정답 0.55 · 0.72 · 0.53)
+import re as _re
+
+
+def relfall(n):
+    p = os.path.join(O, n, "relfall.md")
+    if not os.path.isfile(p):
+        return None
+    for ln in open(p):
+        c = [x.strip() for x in ln.strip().strip("|").split("|")]
+        if c and c[0] == n:
+            return [float(_re.findall(r"\(([-0-9.]+)\)", x)[0]) if "(" in x else None for x in c[1:]]
+    return None
+
+
+WG = collections.OrderedDict()
+for st, n, sc, md, fl in spec:
+    if sc == "W" and md == "nd" and not st.endswith("k"):
+        WG.setdefault(hcof(fl), []).append(n)
+rows = []
+for h, ns in WG.items():
+    rs = [(n, rd(n)) for n in ns if rd(n) is not None or oom(n)]
+    if not rs:
+        continue
+    dv = sum(1 for n, _ in rs if div(n))
+    hh = lambda t: [com(r, t) for _, r in rs if r and com(r, t) is not None]
+    rf = [q for q in (relfall(n) for n, _ in rs) if q]
+    rfm = lambda i: mean([q[i] for q in rf if len(q) > i and q[i] is not None])
+    bb = [b for b in (bbox(n) for n, _ in rs) if b]
+    E_ = [err(n) for n, _ in rs if err(n) is not None and not div(n)]
+    f50 = hh(49)
+    rows.append(f"| {HCN.get(h)} | {len(rs)} | {dv} | {fmt(mean(hh(9)), 0)} · {fmt(mean(hh(19)), 0)} | {fmt(mean(hh(29)), 0)} | {fmt(mean(f50), 0)} [{rng(f50, 0)}] | {fmt(mean(E_))} [{rng(E_)}] | "
+                f"{fmt(rfm(1))} · {fmt(rfm(4))} · {fmt(rfm(6))} ({len(rf)} 판) | {(str(sum(1 for b in bb if b[0] > 20)) + '/' + str(len(bb)) + ' · ' + str(max(b[0] for b in bb)) + ' 개 · ' + fmt(max(b[1] for b in bb)) + ' m') if bb else '-'} | {zcol2('W', h, True)} |")
+if rows:
+    print("## wolf 높이·낙하 몫 (절 CM70 표 형식; 높이 = 질량중심 세계 z mm, 정답 f10 · f20 860 · 758, f30 573, f50 533; 낙하 몫 정답 0.55 · 0.72 · 0.53; 발산 판의 높이는 끝난 프레임까지만)\n")
+    print("| 후보 | 판 | 발산 | f10 · f20 mm | f30 mm | f50 mm 평균 [범위] | 오차 % 평균 [범위] | 낙하 몫 τ [.04,.08) · [.16,.24) · [.32,.48) | 이탈 판 · 최대 개 · 거리 | 단독 렌더 포함 a · b |")
+    print("|---|---|---|---|---|---|---|---|---|---|")
     print("\n".join(rows))
     print()
 

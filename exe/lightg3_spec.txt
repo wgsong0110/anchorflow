@@ -120,3 +120,27 @@ s2 zA10B B z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l3 10 @l3sc 1 @l3fr 1
 s2 zB10B B z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l3 10 @l3sc 1 @l3fr 2
 s2 zA10L L z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l3 10 @l3sc 1 @l3fr 1
 s2 zA10F F z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l3 10 @l3sc 1 @l3fr 1
+# s3k·s3 (조정자 추가 지시): wolf 바탕 G'' + 절 CM70 S_구속 + C ('@w5s 1 @w5c 1') 위에 (A)·(B) × γ̄_L 10 · 1 각 4 판 + S_구속 + C 만 2 판 (같은 때 대조) + 단독 렌더 포함 a · b. 낙하 몫 = exe/wolfh4_relfall.py (s2 G'' 바탕 판은 lightg3_pre_s3.sh 가 R2 pred.pt 로)
+s3k kSCA10 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 --frames 8
+s3 wSC_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1
+s3 wSC_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1
+s3 wSCA10_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1
+s3 wSCA10_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1
+s3 wSCA10_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1
+s3 wSCA10_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1
+s3 wSCB10_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 10 @l3sc 1 @l3fr 2 @l3dg 1
+s3 wSCB10_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 10 @l3sc 1 @l3fr 2 @l3dg 1
+s3 wSCB10_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 10 @l3sc 1 @l3fr 2 @l3dg 1
+s3 wSCB10_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 10 @l3sc 1 @l3fr 2 @l3dg 1
+s3 wSCA1_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 1 @l3sc 1 @l3fr 1 @l3dg 1
+s3 wSCA1_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 1 @l3sc 1 @l3fr 1 @l3dg 1
+s3 wSCA1_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 1 @l3sc 1 @l3fr 1 @l3dg 1
+s3 wSCA1_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 1 @l3sc 1 @l3fr 1 @l3dg 1
+s3 wSCB1_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 1 @l3sc 1 @l3fr 2 @l3dg 1
+s3 wSCB1_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 1 @l3sc 1 @l3fr 2 @l3dg 1
+s3 wSCB1_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 1 @l3sc 1 @l3fr 2 @l3dg 1
+s3 wSCB1_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 1 @l3sc 1 @l3fr 2 @l3dg 1
+s3 zSCA10W W z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 10 @l3sc 1 @l3fr 1
+s3 zSCB10W W z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 10 @l3sc 1 @l3fr 2
+s3 zSCA1W W z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 1 @l3sc 1 @l3fr 1
+s3 zSCB1W W z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @l3 1 @l3sc 1 @l3fr 2

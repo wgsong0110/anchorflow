@@ -1,6 +1,6 @@
 """절 CM73 묶음 lightg3 감싸개: 가벼움 연속 가중 벌점의 위상 기준 정의 (A)·(B) (lib/anchorflow/fem_lightg3.py) 를 단 뒤 exe/mfix_wrap.py 로 넘김 (그쪽 인자 그대로).
 
-사용: python exe/lightg3_wrap.py [--l3 γ̄_L] [--l3sc 0|1] [--l3fr 0|1|2] [--l3r0 0|1] [--l3dg 0|1] [--l3ck 0|1] [--l3fd 프레임,...] <mfix_wrap 인자...> <실행기.py> <실행기 인자...>
+사용: python exe/lightg3_wrap.py [--l3 γ̄_L] [--l3sc 0|1] [--l3fr 0|1|2] [--l3r0 0|1] [--l3dg 0|1] [--l3ck 0|1] [--l3fd 프레임,...] [--w5s 1 --w5c 1] <mfix_wrap 인자...> <실행기.py> <실행기 인자...>
   --l3sc 0 = 가벼움 몫을 후보 면 전부에, 1 = P1X 밖 면에만. --l3fr 0 = 절 CM71 λ_free, 1 = (A) 원래 고정 판정에서 자유인 노드만, 2 = (B) (A) + 장벽 받침 표시 노드 낀 면 뺌.
   --l3r0 1 = 진단 전용 (가중 λ 몫 0 = G'', λ 만 기록). --l3ck 1 = 금 면 진단.
   --l3 가 없으면 모듈을 안 부름 (mfix_wrap 그대로). m̄ = 0 인 씬 (레고·ficus) 은 모듈이 켜져도 아무 커널도 안 띄움 (P1X 그대로).
@@ -43,5 +43,5 @@ def run_path(path, *a, **kw):
 
 
 runpy.run_path = run_path
-sys.argv = [os.path.join(HERE, "mfix_wrap.py")] + argv
+sys.argv = [os.path.join(HERE, "wolfh5_wrap.py")] + argv                                       # 절 CM70 '--w5*' (S_구속·C) 가 있으면 그쪽이 설치, 없으면 mfix_wrap 그대로
 _orig(sys.argv[0], run_name="__main__")
