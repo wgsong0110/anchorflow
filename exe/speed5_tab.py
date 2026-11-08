@@ -163,3 +163,35 @@ for d in runs:
     if d.startswith(("z", "p")) and os.path.exists(p):
         L = [l.strip() for l in open(p) if l.startswith("카드")]
         print(f"- {d}: {L[0] if L else '-'}")
+# ---------------- (4) 수박 비결정 판 정확도
+def ljk(n, k):
+    r = jl(n, "fem.jsonl") or []
+    if k >= len(r):
+        return None
+    v = (r[k].get("en") or {}).get("lj0")
+    return None if v is None or r[k].get("err") is None or not math.isfinite(r[k]["err"]) else 100 * v
+
+
+def e1s(n):
+    e = jl(n, "e1.jsonl") or []
+    return (max((q.get("nfar", 0) or 0) for q in e), max((q.get("dmax") or 0) for q in e)) if e else (None, None)
+
+
+print("## (4) 수박 비결정 판 (g*, 진단 D1·D2·D5; 정답 손상 f5 4.41 · f6 6.94 · f8 7.08 · 끝 6.51 %; 이탈 판 = 4 칸 밖 > 20 개)\n")
+print("| 후보 | 판 | 발산 | 오차 % 평균 [범위] | 손상 f5 · f6 · f8 평균 % | 끝 손상 평균 [범위] % | 이탈 판 · 최대 수 · 거리 m | X3c 다시 하기 프레임 (판당) |")
+print("|---|---|---|---|---|---|---|---|")
+for lab, pre in (("G + O", "gO_"), ("G + O + X3e4", "gX_")):
+    ns = [d for d in runs if d.startswith(pre)]
+    if not ns:
+        continue
+    dv = sum(1 for n in ns if (summ(n) or {}).get("diverged") or summ(n) is None)
+    es = [err(n) for n in ns if err(n) is not None]
+    ends = [lj_last(n) for n in ns if lj_last(n) is not None]
+    fk = [" · ".join(fmt(stt.mean([v for v in (ljk(n, k) for n in ns) if v is not None]) if any(ljk(n, k) is not None for n in ns) else None) for k in (4, 5, 7))]
+    far = [e1s(n) for n in ns]
+    far = [f for f in far if f[0] is not None]
+    x2 = [sum(1 for q in (jl(n, "s4.jsonl") or []) if (q.get("x1") or [0, 0])[1] > 0 or (q.get("x1") or [0, 0, 0])[2] > 0) for n in ns]
+    print(f"| {lab} | {len(ns)} | {dv} | {fmt(stt.mean(es)) if es else '-'} [{fmt(min(es)) if es else '-'}~{fmt(max(es)) if es else '-'}] | {fk[0]} | "
+          f"{fmt(stt.mean(ends)) if ends else '-'} [{fmt(min(ends)) if ends else '-'}~{fmt(max(ends)) if ends else '-'}] | "
+          f"{sum(1 for f in far if f[0] > 20)}/{len(far)} · {max((f[0] for f in far), default='-')} · {fmt(max((f[1] for f in far), default=None))} | {fmt(stt.mean(x2), 1) if x2 else '-'} |")
+print()

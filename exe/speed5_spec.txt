@@ -31,3 +31,21 @@ s2 zGF F z G @s5m 1
 s2 zOF F z G @s5o 1
 s2 zGB B z G @s5m 1
 s2 zOB B z G @s5o 1
+# s3 결과 바뀌는 후보 (수박): 겹치기 O 판 정확도 (비결정 8, 진단 D1·D2·D5) · O + X3e4 (@s4e 1e6, 절 CM50: 첫 시도 반복 0 잔차로 무너짐을 일찍 판정해 다시 하기) 비결정 8 + 단독 a · b
+s3 gO_1 M3 g G @s5o 1
+s3 gX_1 M3 g G @s4e 1e6 @s5o 1
+s3 gO_2 M3 g G @s5o 1
+s3 gX_2 M3 g G @s4e 1e6 @s5o 1
+s3 gO_3 M3 g G @s5o 1
+s3 gX_3 M3 g G @s4e 1e6 @s5o 1
+s3 gO_4 M3 g G @s5o 1
+s3 gX_4 M3 g G @s4e 1e6 @s5o 1
+s3 gO_5 M3 g G @s5o 1
+s3 gX_5 M3 g G @s4e 1e6 @s5o 1
+s3 gO_6 M3 g G @s5o 1
+s3 gX_6 M3 g G @s4e 1e6 @s5o 1
+s3 gO_7 M3 g G @s5o 1
+s3 gX_7 M3 g G @s4e 1e6 @s5o 1
+s3 gO_8 M3 g G @s5o 1
+s3 gX_8 M3 g G @s4e 1e6 @s5o 1
+s3 zXM M3 z G @s4e 1e6 @s5o 1
