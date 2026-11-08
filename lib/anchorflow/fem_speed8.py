@@ -227,7 +227,7 @@ def _f32(u):
 def w_frame_end(s, fr):
     rec = dict(f=fr)
     if fr <= 3:
-        rec.update(patched=sorted(C.patched), bad=C.bad)
+        rec.update(patched=sorted(C.patched), bad=[b for b in C.bad if b[0] not in C.patched], bad_other=[b for b in C.bad if b[0] in C.patched])   # bad_other = 다른 모듈 (같은 이름 다른 글자) 에서 못 고친 것
     if C.w == 2 and getattr(s, "s8st", None) is not None:
         torch.cuda.synchronize()
         st = s.s8st.tolist(); ld = s.s8ld.tolist()
