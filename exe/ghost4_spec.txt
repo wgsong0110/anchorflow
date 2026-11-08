@@ -1,0 +1,82 @@
+# 절 CM53 묶음 ghost4 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_ghost4.sh)
+# F = 공통 후보 F = E + W̄ (@e3w 1) + R2 (@e5r 2) + A2 (@e5a 2) (절 CM49); 수박 M3 은 + @inv 1 + --sp2 31 (셀 3), 바탕 --gq_mass.
+# @g4 g = ghost penalty (γ̄ = g, 칸별 커널), @g4m 0|1 고스트 질량 (기본 1), @g4t 면 한정 방식 (기본 1): 0 없음 (절 CM47 면) · 1 3x3x3 열림 (절 CM51) · 2 5x5x5 열림 · 3 내부 칸-경계 칸 면.
+# @g4fd = 검사 프레임, @g4dump = 칸 덤프 프레임 (네 방식 표지). 방식 g = 수박 --erec + D1·D2·D5, nd = 새 실행기 비결정 + 진단, z = 단독 시간, zd = 단독 카드 + 진단 (레고 --dump).
+# s0k 연기: 방식 2·3 검사 (면 집합 커널 = torch, 값·훅), ficus 칸 덤프
+s0k kM2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 2 @g4fd 4,8 --frames 10
+s0k kL2 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 2 @g4fd 1,5 --frames 8
+s0k kW2 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 2 @g4fd 1,5 --frames 8
+s0k kB2 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 2 @g4fd 1,5 --frames 8
+s0k kF2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 2 @g4fd 1,5 @g4dump 1,5 --frames 8
+s0k kM3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4fd 4,8 --frames 10
+s0k kL3 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4fd 1,5 --frames 8
+s0k kW3 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4fd 1,5 --frames 8
+s0k kB3 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4fd 1,5 --frames 8
+s0k kF3 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4fd 1,5 @g4dump 1,5 --frames 8
+s0k kF1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4fd 1 @g4dump 1,30,60,90,120
+# s1: 수박 구성요소 떼기 (조정자 11-08 사용자 지시, γ̄ 1e-1, 각 8 판): (a) 강성만 (b) 강성 + 질량 (c) 강성 + 얇은 구조 빼기 (d) 셋 다 (= 절 CM51 F + γ̄ 1e-1)
+s1 mA_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 0 @g4t 0
+s1 mA_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 0 @g4t 0
+s1 mA_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 0 @g4t 0
+s1 mA_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 0 @g4t 0
+s1 mA_5 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 0 @g4t 0
+s1 mA_6 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 0 @g4t 0
+s1 mA_7 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 0 @g4t 0
+s1 mA_8 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 0 @g4t 0
+s1 mB_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 1 @g4t 0
+s1 mB_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 1 @g4t 0
+s1 mB_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 1 @g4t 0
+s1 mB_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 1 @g4t 0
+s1 mB_5 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 1 @g4t 0
+s1 mB_6 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 1 @g4t 0
+s1 mB_7 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 1 @g4t 0
+s1 mB_8 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 1 @g4t 0
+s1 mC_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 0 @g4t 1
+s1 mC_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 0 @g4t 1
+s1 mC_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 0 @g4t 1
+s1 mC_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 0 @g4t 1
+s1 mC_5 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 0 @g4t 1
+s1 mC_6 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 0 @g4t 1
+s1 mC_7 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 0 @g4t 1
+s1 mC_8 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 0 @g4t 1
+s1 mD_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 1 @g4t 1
+s1 mD_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 1 @g4t 1
+s1 mD_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 1 @g4t 1
+s1 mD_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 1 @g4t 1
+s1 mD_5 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 1 @g4t 1
+s1 mD_6 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 1 @g4t 1
+s1 mD_7 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 1 @g4t 1
+s1 mD_8 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4m 1 @g4t 1
+# s2: ficus 면 한정 방식 2·3 (γ̄ 1e-1·3e-2) + 수박 방식 2·3 (γ̄ 1e-1, 각 4) + 레고 메모리 발산 재현 (방식 1, γ̄ 1e-1: 비결정 진단 8 + 단독 진단 4 x a·b + 단독 4 x a·b)
+s2 rF_T2G1_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 2 @g4dump 1,60,120
+s2 rF_T2G1_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 2 @g4dump 1,60,120
+s2 rF_T2G2_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 3e-2 @g4t 2 @g4dump 1,60,120
+s2 rF_T2G2_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 3e-2 @g4t 2 @g4dump 1,60,120
+s2 mT2_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 2
+s2 mT2_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 2
+s2 mT2_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 2
+s2 mT2_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 2
+s2 rF_T3G1_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4dump 1,60,120
+s2 rF_T3G1_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3 @g4dump 1,60,120
+s2 rF_T3G2_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 3e-2 @g4t 3 @g4dump 1,60,120
+s2 rF_T3G2_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 3e-2 @g4t 3 @g4dump 1,60,120
+s2 mT3_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
+s2 mT3_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
+s2 mT3_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
+s2 mT3_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
+s2 rL_R1 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 --dump
+s2 rL_R2 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 --dump
+s2 rL_R3 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 --dump
+s2 rL_R4 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 --dump
+s2 rL_R5 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 --dump
+s2 rL_R6 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 --dump
+s2 rL_R7 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 --dump
+s2 rL_R8 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 --dump
+s2 zLd1 L zd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1
+s2 zLd2 L zd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1
+s2 zLd3 L zd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1
+s2 zLd4 L zd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1
+s2 zL1 L z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1
+s2 zL2 L z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1
+s2 zL3 L z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1
+s2 zL4 L z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1
