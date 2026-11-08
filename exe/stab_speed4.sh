@@ -117,6 +117,7 @@ for r in R:
     if r.get('bx_snap') is None or r['bx_snap'][0]!=0: bad.append(('bx_snap',r.get('bx_snap')))
 print('x2c 같은 시도', len(R), '어긋남', bad[:5])
 sys.exit(0 if R and not bad else 1)" >> $O/speed4_$STG.log 2>&1 || { OK=0; log "[연기] $nn X2 확인 실패"; };; esac
+    case " $x " in *" @s4y 2"*) $PY -c "import json,sys; L=[json.loads(l) for l in open('$O/$nn/s4.jsonl')]; b=sum(q['yl4']['bad'] for q in L); r=sum(q['yl4']['chk'] for q in L); print('yl4 bad', b, 'chk', r); sys.exit(0 if b == 0 and r > 0 else 1)" >> $O/speed4_$STG.log 2>&1 || { OK=0; log "[연기] $nn S2 확인 실패"; };; esac
     case " $x " in *" @s4w 2"*) $PY -c "import json,sys; L=[json.loads(l) for l in open('$O/$nn/s4.jsonl')]; b=sum(q['ws4']['bad'] for q in L); r=sum(q['ws4']['round'] for q in L); print('ws4 bad', b, 'round', r); sys.exit(0 if b == 0 and r > 0 else 1)" >> $O/speed4_$STG.log 2>&1 || { OK=0; log "[연기] $nn S1 확인 실패"; };; esac
   done <<< "$SPEC"
   log "[연기] OK=$OK"; [ $OK = 1 ] || { echo "연기 실패 $STG $(date '+%F %T')" > $O/speed4.FAIL; rclone copy $O $RO -q --include speed4.FAIL; };;

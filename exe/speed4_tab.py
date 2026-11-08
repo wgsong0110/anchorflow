@@ -54,6 +54,8 @@ def run_row(d):
     S4 = jl(os.path.join(d, "s4.jsonl"))
     if S4 and "ws4" in S4[0]:
         r["ws4"] = [sum(q["ws4"][k] for q in S4) for k in ("round", "clean", "bad")]
+    if S4 and "yl4" in S4[0]:
+        r["ws4"] = (r.get("ws4") or []) + ["S2"] + [sum(q["yl4"][k] for q in S4) for k in ("chk", "clean", "bad")]
     if S4 and "x1" in S4[0]:
         v = [q["x1"] if isinstance(q["x1"], list) else [q["x1"], 0, 0] for q in S4]
         r["x1"] = [sum(a[i] for a in v) for i in range(3)]

@@ -308,9 +308,19 @@ class X1:
     x3e = 0
 
 
+def _e3sk(s, v):
+    import cupy as cp
+    try:
+        g = s.mod.get_global("X4_E3SK")
+    except Exception:
+        return
+    cp.ndarray((1,), dtype=cp.int32, memptr=g)[0] = int(v)
+
+
 def _restore(s):
     import cupy as cp
     torch.cuda.synchronize()
+    _e3sk(s, 1)
     s.bx.copy_(s._x2bx)
     s.cnt.zero_()
     if getattr(s, "aq", False):
@@ -530,6 +540,24 @@ def x1_install(level=1, x3e=0.0):
     AORT.split_step = split_step
     if X1.level != 2:
         return
+    o_init = cls.__init__
+
+    def __init__(s, *a, **kw):                                                         # X2 다시 재생 구간의 W̄ 모으기 (e3_*, 걸음 시작 앞 산물만 읽음 -> 같은 값) 건너뛰기 표시
+        if not getattr(AORT, "_x2_src", False):
+            AORT._x2_src = True
+            o_s = AORT._src
+
+            def _src(*a_, **k_):
+                r_ = o_s(*a_, **k_)
+                if "e3_wq(" not in r_:
+                    return r_
+                r_ = r_.replace('extern "C" {', 'extern "C" {\n__device__ int X4_E3SK;\n', 1)
+                for nm in ("e3_wqz", "e3_wq", "e3_wqn"):
+                    r_ = _ins_body(r_, nm, " if (X4_E3SK) return;")
+                return r_
+            AORT._src = _src
+        return o_init(s, *a, **kw)
+    cls.__init__ = __init__
     o_col = WRX.split_col
 
     def split_col(s, t, h, sub_dt, depth, fn=None):
@@ -542,10 +570,15 @@ def x1_install(level=1, x3e=0.0):
         base = (s.ga_c, s.nt, s.cg)
         AORT.set_K_ga(s, 1, h, sub_dt)
         st = s._s4st = dict(jump=None, won=0, depth=int(depth), ev=None, nf0=None, e0=None)
+        _e3sk(s, 0)
+        torch.cuda.synchronize()
         try:
             redo = s.step(t)
         finally:
             s._s4st = None
+            torch.cuda.synchronize()
+            _e3sk(s, 0)
+            torch.cuda.synchronize()
         ms = float(s.last_ms)
         nf = C3.nfail(s, s.ufl, s.ufg, 1)
         if st["jump"] is None:
@@ -588,6 +621,75 @@ def x1_install(level=1, x3e=0.0):
     WRX.split_col = split_col
 
 
+# ======================= (S2) 걸음 시작 노드별 β (y0loc, yl_*) 확인 라운드 조기 끝 (결과 불변) =======================
+# 순서 (fem_ao_rt.record, --y0loc R): yl_kq -> [yl_mix -> yl_chk(r) -> yl_merge] x R -> yl_mix -> yl_chk(R) -> yl_fb -> yl_mix -> yl_st.
+# yl_chk 가 어긴 표본점 0 (fl = 0) 이면 kn2 에 아무것도 안 흩음. kn2 는 앞 라운드 값만 들고 있고 그 값은 이미 yl_merge 로 kn 에 들어가 있어 (kn ≥ kn2)
+#   뒤 yl_merge·yl_mix (같은 kn·eU·eS -> 같은 y·η)·yl_chk (같은 y -> 0)·yl_fb (fl 0 -> 아무것도 안 함) 는 모두 같은 값 -> 건너뛰어도 kn·y·η·yfl 비트 같음.
+# 장치 표시 YL4_DN (yl_kq 가 0 으로, yl_chk 뒤 yl4_chk 가 fl 0 이면 1), yl_mix·yl_chk·yl_merge·yl_fb 첫머리 'YL4_DN 이면 돌아감'. --s4y 2 = 확인 판 (건너뛰지 않고 YL4_DN 뒤 어긴 수 셈).
+YL4_HEAD = "__device__ int YL4_DN; __device__ unsigned long long YL4_BAD, YL4_NCLEAN, YL4_NCHK;\n"
+YL4_K = r"""
+__global__ void yl4_chk(const int* fl) {
+    if (AF_SKIP) return;
+    YL4_NCHK++;
+    if (!YL4_DN && fl[0] == 0) { YL4_DN = 1; YL4_NCLEAN++; }
+}
+"""
+
+
+class YL4:
+    mode = 0
+
+
+def yl4_src(src):
+    if "yl_kq(" not in src:
+        return src
+    src = src.replace('extern "C" {', 'extern "C" {\n' + YL4_HEAD, 1)
+    src = _ins_body(src, "yl_kq", "\n    if (blockIdx.x == 0 && threadIdx.x == 0) YL4_DN = 0;                               // 절 CM50 S2\n")
+    if YL4.mode == 1:
+        for nm in ("yl_mix", "yl_chk", "yl_merge", "yl_fb"):
+            src = _ins_body(src, nm, " if (YL4_DN) return;")
+    else:
+        m = re.search(r"__global__\s+void\s+(?:__launch_bounds__\(\d+\)\s+)?yl_chk\s*\(", src)
+        j = src.index("\n}\n", m.end())
+        body = src[m.start():j]
+        assert body.count("atomicAdd(fl, 1);") == 1
+        src = src[:m.start()] + body.replace("atomicAdd(fl, 1);", "atomicAdd(fl, 1); if (YL4_DN) atomicAdd(&YL4_BAD, 1ull);", 1) + src[j:]
+    i = src.rfind("}")
+    return src[:i] + YL4_K + src[i:]
+
+
+def yl4_install(mode):
+    from . import fem_ao_rt as AORT
+    YL4.mode = int(mode)
+    cls = AORT.AORTSolver
+    o_init, o_k = cls.__init__, cls.k
+
+    def __init__(s, *a, **kw):
+        if not getattr(AORT, "_yl4_src", False):
+            AORT._yl4_src = True
+            o_s = AORT._src
+            AORT._src = lambda *a_, **k_: yl4_src(o_s(*a_, **k_))
+        return o_init(s, *a, **kw)
+
+    def k(s, name, n, args, b=128):
+        r = o_k(s, name, n, args, b)
+        if name == "yl_chk":                                                           # 마지막 인자 = 이 라운드 fl (P(s.yfl[r:]))
+            o_k(s, "yl4_chk", 1, (args[-1],), 1)
+        return r
+    cls.__init__, cls.k = __init__, k
+
+
+def yl4_counts(s):
+    import cupy as cp
+    g = lambda nm: cp.ndarray((1,), dtype=cp.uint64, memptr=s.mod.get_global(nm))
+    o = {}
+    for nm, key in (("YL4_NCHK", "chk"), ("YL4_NCLEAN", "clean"), ("YL4_BAD", "bad")):
+        a = g(nm)
+        o[key] = int(a[0])
+        a[0] = 0
+    return o
+
+
 # ======================= 프레임 기록 =======================
 def frame_install(out):
     """쪼개기 함수 (프레임 진입) 를 감싸 프레임마다 s4.jsonl 한 줄 (단계 시간 · S1 셈)."""
@@ -617,6 +719,8 @@ def frame_install(out):
                         SP.unk.clear()
                 if WS4.mode:
                     rec["ws4"] = ws4_counts(s)
+                if YL4.mode:
+                    rec["yl4"] = yl4_counts(s)
                 if X1.on:
                     rec["x1"] = [X1.hits, X1.x2, X1.x3e]
                     X1.hits = X1.x2 = X1.x3e = 0

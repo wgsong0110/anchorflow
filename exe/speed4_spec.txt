@@ -50,3 +50,27 @@ s2 zL L z F @s4w 1 @s4x 2 @s4e 1e6
 s2 zW W z F @s4w 1 @s4x 2 @s4e 1e6
 s2 zFi F z F @s4w 1 @s4x 2 @s4e 1e6
 s2 zB B z F @s4w 1 @s4x 2 @s4e 1e6
+# ---- s3k·s3: S2 (걸음 시작 y0loc 확인 라운드 조기 끝) + X2 다시 재생에서 W̄ 모으기 건너뜀 -- A2 = @s4w 1 @s4y 1 @s4x 2, AE2 = A2 + @s4e 1e6
+s3k kA2 M3 n F @s4w 1 @s4y 1 @s4x 2 --frames 14
+s3k kY M3 n F @s4w 1 @s4y 2 @s4x 2 --frames 14
+s3k kAE2 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 --frames 14
+s3 zF2 M3 z F
+s3 zFA2 M3 z F @s4w 1 @s4y 1 @s4x 2
+s3 zFAE2 M3 z F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s3 pFA2 M3 p F @s4p 1 @s4w 1 @s4y 1 @s4x 2
+s3 pFAE2 M3 p F @s4p 1 @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s3 cY_1 M3 n F @s4w 1 @s4y 2 @s4x 2
+s3 cY_2 M3 n F @s4w 1 @s4y 2 @s4x 2
+s3 nFA2_1 M3 n F @s4w 1 @s4y 1 @s4x 2
+s3 nFA2_2 M3 n F @s4w 1 @s4y 1 @s4x 2
+s3 nFA2_3 M3 n F @s4w 1 @s4y 1 @s4x 2
+s3 nFA2_4 M3 n F @s4w 1 @s4y 1 @s4x 2
+s3 nFAE2_1 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s3 nFAE2_2 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s3 nFAE2_3 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s3 nFAE2_4 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+# ---- s4 다른 씬 결정적 해시 (최종 플래그 전부)
+s4 hLA2 L h FH @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s4 hWA2 W h FH @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s4 hFA2 F h FH @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s4 hBA2 B h FH @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
