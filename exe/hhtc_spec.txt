@@ -175,3 +175,224 @@ s1 rM0_40 M3 r F P1X @hc 0 --frames 8
 s1 rM1_40 M3 r F P1X @hc 1 --frames 8
 s1 rM2_40 M3 r F P1X @hc 2 --frames 8
 s1 rM3_40 M3 r F P1X @hc 3 --frames 8
+# s1b H1 재현 더 (s1 에서 H1 41 판에는 '수렴 사건' (첫 접촉 K 1 시도가 허용치로 멈춤·보폭 1, 대조 2/41·H2 1/41·H3 2/41 이 모두 되튐) 이 0 개 -- H1 에서 그 사건을 모음)
+s1b rM1_41 M3 r F P1X @hc 1 --frames 8
+s1b rM1_42 M3 r F P1X @hc 1 --frames 8
+s1b rM1_43 M3 r F P1X @hc 1 --frames 8
+s1b rM1_44 M3 r F P1X @hc 1 --frames 8
+s1b rM1_45 M3 r F P1X @hc 1 --frames 8
+s1b rM1_46 M3 r F P1X @hc 1 --frames 8
+s1b rM1_47 M3 r F P1X @hc 1 --frames 8
+s1b rM1_48 M3 r F P1X @hc 1 --frames 8
+s1b rM1_49 M3 r F P1X @hc 1 --frames 8
+s1b rM1_50 M3 r F P1X @hc 1 --frames 8
+s1b rM1_51 M3 r F P1X @hc 1 --frames 8
+s1b rM1_52 M3 r F P1X @hc 1 --frames 8
+s1b rM1_53 M3 r F P1X @hc 1 --frames 8
+s1b rM1_54 M3 r F P1X @hc 1 --frames 8
+s1b rM1_55 M3 r F P1X @hc 1 --frames 8
+s1b rM1_56 M3 r F P1X @hc 1 --frames 8
+s1b rM1_57 M3 r F P1X @hc 1 --frames 8
+s1b rM1_58 M3 r F P1X @hc 1 --frames 8
+s1b rM1_59 M3 r F P1X @hc 1 --frames 8
+s1b rM1_60 M3 r F P1X @hc 1 --frames 8
+s1b rM1_61 M3 r F P1X @hc 1 --frames 8
+s1b rM1_62 M3 r F P1X @hc 1 --frames 8
+s1b rM1_63 M3 r F P1X @hc 1 --frames 8
+s1b rM1_64 M3 r F P1X @hc 1 --frames 8
+s1b rM1_65 M3 r F P1X @hc 1 --frames 8
+s1b rM1_66 M3 r F P1X @hc 1 --frames 8
+s1b rM1_67 M3 r F P1X @hc 1 --frames 8
+s1b rM1_68 M3 r F P1X @hc 1 --frames 8
+s1b rM1_69 M3 r F P1X @hc 1 --frames 8
+s1b rM1_70 M3 r F P1X @hc 1 --frames 8
+s1b rM1_71 M3 r F P1X @hc 1 --frames 8
+s1b rM1_72 M3 r F P1X @hc 1 --frames 8
+s1b rM1_73 M3 r F P1X @hc 1 --frames 8
+s1b rM1_74 M3 r F P1X @hc 1 --frames 8
+s1b rM1_75 M3 r F P1X @hc 1 --frames 8
+s1b rM1_76 M3 r F P1X @hc 1 --frames 8
+s1b rM1_77 M3 r F P1X @hc 1 --frames 8
+s1b rM1_78 M3 r F P1X @hc 1 --frames 8
+s1b rM1_79 M3 r F P1X @hc 1 --frames 8
+s1b rM1_80 M3 r F P1X @hc 1 --frames 8
+s1b rM1_81 M3 r F P1X @hc 1 --frames 8
+s1b rM1_82 M3 r F P1X @hc 1 --frames 8
+s1b rM1_83 M3 r F P1X @hc 1 --frames 8
+s1b rM1_84 M3 r F P1X @hc 1 --frames 8
+s1b rM1_85 M3 r F P1X @hc 1 --frames 8
+s1b rM1_86 M3 r F P1X @hc 1 --frames 8
+s1b rM1_87 M3 r F P1X @hc 1 --frames 8
+s1b rM1_88 M3 r F P1X @hc 1 --frames 8
+s1b rM1_89 M3 r F P1X @hc 1 --frames 8
+s1b rM1_90 M3 r F P1X @hc 1 --frames 8
+s1b rM1_91 M3 r F P1X @hc 1 --frames 8
+s1b rM1_92 M3 r F P1X @hc 1 --frames 8
+s1b rM1_93 M3 r F P1X @hc 1 --frames 8
+s1b rM1_94 M3 r F P1X @hc 1 --frames 8
+s1b rM1_95 M3 r F P1X @hc 1 --frames 8
+s1b rM1_96 M3 r F P1X @hc 1 --frames 8
+s1b rM1_97 M3 r F P1X @hc 1 --frames 8
+s1b rM1_98 M3 r F P1X @hc 1 --frames 8
+s1b rM1_99 M3 r F P1X @hc 1 --frames 8
+s1b rM1_100 M3 r F P1X @hc 1 --frames 8
+s1b rM1_101 M3 r F P1X @hc 1 --frames 8
+s1b rM1_102 M3 r F P1X @hc 1 --frames 8
+s1b rM1_103 M3 r F P1X @hc 1 --frames 8
+s1b rM1_104 M3 r F P1X @hc 1 --frames 8
+s1b rM1_105 M3 r F P1X @hc 1 --frames 8
+s1b rM1_106 M3 r F P1X @hc 1 --frames 8
+s1b rM1_107 M3 r F P1X @hc 1 --frames 8
+s1b rM1_108 M3 r F P1X @hc 1 --frames 8
+s1b rM1_109 M3 r F P1X @hc 1 --frames 8
+s1b rM1_110 M3 r F P1X @hc 1 --frames 8
+s1b rM1_111 M3 r F P1X @hc 1 --frames 8
+s1b rM1_112 M3 r F P1X @hc 1 --frames 8
+s1b rM1_113 M3 r F P1X @hc 1 --frames 8
+s1b rM1_114 M3 r F P1X @hc 1 --frames 8
+s1b rM1_115 M3 r F P1X @hc 1 --frames 8
+s1b rM1_116 M3 r F P1X @hc 1 --frames 8
+s1b rM1_117 M3 r F P1X @hc 1 --frames 8
+s1b rM1_118 M3 r F P1X @hc 1 --frames 8
+s1b rM1_119 M3 r F P1X @hc 1 --frames 8
+s1b rM1_120 M3 r F P1X @hc 1 --frames 8
+s1b rM1_121 M3 r F P1X @hc 1 --frames 8
+s1b rM1_122 M3 r F P1X @hc 1 --frames 8
+s1b rM1_123 M3 r F P1X @hc 1 --frames 8
+s1b rM1_124 M3 r F P1X @hc 1 --frames 8
+s1b rM1_125 M3 r F P1X @hc 1 --frames 8
+s1b rM1_126 M3 r F P1X @hc 1 --frames 8
+s1b rM1_127 M3 r F P1X @hc 1 --frames 8
+s1b rM1_128 M3 r F P1X @hc 1 --frames 8
+s1b rM1_129 M3 r F P1X @hc 1 --frames 8
+s1b rM1_130 M3 r F P1X @hc 1 --frames 8
+s1b rM1_131 M3 r F P1X @hc 1 --frames 8
+s1b rM1_132 M3 r F P1X @hc 1 --frames 8
+s1b rM1_133 M3 r F P1X @hc 1 --frames 8
+s1b rM1_134 M3 r F P1X @hc 1 --frames 8
+s1b rM1_135 M3 r F P1X @hc 1 --frames 8
+s1b rM1_136 M3 r F P1X @hc 1 --frames 8
+s1b rM1_137 M3 r F P1X @hc 1 --frames 8
+s1b rM1_138 M3 r F P1X @hc 1 --frames 8
+s1b rM1_139 M3 r F P1X @hc 1 --frames 8
+s1b rM1_140 M3 r F P1X @hc 1 --frames 8
+s1b rM1_141 M3 r F P1X @hc 1 --frames 8
+s1b rM1_142 M3 r F P1X @hc 1 --frames 8
+s1b rM1_143 M3 r F P1X @hc 1 --frames 8
+s1b rM1_144 M3 r F P1X @hc 1 --frames 8
+s1b rM1_145 M3 r F P1X @hc 1 --frames 8
+s1b rM1_146 M3 r F P1X @hc 1 --frames 8
+s1b rM1_147 M3 r F P1X @hc 1 --frames 8
+s1b rM1_148 M3 r F P1X @hc 1 --frames 8
+s1b rM1_149 M3 r F P1X @hc 1 --frames 8
+s1b rM1_150 M3 r F P1X @hc 1 --frames 8
+s1b rM1_151 M3 r F P1X @hc 1 --frames 8
+s1b rM1_152 M3 r F P1X @hc 1 --frames 8
+s1b rM1_153 M3 r F P1X @hc 1 --frames 8
+s1b rM1_154 M3 r F P1X @hc 1 --frames 8
+s1b rM1_155 M3 r F P1X @hc 1 --frames 8
+s1b rM1_156 M3 r F P1X @hc 1 --frames 8
+s1b rM1_157 M3 r F P1X @hc 1 --frames 8
+s1b rM1_158 M3 r F P1X @hc 1 --frames 8
+s1b rM1_159 M3 r F P1X @hc 1 --frames 8
+s1b rM1_160 M3 r F P1X @hc 1 --frames 8
+# s2 다섯 씬 (정의 H1, 조정자 11-08 추가: Rf (절 CM56 @tc 8 = 예산 16.7 − 앞 프레임 실측 렌더) 공통 채택 -- Rf 판 (렌더를 같은 프로세스에서) 과 Rf 뺀 판을 나란히).
+#    판정 판: 수박 16 (+ 대조 P1X 16, 튐 빈도) · 레고 8 · ficus·wolf·bread 4, 진단 E1 (빠른 노드·이탈) 켬. 단독 렌더 포함 a · b (A3 결과 불변 가속).
+s2 mH_1 M3 g F P1X @hc 1
+s2 mR_1 M3 g F P1X A3 @hc 1 @rr 1 @tc 8
+s2 mC_1 M3 g F P1X @hc 0
+s2 mH_2 M3 g F P1X @hc 1
+s2 mR_2 M3 g F P1X A3 @hc 1 @rr 1 @tc 8
+s2 mC_2 M3 g F P1X @hc 0
+s2 mH_3 M3 g F P1X @hc 1
+s2 mR_3 M3 g F P1X A3 @hc 1 @rr 1 @tc 8
+s2 mC_3 M3 g F P1X @hc 0
+s2 mH_4 M3 g F P1X @hc 1
+s2 mR_4 M3 g F P1X A3 @hc 1 @rr 1 @tc 8
+s2 mC_4 M3 g F P1X @hc 0
+s2 mH_5 M3 g F P1X @hc 1
+s2 mR_5 M3 g F P1X A3 @hc 1 @rr 1 @tc 8
+s2 mC_5 M3 g F P1X @hc 0
+s2 mH_6 M3 g F P1X @hc 1
+s2 mR_6 M3 g F P1X A3 @hc 1 @rr 1 @tc 8
+s2 mC_6 M3 g F P1X @hc 0
+s2 mH_7 M3 g F P1X @hc 1
+s2 mR_7 M3 g F P1X A3 @hc 1 @rr 1 @tc 8
+s2 mC_7 M3 g F P1X @hc 0
+s2 mH_8 M3 g F P1X @hc 1
+s2 mR_8 M3 g F P1X A3 @hc 1 @rr 1 @tc 8
+s2 mC_8 M3 g F P1X @hc 0
+s2 mH_9 M3 g F P1X @hc 1
+s2 mR_9 M3 g F P1X A3 @hc 1 @rr 1 @tc 8
+s2 mC_9 M3 g F P1X @hc 0
+s2 mH_10 M3 g F P1X @hc 1
+s2 mR_10 M3 g F P1X A3 @hc 1 @rr 1 @tc 8
+s2 mC_10 M3 g F P1X @hc 0
+s2 mH_11 M3 g F P1X @hc 1
+s2 mR_11 M3 g F P1X A3 @hc 1 @rr 1 @tc 8
+s2 mC_11 M3 g F P1X @hc 0
+s2 mH_12 M3 g F P1X @hc 1
+s2 mR_12 M3 g F P1X A3 @hc 1 @rr 1 @tc 8
+s2 mC_12 M3 g F P1X @hc 0
+s2 mH_13 M3 g F P1X @hc 1
+s2 mR_13 M3 g F P1X A3 @hc 1 @rr 1 @tc 8
+s2 mC_13 M3 g F P1X @hc 0
+s2 mH_14 M3 g F P1X @hc 1
+s2 mR_14 M3 g F P1X A3 @hc 1 @rr 1 @tc 8
+s2 mC_14 M3 g F P1X @hc 0
+s2 mH_15 M3 g F P1X @hc 1
+s2 mR_15 M3 g F P1X A3 @hc 1 @rr 1 @tc 8
+s2 mC_15 M3 g F P1X @hc 0
+s2 mH_16 M3 g F P1X @hc 1
+s2 mR_16 M3 g F P1X A3 @hc 1 @rr 1 @tc 8
+s2 mC_16 M3 g F P1X @hc 0
+s2 lH_1 L nd F P1X @hc 1
+s2 lR_1 L nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 lH_2 L nd F P1X @hc 1
+s2 lR_2 L nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 lH_3 L nd F P1X @hc 1
+s2 lR_3 L nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 lH_4 L nd F P1X @hc 1
+s2 lR_4 L nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 lH_5 L nd F P1X @hc 1
+s2 lR_5 L nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 lH_6 L nd F P1X @hc 1
+s2 lR_6 L nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 lH_7 L nd F P1X @hc 1
+s2 lR_7 L nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 lH_8 L nd F P1X @hc 1
+s2 lR_8 L nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 fH_1 F nd F P1X @hc 1
+s2 fR_1 F nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 fH_2 F nd F P1X @hc 1
+s2 fR_2 F nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 fH_3 F nd F P1X @hc 1
+s2 fR_3 F nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 fH_4 F nd F P1X @hc 1
+s2 fR_4 F nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 wH_1 W nd F P1X @hc 1
+s2 wR_1 W nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 wH_2 W nd F P1X @hc 1
+s2 wR_2 W nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 wH_3 W nd F P1X @hc 1
+s2 wR_3 W nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 wH_4 W nd F P1X @hc 1
+s2 wR_4 W nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 bH_1 B nd F P1X @hc 1
+s2 bR_1 B nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 bH_2 B nd F P1X @hc 1
+s2 bR_2 B nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 bH_3 B nd F P1X @hc 1
+s2 bR_3 B nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 bH_4 B nd F P1X @hc 1
+s2 bR_4 B nd F P1X A3 @hc 1 @rr 1 @tc 8
+s2 zHM3 M3 z F P1X A3 @hc 1 @rr 1
+s2 zRM3 M3 z F P1X A3 @hc 1 @rr 1 @tc 8
+s2 zHL L z F P1X A3 @hc 1 @rr 1
+s2 zRL L z F P1X A3 @hc 1 @rr 1 @tc 8
+s2 zHF F z F P1X A3 @hc 1 @rr 1
+s2 zRF F z F P1X A3 @hc 1 @rr 1 @tc 8
+s2 zHW W z F P1X A3 @hc 1 @rr 1
+s2 zRW W z F P1X A3 @hc 1 @rr 1 @tc 8
+s2 zHB B z F P1X A3 @hc 1 @rr 1
+s2 zRB B z F P1X A3 @hc 1 @rr 1 @tc 8

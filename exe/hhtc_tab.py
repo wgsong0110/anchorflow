@@ -1,7 +1,7 @@
 """절 CM58 묶음 hhtc 표: python exe/hhtc_tab.py <결과 디렉토리> -> markdown (stdout). 판 목록 = exe/hhtc_spec.txt.
 바탕 = 공통 후보 F (E + W̄ + R2 + A2) + P1X (@g4 1e-1 @g4t 1 @g4x 1, 절 CM53). @hc M = 절 CM58 정의 (0 진단만 · 1 H1 충돌 걸음 몸 전체 후퇴 오일러 · 2 H2 새 접촉 노드 후퇴 오일러 · 3 H3 걸음 끝 접촉 노드 가속도 기억 0).
 오차 = 끝난 프레임 평균 %, 60 fps 문턱 16.7 ms. 이탈 = 몸 상자 (0.1~99.9 백분위) 4 칸 밖 입자 (e1.jsonl), 이탈 판 = > 20 개. 튐 프레임 = 진단 D2 이탈 입자의 앞 5 프레임 중 입자 속도가 한 프레임에 1 m/s 넘게 는 프레임.
-되튐 판 = 첫 접촉 프레임 (hc.jsonl 의 첫 충돌 걸음 프레임, 없으면 f4) 끝 몸 질량중심 vz > 0 (절 CM57.4 의 '같은 꼴 판' 판정 그대로). K 1 수렴 받음 = 그 프레임 시도 목록이 K 1 한 번 (무너짐 0) 뿐.
+되튐 판 = 첫 접촉 프레임 (hc.jsonl 의 첫 충돌 걸음 프레임, 없으면 f4) 끝 몸 질량중심 vz > 0 (절 CM57.4 의 '같은 꼴 판' 판정 그대로). K 1 받음 = 그 프레임 시도 목록이 K 1 한 번 (무너짐 0) 뿐, 수렴 사건 = 그중 뉴턴이 허용치로 멈추고 (capN 0) 모든 보폭 1 인 판 (절 CM57.4 의 되튐 판 꼴).
 수박 손상 = logJp > 0 몫 (정답 f5 4.41 · f6 6.94 · f8 7.08 · 끝 6.51 %). 단독 = 계산 프로세스 0 인 카드 하나에 a · b 차례로, 렌더 포함 (rtrender1, 시뮬 + 가우시안 갱신 + 래스터화, 프레임 3~), 진단 끔.
 """
 import collections
@@ -188,12 +188,14 @@ def ev(n):
         return None
     tr = (r[t].get("ks") or {}).get("tries") or []
     acc1 = len(tr) == 1 and int(tr[0][0]) == 1 and int(tr[0][1]) == 0
+    it, uf = r[t].get("it") or {}, r[t].get("uf") or {}
+    conv = acc1 and int(it.get("capN", 1)) == 0 and min(uf.get("smin") or [0]) >= 1.0
     en = lambda i: (r[i].get("en") or {}) if 0 <= i < len(r) else {}
     zc = [en(i).get("zc") for i in range(t, len(r))]
     zc = [z for z in zc if z is not None and math.isfinite(z)]
     E = lambda i: (en(i).get("KE", 0) + en(i).get("PE", 0) + en(i).get("Eel", 0)) if en(i) else None
     return dict(t=t, tries=[[int(a), int(b)] for a, b, *_ in tr], acc1=acc1, vz0=en(t - 1).get("vz"), vz1=en(t).get("vz"), vz2=en(t + 1).get("vz"), vz3=en(t + 2).get("vz"),
-                E0=E(t - 1), E1=E(t), E2=E(t + 1), rise=(max(zc) - min(zc)) if zc else None, bounce=(en(t).get("vz") or 0) > 0)
+                E0=E(t - 1), E1=E(t), E2=E(t + 1), conv=conv, g2=(uf.get("g2") or [None])[-1], rise=(max(zc) - min(zc)) if zc else None, bounce=(en(t).get("vz") or 0) > 0)
 
 
 def hcsum(n):
@@ -210,6 +212,21 @@ def hcof(fl):
 
 
 HCN = {None: "P1X (훅 없음)", 0: "P1X (대조, 진단만)", 1: "P1X + H1 (충돌 걸음 몸 전체 후퇴 오일러)", 2: "P1X + H2 (새 접촉 노드 후퇴 오일러)", 3: "P1X + H3 (접촉 노드 가속도 기억 0)"}
+
+
+def rfof(fl):
+    return " @tc 8" in " " + fl + " "
+
+
+def lab(fl):
+    return HCN.get(hcof(fl), fl) + (" + Rf (예산 16.7 − 앞 프레임 렌더)" if rfof(fl) else "")
+
+
+def e1f(n):
+    e = jl(n, "e1.jsonl") or []
+    if not e:
+        return None, None
+    return max((q.get("nfast", 0) or 0) for q in e), max((q.get("nfar", 0) or 0) for q in e)
 
 
 def rrs(n):
@@ -239,15 +256,15 @@ def tzr(n):
     return f"{q['tm']:.2f} / {q['tx']:.1f} ({q['to']})"
 
 
-def zruns(sc, h):
+def zruns(sc, h, rf=False):
     for st, n, s_, md, f_ in spec:
-        if md == "z" and s_ == sc and not st.endswith("k") and hcof(f_) == h:
+        if md == "z" and s_ == sc and not st.endswith("k") and hcof(f_) == h and rfof(f_) == rf:
             return n
     return None
 
 
-def zcol2(sc, h):
-    n = zruns(sc, h)
+def zcol2(sc, h, rf=False):
+    n = zruns(sc, h, rf)
     if not n:
         return "-"
     v = [tzr(f"{n}_{k_}") for k_ in ("a", "b")]
@@ -262,7 +279,7 @@ print(__doc__.split("\n", 1)[1])
 G = collections.OrderedDict()
 for st, n, sc, md, fl in spec:
     if sc.startswith("M") and md in ("r", "g"):
-        G.setdefault((hcof(fl), "짧은 판 8 프레임" if "--frames 8" in fl else "100 프레임"), []).append(n)
+        G.setdefault((hcof(fl), ("짧은 판 8 프레임" if "--frames 8" in fl else "100 프레임") + (" Rf" if rfof(fl) else "")), []).append(n)
 rows, det = [], []
 
 
@@ -277,39 +294,40 @@ for (h, ln), ns in G.items():
     if not E_:
         continue
     acc = [(n, e) for n, e in E_ if e["acc1"]]
+    cv = [(n, e) for n, e in E_ if e["conv"]]
     oth = [(n, e) for n, e in E_ if not e["acc1"]]
     nb = sum(1 for _, e in E_ if e["bounce"])
-    rows.append(f"| {HCN.get(h, h)} | {ln} | {len(E_)} | {len(acc)} | {nb} | {rg(acc, 'vz1')} · {rg(acc, 'vz2')} | {rg(acc, 'rise', 3)} | "
+    rows.append(f"| {HCN.get(h, h)} | {ln} | {len(E_)} | {len(acc)} | {len(cv)} | {nb} | {rg(cv, 'vz1')} · {rg(cv, 'vz2')} | {rg(acc, 'vz1')} · {rg(acc, 'vz2')} | {rg(acc, 'rise', 3)} | "
                 f"{rg(acc, 'E0')} → {rg(acc, 'E1')} → {rg(acc, 'E2')} | {rg(oth, 'vz1')} · {rg(oth, 'vz2')} | {rg(oth, 'rise', 3)} |")
     for n, e in acc:
-        det.append(f"| {n} | {HCN.get(h, h)} | f{e['t'] + 1} | {e['tries']} | {fmt(e['vz0'])} → {fmt(e['vz1'])} → {fmt(e['vz2'])} → {fmt(e['vz3'])} | "
+        det.append(f"| {n} | {HCN.get(h, h)} | f{e['t'] + 1} | {e['tries']} | {'수렴' if e['conv'] else '덜 풀림 (S 후퇴 오일러)'} · {fmt(e['g2'], 3)} | {fmt(e['vz0'])} → {fmt(e['vz1'])} → {fmt(e['vz2'])} → {fmt(e['vz3'])} | "
                    f"{fmt(e['E0'])} → {fmt(e['E1'])} → {fmt(e['E2'])} | {fmt(e['rise'], 3)} | {res(n)} |")
 if rows:
     print("## 재현 -- 첫 접촉 프레임 K 1 수렴 받음 사건 (절 CM57.4 의 갈림 자리)\n")
     print("vz = 몸 질량중심 법선 속도 m/s (첫 접촉 프레임 끝 · 다음 프레임 끝), 오름 = 첫 접촉 프레임부터 질량중심 z 최대 − 최소 m, E = 운동 + 중력 위치 + SNH 탄성 J (앞 프레임 끝 → 접촉 프레임 끝 → 다음 프레임 끝).\n")
-    print("| 정의 | 길이 | 판 | K 1 수렴 받음 판 | 되튐 판 (접촉 프레임 끝 vz > 0) | 받음 판 vz 접촉 · 다음 | 받음 판 오름 m | 받음 판 E J | 다시 하거나 쪼갠 판 vz 접촉 · 다음 | 다시 하거나 쪼갠 판 오름 m |")
-    print("|---|---|---|---|---|---|---|---|---|---|")
+    print("| 정의 | 길이 | 판 | K 1 받음 판 | 그중 수렴 사건 (허용치 멈춤·보폭 1) | 되튐 판 (접촉 프레임 끝 vz > 0) | 수렴 사건 vz 접촉 · 다음 | 받음 판 vz 접촉 · 다음 | 받음 판 오름 m | 받음 판 E J | 다시 하거나 쪼갠 판 vz 접촉 · 다음 | 다시 하거나 쪼갠 판 오름 m |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
     print("\n".join(rows))
     print()
 if det:
     print("### K 1 수렴 받음 판 (판마다)\n")
-    print("| 판 | 정의 | 접촉 프레임 | 시도 [K, 무너짐] | vz 앞 → 접촉 → 다음 → 그다음 | E 앞 → 접촉 → 다음 J | 오름 m | 결과 |")
-    print("|---|---|---|---|---|---|---|---|")
+    print("| 판 | 정의 | 접촉 프레임 | 시도 [K, 무너짐] | 풀이 · 끝 ‖g‖²/F² | vz 앞 → 접촉 → 다음 → 그다음 | E 앞 → 접촉 → 다음 J | 오름 m | 결과 |")
+    print("|---|---|---|---|---|---|---|---|---|")
     print("\n".join(det))
     print()
 
-# ---- 수박 (절 CM55 표 형식)
+# ---- 수박 (절 CM55 표 형식; Rf 판 = 렌더를 같은 프로세스에서 돌리며 예산 16.7 − 앞 프레임 렌더)
 G = collections.OrderedDict()
 for st, n, sc, md, fl in spec:
     if sc.startswith("M") and md == "g" and not st.endswith("k"):
-        G.setdefault(hcof(fl), []).append(n)
+        G.setdefault((hcof(fl), rfof(fl)), []).append(n)
 rows = []
-for h, ns in G.items():
+for (h, rf), ns in G.items():
     rs = [(n, rd(n)) for n in ns if rd(n) is not None or oom(n)]
     if not rs:
         continue
     dv = sum(1 for n, _ in rs if div(n))
-    zn = zruns("M3", h)
+    zn = zruns("M3", h, rf)
     zt = zd = 0
     if zn:
         for k_ in ("a", "b"):
@@ -334,14 +352,16 @@ for h, ns in G.items():
     evs = [ev(n) for n, _ in rs]
     nb = sum(1 for e in evs if e and e["bounce"])
     na = sum(1 for e in evs if e and e["acc1"])
-    rows.append(f"| {HCN.get(h, h)} | {len(rs)} | {dv}/{len(rs)} + {zd}/{zt} | {nb}/{len(rs)} ({na}) | {sum(1 for b in bel if b > 0)}/{len(bel)} · {fmt(min(zm) + ZF if zm else None, 3)} | "
+    ff = [e1f(n) for n, _ in rs]
+    fmx = max((a for a, _ in ff if a is not None), default=None)
+    rows.append(f"| {HCN.get(h, h)}{' + Rf' if rf else ''} | {len(rs)} | {dv}/{len(rs)} + {zd}/{zt} | {nb}/{len(rs)} ({na}) | {fmx} | {sum(1 for b in bel if b > 0)}/{len(bel)} · {fmt(min(zm) + ZF if zm else None, 3)} | "
                 f"{(str(sum(1 for q in far if q > 20)) + '/' + str(len(far)) + ' · ' + str(max(far)) + ' · ' + fmt(max(e['dmax'] for e in es))) if far else '-'} | "
                 f"{(max(box) / 1e6) if box else 0:.2f} 백만 ({sum(1 for b in box if b > 5e6)}/{len(box)}) | {fmt(f5)} · {fmt(f6)} · {fmt(f8)} · {fmt(mean(lv))} [{rng(lv)}] | {rng(E_)} | "
-                f"{nk} / {nk / len(rs):.1f} | {('%.0f~%.0f' % (min(vs), max(vs))) if vs else '-'} | {zcol2('M3', h)} |")
+                f"{nk} / {nk / len(rs):.1f} | {('%.0f~%.0f' % (min(vs), max(vs))) if vs else '-'} | {zcol2('M3', h, rf)} |")
 if rows:
     print("## 수박 (절 CM55 표 형식; 비결정, 진단 D1·D2·D5 켬, 100 프레임)\n")
-    print("| 후보 | 판 | 발산 (판정 + 단독) | 되튐 판 (K 1 수렴 받음) | 바닥 뚫음 판 · z 최소 m | 이탈 판 · 최대 수 · 거리 m | 노드 상자 최대 (> 5 백만 판) | 손상 f5 · f6 · f8 (평균) · 끝 평균 [범위] % | 오차 % | 튐 프레임 (판 합 / 판당) | 튐 노드 끝 속도 최대 m/s | 단독 렌더 포함 평균 / 최악 ms (> 16.7 프레임) a · b |")
-    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    print("| 후보 | 판 | 발산 (판정 + 단독) | 되튐 판 (K 1 수렴 받음) | 빠른 노드 최대 | 바닥 뚫음 판 · z 최소 m | 이탈 판 · 최대 수 · 거리 m | 노드 상자 최대 (> 5 백만 판) | 손상 f5 · f6 · f8 (평균) · 끝 평균 [범위] % | 오차 % | 튐 프레임 (판 합 / 판당) | 튐 노드 끝 속도 최대 m/s | 단독 렌더 포함 평균 / 최악 ms (> 16.7 프레임) a · b |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     print("\n".join(rows))
     print()
 
@@ -349,9 +369,9 @@ if rows:
 RG = collections.OrderedDict()
 for st, n, sc, md, fl in spec:
     if sc in ("L", "W", "F", "B") and md == "nd" and not st.endswith("k"):
-        RG.setdefault((sc, hcof(fl)), []).append(n)
+        RG.setdefault((sc, hcof(fl), rfof(fl)), []).append(n)
 rows = []
-for (sc, h), ns in RG.items():
+for (sc, h, rf), ns in RG.items():
     rs = [(n, rd(n)) for n in ns if rd(n) is not None or oom(n)]
     if not rs:
         continue
@@ -370,11 +390,14 @@ for (sc, h), ns in RG.items():
         met = f"이탈 {sum(1 for e in es if e['nfar'] > 20)}/{len(es)} (최대 {max(e['nfar'] for e in es)} 개)" if es else "-"
     hs = [q for q in (hcsum(n) for n, _ in rs) if q]
     hcc = (f"{min(q['ncol'] for q in hs)}~{max(q['ncol'] for q in hs)} / {min(q['nstep'] for q in hs)}~{max(q['nstep'] for q in hs)} · {max(q['napp'] for q in hs)}") if hs else "-"
-    rows.append(f"| {SCN[sc]} | {HCN.get(h, h)} | {len(rs)} | {dv} | {fmt(mean(E_))} [{rng(E_)}] | {met} | {hcc} | {zcol2(sc, h)} |")
+    ff = [e1f(n) for n, _ in rs]
+    fmx = max((a for a, _ in ff if a is not None), default=None)
+    fr = [b for _, b in ff if b is not None]
+    rows.append(f"| {SCN[sc]} | {HCN.get(h, h)}{' + Rf' if rf else ''} | {len(rs)} | {dv} | {fmt(mean(E_))} [{rng(E_)}] | {met} | {fmx} · {sum(1 for b in fr if b > 20)}/{len(fr)} ({max(fr) if fr else '-'}) | {hcc} | {zcol2(sc, h, rf)} |")
 if rows:
     print("## 다른 씬 (비결정 판 + 단독 렌더 포함 a · b)\n")
-    print("| 씬 | 정의 | 판 | 발산 | 오차 % 평균 [범위] | 씬 지표 | 충돌 걸음 / 걸음 · 바꾼 노드 합 최대 | 단독 렌더 포함 평균 / 최악 ms (> 16.7 프레임) a · b |")
-    print("|---|---|---|---|---|---|---|---|")
+    print("| 씬 | 정의 | 판 | 발산 | 오차 % 평균 [범위] | 씬 지표 | 빠른 노드 (> 3 m/s) 최대 · 이탈 판 (최대 개) | 충돌 걸음 / 걸음 · 바꾼 노드 합 최대 | 단독 렌더 포함 평균 / 최악 ms (> 16.7 프레임) a · b |")
+    print("|---|---|---|---|---|---|---|---|---|")
     print("\n".join(rows))
     print()
 
@@ -395,13 +418,13 @@ for st, n, sc, md, fl in spec:
         except Exception:
             ap = "-"
         if q:
-            out.append(f"| {nz} | {SCN.get(sc, sc)} | {HCN.get(hcof(fl), fl)} | {res(nz)} | {fmt(err(nz))} | {q['am']:.2f} / {q['ax']:.1f} ({q['ao']}) | {fmt(q['rm'])} | {q['tm']:.2f} / {q['tx']:.1f} ({q['to']}) / {q['nf']} | {ap} |")
+            out.append(f"| {nz} | {SCN.get(sc, sc)} | {lab(fl)} | {res(nz)} | {fmt(err(nz))} | {q['am']:.2f} / {q['ax']:.1f} ({q['ao']}) | {fmt(q['rm'])} | {q['tm']:.2f} / {q['tx']:.1f} ({q['to']}) / {q['nf']} | {ap} | {e1f(nz)[0]} · {e1f(nz)[1]} |")
         else:
-            out.append(f"| {nz} | {SCN.get(sc, sc)} | {HCN.get(hcof(fl), fl)} | {res(nz)} | {fmt(err(nz))} | - | - | - | {ap} |")
+            out.append(f"| {nz} | {SCN.get(sc, sc)} | {lab(fl)} | {res(nz)} | {fmt(err(nz))} | - | - | - | {ap} | {e1f(nz)[0]} · {e1f(nz)[1]} |")
 if out:
     print("## 단독 (렌더 포함, 프레임 3~; 시뮬 = 재생 GPU 시간, 렌더 = 가우시안 갱신 + 래스터화 CUDA 이벤트)\n")
-    print("| 판 | 씬 | 정의 | 결과 | 오차 % | 시뮬 평균 / 최악 (> 16.7) | 렌더 평균 | 합계 평균 / 최악 (> 16.7) / 프레임 | 시작 때 그 카드 |")
-    print("|---|---|---|---|---|---|---|---|---|")
+    print("| 판 | 씬 | 정의 | 결과 | 오차 % | 시뮬 평균 / 최악 (> 16.7) | 렌더 평균 | 합계 평균 / 최악 (> 16.7) / 프레임 | 시작 때 그 카드 | 빠른 노드 최대 · 이탈 최대 |")
+    print("|---|---|---|---|---|---|---|---|---|---|")
     print("\n".join(out))
     print()
 
