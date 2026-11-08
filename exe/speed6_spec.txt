@@ -133,3 +133,19 @@ s5 gG_5 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
 s5 gG_6 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
 s5 gG_7 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
 s5 gG_8 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+# s6 같은 때 나란히 (단계마다 노드 사정이 달라 벽시계가 0.5~1 ms 흔들림): 씬마다 지금 경로 C · 가벼운 판 L · 최종 후보 H (가벼운 판 + B + Rw, Rw 중앙값을 정렬로 -- s4·s5 의 f5 튐은 np.median 첫 부름)
+s6 xCM M3 z Gp @s6o 1
+s6 xLM M3 z Gp @s6o 1 @s6l 1
+s6 xHM M3 z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s6 xCL L z Gp @s6o 1
+s6 xLL L z Gp @s6o 1 @s6l 1
+s6 xHL L z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s6 xCW W z Gp @s6o 1
+s6 xLW W z Gp @s6o 1 @s6l 1
+s6 xHW W z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s6 xCF F z Gp @s6o 1
+s6 xLF F z Gp @s6o 1 @s6l 1
+s6 xHF F z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s6 xCB B z Gp @s6o 1
+s6 xLB B z Gp @s6o 1 @s6l 1
+s6 xHB B z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1

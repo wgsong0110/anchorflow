@@ -571,7 +571,9 @@ def rw_set():
                 break
     if not vs:
         return None
-    v = float(np.median([q[1] for q in vs]))
+    sv = sorted(q[1] for q in vs)                                                         # 중앙값 (np.median 첫 부름이 ~17 ms 걸려 첫 Rw 프레임에 끼었음 -> 정렬 가운데)
+    m_ = len(sv) // 2
+    v = sv[m_] if len(sv) % 2 else 0.5 * (sv[m_ - 1] + sv[m_])
     import cupy as cp
     cp.ndarray((1,), dtype=cp.int64, memptr=S3.TB.mod.get_global("TC_RMS"))[0] = int(round(v * 1e6))
     return [vs[0][0], round(v, 4), len(vs)]
