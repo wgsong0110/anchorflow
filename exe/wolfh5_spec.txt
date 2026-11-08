@@ -15,3 +15,12 @@ s1 sS_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5dg 1 --dump_F
 s1 sS_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5dg 1
 s1 sS_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5dg 1
 s1 sS_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5dg 1
+# ---- s2 정의 C (구속 받침 안 저질량 고정 노드 = 구속 예측; s1 진단: 구속 몸 F 가 변위 없이 압축 -> 방출 몫이 마찰로 매달림) 단독 · S_구속 + C, 각 4 판 (진단 켬, 첫 판 F 덤프)
+s2 cC_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5c 1 @w5dg 1 --dump_F
+s2 cC_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5c 1 @w5dg 1
+s2 cC_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5c 1 @w5dg 1
+s2 cC_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5c 1 @w5dg 1
+s2 cSC_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5dg 1 --dump_F
+s2 cSC_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5dg 1
+s2 cSC_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5dg 1
+s2 cSC_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5dg 1

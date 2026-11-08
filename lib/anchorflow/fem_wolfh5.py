@@ -22,6 +22,11 @@ s (--w5s 1) 정의 S_구속 (정의 변경, 순차 방출 구속 노드 몫의 �
         앞면 뒤 정답 받침 (1.5 cm) 밖 입자는 κ = 1. 구속 노드 걸음 끝 가속도 처치 (mt_akb: k < 1 이면 a = 0) 는 연속판 a ← k a (k ∈ {0, 1} 이면 같음).
         문턱·클램프 없음 (κ = Σ w k_g ≥ 0, 받침 표지 Σ w (1 − k_g) 가 0 인 노드만 정확히 1). 정답 격자 버퍼는 첫 프레임 입자 상자 ± 3 칸 (구속 입자는 거의 안 움직임; 상자 밖 입자는 몫 없음 = κ 1).
     순차 방출 구속이 없는 씬 (구속 입자 없음) 과 구속 속도 (pvb, bread 의 enforce_particle_translation) 씬은 아무것도 안 함.
+c (--w5c 1) 정의 C (정의 변경, 구속 노드의 저질량 고정 자리): 지금 mt_floor_n 은 질량 < m̄ (mlow) 인 노드를 구속 몫과 상관없이 관성 예측 Ũ (자유 낙하) 에 고정 --
+    구속 받침 안 (k_구속 < 1) 가벼운 노드도 한 프레임 ½ g Δt² (7.8 mm) 씩 떨어져, 움직이지 않는 구속 입자의 F 에 그 노드 ∇w 만큼 수직 압축·전단이 매 프레임 쌓임
+    (진단 s1: 구속 입자 변위 0 인데 F_zz −5e-5/프레임, 30 프레임 뒤 구속 몸 압력 150 kPa -- 정답 0.0~0.3 kPa; 방출된 입자가 이 압축을 들고 나가 마찰 (DP) 로 매달림).
+    C: 가벼운 고정 노드도 같은 구속 법칙의 예측 ŷ_구속 = Ũ + (1 − k_구속)(z0 + v_목표 − Ũ) 에 고정 (풀린 노드의 h 와 같은 식; k_구속 = 1 이면 Ũ 그대로, 0 이면 걸음 시작 자리).
+    문턱·클램프 없음 (k_구속 은 그 씬의 구속 정의 그대로 -- 기본 e^−x 또는 S_구속).
 """
 import atexit
 import json
@@ -29,7 +34,7 @@ import os
 
 import numpy as np
 
-ST = dict(dg=0, s=0, out=".", marks=[], sol=None, said=False, info={})
+ST = dict(dg=0, s=0, c=0, out=".", marks=[], sol=None, said=False, info={})
 NB, NH, PF, QF = 9, 2, 14, 10
 CAPR = 4096
 EDGES = [-6, -3, 0, 3, 6, 11, 21, 40]
@@ -222,6 +227,9 @@ __global__ void w5s_akb(const int* IP, const float* kb, float* ak) {
 }
 '''
 
+FLOOR_OLD = "    if (mn[n] < mthr) { for (int a=0;a<3;a++) { float yy = Ut[n*3+a]; yh[n*3+a] = yy;"
+FLOOR_NEW = ("    if (mn[n] < mthr) { float kc_ = (kb && W5_CF) ? kb[n] : 1.f;   // 절 CM70 C: 구속 노드의 저질량 고정 자리 = 구속 예측\n"
+             "        for (int a=0;a<3;a++) { float yy = Ut[n*3+a] + ((kc_ < 1.f) ? (1.f - kc_)*(z0[n*3+a] + vt[a] - Ut[n*3+a]) : 0.f); yh[n*3+a] = yy;")
 ELEM_OLD = "else atomicAdd(&f[ids[o]*3+a], fs[a]); }"
 ELEM_NEW = "else atomicAdd(&f[ids[o]*3+a], fs[a]); if (W5_FE) atomicAdd(&W5_FE[ids[o]*3+a], fs[a]); }"
 
@@ -237,6 +245,11 @@ def patch_src(src):
     i = src.index("__global__ void __launch_bounds__(128) ao_elem_s(")
     i = src.rfind("\n", 0, src.rfind("__device__ __forceinline__ void ao_pairs", 0, i))
     src = src[:i] + "\n__device__ double* W5_FE;\n" + src[i:]
+    i = src.index("__global__ void mt_floor_n(")
+    j = src.find("__global__", i + 10)
+    body = src[i:j]
+    assert body.count(FLOOR_OLD) == 1, ("wolfh5: mt_floor_n 저질량 줄", body.count(FLOOR_OLD))
+    src = src[:i] + "__device__ int W5_CF;\n" + body.replace(FLOOR_OLD, FLOOR_NEW) + src[j:]
     body = W5_SRC
     k = src.rstrip().rfind("}")
     return src[:k] + body + "\n}\n"
@@ -297,12 +310,13 @@ def _bindfe(s_):
     except Exception:                                                             # noqa: BLE001
         return
     ART.cp.ndarray((1,), dtype=ART.cp.uint64, memptr=g)[0] = int(s_._w5fe.data_ptr()) if ST["dg"] else 0
+    ART.cp.ndarray((1,), dtype=ART.cp.int32, memptr=mod.get_global("W5_CF"))[0] = 1 if (ST["c"] and _rel(s_)) else 0
 
 
-def install(dg=0, s=0, out=".", rel=None):
+def install(dg=0, s=0, out=".", rel=None, c=0):
     from . import fem_an_rt as ART
     from . import fem_mat_rt as MRT
-    ST.update(dg=int(dg), s=int(s), out=out, rel=rel or {}, dxg=float((rel or {}).get("dxg", 0.01)))
+    ST.update(dg=int(dg), s=int(s), c=int(c), out=out, rel=rel or {}, dxg=float((rel or {}).get("dxg", 0.01)))
     _ob = ART.build_src
     ART.build_src = lambda *a, **kw: patch_src(_ob(*a, **kw))
     i32, f32 = np.int32, np.float32
@@ -393,10 +407,10 @@ def install(dg=0, s=0, out=".", rel=None):
             print(f"[절 CM70] S_구속 정답 격자 상자 {s_._w5g['G']} 노드 {s_._w5g['ng']} 표본 {s_._w5g['KS']}", flush=True)
         return r
     ART.RTSolver.step = step
-    print(f"[절 CM70] wolfh5 켬: 진단 {ST['dg']} · S_구속 {ST['s']} · 방출 {ST['rel']}", flush=True)
+    print(f"[절 CM70] wolfh5 켬: 진단 {ST['dg']} · S_구속 {ST['s']} · C {ST['c']} · 방출 {ST['rel']}", flush=True)
 
     def _fin():
-        info = dict(dg=ST["dg"], s=ST["s"], rel=ST["rel"], **ST["info"])
+        info = dict(dg=ST["dg"], s=ST["s"], c=ST["c"], rel=ST["rel"], **ST["info"])
         sol = ST.get("sol")
         if sol is not None:
             try:
