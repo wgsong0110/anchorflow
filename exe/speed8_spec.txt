@@ -1,0 +1,49 @@
+# 절 CM74 묶음 speed8 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_speed8.sh). H2 = Hc @s7nm 1 @s7z 1 @s7p 1 (+ 새 실행기 --cap_mul 4) (절 CM72 공통 후보).
+# W = 워프 모으기 @s8w 1 (확인 판 2), G = X3g @s8g 1e6 (반복 1 시작 잔차로 무너짐 판정, 결과 바뀜), I = 반복 1 을 예산 문 뒤로 --xit_from 1 (결과 바뀜)
+s0k kW2 M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 2 @s7src 1 --frames 20
+s0k kW1 M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 --frames 20
+s0k kG M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s8g 1e6 --frames 20
+s0k kI M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 --xit_from 1 --frames 20
+s0k kIL L r Hc @s7nm 1 @s7z 1 @s7p 1 --cap_mul 4 --xit_from 1 --frames 10
+s1 vW_1 M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 2
+s1 vW_2 M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 2
+s1 vW_3 M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 2
+s1 vW_4 M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 2
+s1 gW_1 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1
+s1 gW_2 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1
+s1 gW_3 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1
+s1 gW_4 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1
+s1 gW_5 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1
+s1 gW_6 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1
+s1 gW_7 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1
+s1 gW_8 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1
+s1 gG_1 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s8g 1e6
+s1 gG_2 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s8g 1e6
+s1 gG_3 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s8g 1e6
+s1 gG_4 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s8g 1e6
+s1 gG_5 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s8g 1e6
+s1 gG_6 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s8g 1e6
+s1 gG_7 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s8g 1e6
+s1 gG_8 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s8g 1e6
+s1 gI_1 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 --xit_from 1
+s1 gI_2 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 --xit_from 1
+s1 gI_3 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 --xit_from 1
+s1 gI_4 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 --xit_from 1
+s1 gI_5 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 --xit_from 1
+s1 gI_6 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 --xit_from 1
+s1 gI_7 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 --xit_from 1
+s1 gI_8 M3 g Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 --xit_from 1
+s1 pA M3 q Hc @s7nm 1 @s7z 1 @s7p 1 @s7kp 3,100
+s1 pW M3 q Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s7kp 3,100
+s2 xHM M3 z Hc @s7nm 1 @s7z 1 @s7p 1
+s2 xWM M3 z Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1
+s2 xGM M3 z Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s8g 1e6
+s2 xIM M3 z Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 --xit_from 1
+s2 xHL L z Hc @s7nm 1 @s7z 1 @s7p 1 --cap_mul 4
+s2 xHW W z Hc @s7nm 1 @s7z 1 @s7p 1 --cap_mul 4
+s2 xHF F z Hc @s7nm 1 @s7z 1 @s7p 1 --cap_mul 4
+s2 xHB B z Hc @s7nm 1 @s7z 1 @s7p 1 --cap_mul 4
+s2 xIL L z Hc @s7nm 1 @s7z 1 @s7p 1 --cap_mul 4 --xit_from 1
+s2 xIW W z Hc @s7nm 1 @s7z 1 @s7p 1 --cap_mul 4 --xit_from 1
+s2 xIF F z Hc @s7nm 1 @s7z 1 @s7p 1 --cap_mul 4 --xit_from 1
+s2 xIB B z Hc @s7nm 1 @s7z 1 @s7p 1 --cap_mul 4 --xit_from 1
