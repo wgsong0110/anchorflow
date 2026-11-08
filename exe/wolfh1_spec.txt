@@ -42,3 +42,18 @@ s2 cNPT2_1 W nd F @h1n 1 --fl_pt --fl_bst 2
 s2 cNPT2_2 W nd F @h1n 1 --fl_pt --fl_bst 2
 s2 cNPT2_3 W nd F @h1n 1 --fl_pt --fl_bst 2
 s2 cNPT2_4 W nd F @h1n 1 --fl_pt --fl_bst 2
+# ---- s3 고침 후보 + 작은 받침 안정화 (절 CM51 ghost penalty 3 γ̄ 1e-1, ghost3 묶음 코드 그대로): s2 에서 무너짐은 맞으나 가벼운 노드 튐 (이탈·메모리 발산) 이 드러남
+s3 gF_1 W nd F @g3 1e-1
+s3 gF_2 W nd F @g3 1e-1
+s3 gN_1 W nd F @h1n 1 @g3 1e-1
+s3 gN_2 W nd F @h1n 1 @g3 1e-1
+s3 gN_3 W nd F @h1n 1 @g3 1e-1
+s3 gN_4 W nd F @h1n 1 @g3 1e-1
+s3 gPT2_1 W nd F --fl_pt --fl_bst 2 @g3 1e-1
+s3 gPT2_2 W nd F --fl_pt --fl_bst 2 @g3 1e-1
+s3 gPT2_3 W nd F --fl_pt --fl_bst 2 @g3 1e-1
+s3 gPT2_4 W nd F --fl_pt --fl_bst 2 @g3 1e-1
+s3 gNPT2_1 W nd F @h1n 1 --fl_pt --fl_bst 2 @g3 1e-1
+s3 gNPT2_2 W nd F @h1n 1 --fl_pt --fl_bst 2 @g3 1e-1
+s3 gNPT2_3 W nd F @h1n 1 --fl_pt --fl_bst 2 @g3 1e-1
+s3 gNPT2_4 W nd F @h1n 1 --fl_pt --fl_bst 2 @g3 1e-1

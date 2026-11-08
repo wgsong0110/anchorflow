@@ -1,4 +1,4 @@
-"""절 CM52 묶음 wolfh1 감싸개: 고침 후보 (lib/anchorflow/fem_wolfh1.py) 를 붙인 뒤 exe/escape4_wrap.py 로 넘김
+"""절 CM52 묶음 wolfh1 감싸개: 고침 후보 (lib/anchorflow/fem_wolfh1.py) 를 붙인 뒤 exe/ghost3_wrap.py (--g3 없으면 손대지 않고) -> exe/escape4_wrap.py 로 넘김
 (그쪽 --e5r·--e5a, escape3 의 --e3w, escape2·escape1·speed3 인자는 그대로 넘어감).
 
 사용: python exe/wolfh1_wrap.py [--h1n 1] <escape4_wrap 인자...> <실행기.py> <실행기 인자...>
@@ -21,5 +21,5 @@ if int(float(CAND.get("h1n", 0))):
     from anchorflow import fem_wolfh1 as H1
     H1.install(n=int(float(CAND["h1n"])))
     print(f"[절 CM52] 시작점 섞기 β 를 법선 성분에만 (N {H1.ST['n']})", flush=True)
-sys.argv = [os.path.join(HERE, "escape4_wrap.py")] + argv
+sys.argv = [os.path.join(HERE, "ghost3_wrap.py")] + argv                                 # ghost3_wrap 은 --g3 없으면 그대로 escape4_wrap 으로 넘김
 runpy.run_path(sys.argv[0], run_name="__main__")
