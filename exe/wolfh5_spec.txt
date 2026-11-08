@@ -54,3 +54,4 @@ s6 wSC_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5gw 1 @w5dg 1
 s6 wSC_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5gw 1 @w5dg 1
 s6 wC_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5c 1 @w5gw 1 @w5dg 1
 s6 wC_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5c 1 @w5gw 1 @w5dg 1
+# ---- s7 영상 렌더만 (exe/wolfh5_pre_s7.sh, 판 목록 없음)
