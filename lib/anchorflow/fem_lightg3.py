@@ -167,6 +167,10 @@ def weights(s, ok, pm):
         ST["nw0"] += 1
     else:
         ST["nw"] += 1
+        if (DG or FD) and bf is not None:                                                      # 진단·검사 판만: 이 가중에 쓴 표시 사본 (새 실행기는 걸음 끝 진단 rt_floor_q 가 표시를 다시 써서 프레임 끝 표시와 다름)
+            if getattr(s, "l3bf", None) is None or s.l3bf.numel() < bf.numel():
+                s.l3bf = torch.zeros_like(bf)
+            s.l3bf[:bf.numel()].copy_(bf)
 
 
 def _npen(G6):
@@ -375,7 +379,9 @@ def diag(s, fi):
     pm = s.pm[:nn]
     act = mn > 0
     med = float(mn[act].median()) if bool(act.any()) else 0.0
-    bf = getattr(s, "mfbf", None)
+    bf = getattr(s, "l3bf", None)
+    if bf is None:
+        bf = getattr(s, "mfbf", None)
     nmk = int(bf[:nn].bool().sum()) if bf is not None else None
     rec = dict(f=fi, fr=FR, r0=R0, ncand=int(keys.numel()), mbar=mt, mbar_med=(mt / med if med > 0 else None), nw=ST["nw"], nw0=ST["nw0"], nfl=ST["nfl"], npre=ST["npre"],
                nact=int(act.sum()), nfix=int((act & (pm == 2)).sum()), nlight=int((act & (mn < mt)).sum()), nlight_free=int((act & (mn < mt) & (pm != 2)).sum()), nmark=nmk)
@@ -425,7 +431,9 @@ def _ref(s, G6):
     l = torch.where(mm > 0, mb / (mm + mb), torch.zeros_like(mm))
     l0 = torch.where(fr, l, torch.zeros_like(l)).max(1).values
     lA = torch.where(fr & (mm >= mb), l, torch.zeros_like(l)).max(1).values
-    bf = getattr(s, "mfbf", None)
+    bf = getattr(s, "l3bf", None)                                                              # 마지막 가중 커널이 쓴 표시 사본
+    if bf is None:
+        bf = getattr(s, "mfbf", None)
     bt = bf[:nn].bool()[ids].any(1) if bf is not None else torch.zeros_like(lA, dtype=torch.bool)
     lB = torch.where(bt, torch.zeros_like(lA), lA)
     la = l.max(1).values

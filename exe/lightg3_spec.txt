@@ -10,6 +10,8 @@ s0k kWR0 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l3 10 @l3sc 1 @l3fr 1 @l3r0 1 @
 s0k kBA10 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3fd 3,7 --frames 8
 s0k kL L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 --frames 8
 s0k kF F nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 --frames 8
+# s0bk 연기 (검사 고침 확인): wolf (B) γ̄_L 10 26 프레임, 검사 f25 -- 가중 커널이 쓴 표시 사본으로 torch 대조
+s0bk kWB10b W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l3 10 @l3sc 1 @l3fr 2 @l3dg 1 @l3fd 25 --frames 26
 # s1: 수박 (A)·(B) × γ̄_L 10 · 1 각 16 판 (진단 D1·D2·D5·D6·lg3·금 면) + 진단 전용 G'' 4 판 (금 면·튐 면 λ) + 단독 렌더 포함 a · b
 s1 mA10_1 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
 s1 mA10_2 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
