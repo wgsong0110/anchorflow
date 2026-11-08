@@ -1,3 +1,2 @@
-# 절 CM40 영상 판: D 는 절 CM38 덤프 판 (M3_X3c = D 와 같은 명령) 의 h5 로 일반 렌더만, C2 는 덤프 판으로 다시 돌림
-D h5 r2:storage/result/anchorflow/lbours/wmredesign/vid/M3_X3c/h5_fem
-C2 run --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16
+# 절 CM40 영상 판 (덤프 판으로 다시 돌림; 절 CM38 M3_X3c 덤프의 R2 h5_fem 은 f36 부터 전송 깨짐이라 D 도 다시)
+D2 run --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1
