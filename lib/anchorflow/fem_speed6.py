@@ -22,8 +22,9 @@
 (R) 렌더를 시뮬 스트림 밖으로 (--s6r 1, O 위; 래스터화·갱신은 읽기만이라 풀이 결과 불변, Rf 가 빼는 몫만 바뀜): 프레임 끝 시뮬 스트림 S 에서는 가우시안 입자 x·F 를
     두 칸 버퍼로 모으기 (index_select) 만 하고, 갱신·래스터화는 기본 스트림 D 에서 그 사본으로. 래스터화 띄우기 (전처리 개수 읽기에서 호스트가 막힘) 는
     다음 프레임 첫 그래프 재생을 띄운 바로 뒤로 미룸 -> 호스트가 막힌 동안에도 S 는 시뮬을 돎. rr.jsonl b = 모으기 (S), c = 0 (S 에 드러난 래스터화 없음).
-(Rw) 벽시계 렌더 몫 (--s6rw 1, 결과 바뀜 = Rf 의 벽시계 판): 프레임 n 의 예산 한도에서 빼는 몫 TC_RMS = W_k − T_k (k = 프레임 n 시작 때 이미 끝난 가장 최근 프레임,
-    W = 벽시계 프레임 간격, T = 시간 예산 시계 (globaltimer) 가 잰 그 프레임 시뮬 구간 TB_TE − TB_T0) -- 시뮬 예산 시계 밖의 모든 것 (렌더·호스트 빈틈·
+(Rw) 벽시계 렌더 몫 (--s6rw 1, 결과 바뀜 = Rf 의 벽시계 판): 프레임 n 의 예산 한도에서 빼는 몫 TC_RMS = Ws_k − T_k (k = 프레임 n 시작 때 이미 끝난 가장 최근 프레임,
+    Ws = 시뮬 스트림 프레임 끝 사이 벽시계 간격 (R 이면 렌더가 다른 스트림에서 겹쳐 돌아 이것이 관 (pipeline) 주기; 그림 끝 간격 W 는 래스터화 끝 시각이 흔들려 잡음이 큼),
+    T = 시간 예산 시계 (globaltimer) 가 잰 그 프레임 시뮬 구간 TB_TE − TB_T0) -- 시뮬 예산 시계 밖의 모든 것 (렌더·호스트 빈틈·
     프레임 사이 코드) 을 벽시계로 뺌. k 가 없으면 (처음 몇 프레임) Rf 값 그대로. 클램프 없음.
 
 (P) 프로파일 (--s6prof F0,F1): 프레임 F0 시작 ~ F1 시작 사이를 torch.profiler (CPU·CUDA, 파이썬 호출 쌓기) 로 -> <out>/trace.json.gz
@@ -114,29 +115,56 @@ class Defer:
         s.LJ = torch.empty(L, Np, dtype=torch.float32, pin_memory=True) if ljp else None
         s.VM = torch.full((L,), float("nan"), device=S.x.device, dtype=torch.float32) if vmax else None
         s.cs = torch.cuda.Stream()
+        s.XR = s.LR = s.VR = s.PR = None
+        s.p0 = s.pref = None
         s.meta = []
         s.n = 0
         s.cell = float(S.A.reshape(3, 3)[:, 0].norm()) if torch.is_tensor(S.A) else None
         print(f"[절 CM65] 실행기 사본: 프레임 사이 평가를 끝으로 (고정 메모리 {s.X.numel() * 4 / 1e9 + (s.LJ.numel() * 4 / 1e9 if ljp else 0):.2f} GB)", flush=True)
 
     def keep(s, fi, S, redo, K, tries):
+        """시뮬 스트림에서는 원 배열 장치 사본 (D2D 복사) 만 -- 순서 되돌리기·속도 최대·고정 메모리 복사는 복사 스트림에서 (세 칸 고리)."""
         cur = torch.cuda.current_stream()
-        xo = torch.empty_like(S.x)
-        xo[S.perm] = S.x
-        lo = None
-        if s.LJ is not None:
-            lo = torch.empty_like(S.ljp)
-            lo[S.perm] = S.ljp
-        if s.VM is not None:
-            s.VM[fi] = torch.linalg.vector_norm(S.v, dim=-1).max()
-        s.cs.wait_stream(cur)
+        k = fi % 3
+        if s.XR is None:
+            s.XR = [torch.empty_like(S.x) for _ in range(3)]
+            s.LR = [torch.empty_like(S.ljp) for _ in range(3)] if s.LJ is not None else None
+            s.VR = [torch.empty_like(S.v) for _ in range(3)] if s.VM is not None else None
+            s.PR = [torch.empty_like(S.perm) for _ in range(3)]
+            s.evd = [None] * 3
+        if s.evd[k] is not None:
+            cur.wait_event(s.evd[k])
+        s.XR[k].copy_(S.x)
+        if s.LR is not None:
+            s.LR[k].copy_(S.ljp)
+        if s.VR is not None:
+            s.VR[k].copy_(S.v)
+        det = bool(getattr(S, "det", False))
+        if det or s.p0 is None or s.pref is not S.perm:                                   # 비결정 판 perm 은 처음 정한 뒤 안 바뀜 (결정적 판만 프레임마다 정렬)
+            s.PR[k].copy_(S.perm)
+            s.p0, s.pref = k, S.perm
+            pk = k
+        else:
+            pk = s.p0
+        ev = torch.cuda.Event()
+        ev.record(cur)
+        s.cs.wait_event(ev)
         with torch.cuda.stream(s.cs):
+            P = s.PR[pk]
+            xo = torch.empty_like(s.XR[k])
+            xo[P] = s.XR[k]
             s.X[fi].copy_(xo, non_blocking=True)
-            if lo is not None:
+            if s.LR is not None:
+                lo = torch.empty_like(s.LR[k])
+                lo[P] = s.LR[k]
                 s.LJ[fi].copy_(lo, non_blocking=True)
-        xo.record_stream(s.cs)
-        if lo is not None:
-            lo.record_stream(s.cs)
+            if s.VR is not None:
+                s.VM[fi] = torch.linalg.vector_norm(s.VR[k], dim=-1).max()
+            d_ = torch.cuda.Event()
+            d_.record(s.cs)
+        s.evd[k] = d_
+        if det:                                                                            # 결정적 판: 다음 프레임 정렬이 이 칸을 덮기 전에 복사 스트림이 읽음 (칸마다 따로라 괜찮음) -- p0 는 이 칸
+            pass
         s.meta.append(dict(t=fi, ms=float(S.last_ms), redo=bool(redo), K=int(K) if K is not None else None, tries=[list(q) for q in tries] if tries else None))
         s.n = fi + 1
 
@@ -144,6 +172,7 @@ class Defer:
         """돌려줌: errs, ms, div_at (실행기 고리와 같은 정의: 비유한·오차 > 2·(vlim 있으면) 속도 최대 > vlim 인 첫 프레임에서 끊음)."""
         import hashlib
         import math
+        r_flush()                                                                          # (R) 마지막 프레임 래스터화 (고리 끝 바로)
         torch.cuda.synchronize()
         s.cs.synchronize()
         vm = s.VM.cpu().tolist() if s.VM is not None else None
@@ -201,6 +230,7 @@ class W:
     ref = None
     tref = None
     prev_P = None
+    prev_ev1 = None
     prev_h1 = None
     fr = 0
     dep = 0
@@ -234,6 +264,9 @@ def _resolve(force=False):
             last.synchronize()
             ev1.synchronize()
         rec["per"] = round(ev0.elapsed_time(ev1), 4)
+        if W.prev_ev1 is not None:
+            rec["Ws"] = round(W.prev_ev1.elapsed_time(ev1), 4)                             # 시뮬 스트림 프레임 끝 간격
+        W.prev_ev1 = ev1
         if rec.get("tb") is not None:
             ok_, tb_ = rec.pop("tb")
             if force:
@@ -529,8 +562,8 @@ def rw_set():
     if S3.TB.mod is None:
         return None
     for r in reversed(W.recs):
-        if r.get("W") is not None and r.get("T") is not None:
-            v = r["W"] - r["T"]
+        if r.get("Ws") is not None and r.get("T") is not None:
+            v = r["Ws"] - r["T"]
             import cupy as cp
             cp.ndarray((1,), dtype=cp.int64, memptr=S3.TB.mod.get_global("TC_RMS"))[0] = int(round(v * 1e6))
             return [r["t"], round(v, 4)]

@@ -50,3 +50,44 @@ s2k kRL L q Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 --frames 8
 s2k kRM M3 q Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1 --frames 8
 s2k kRW W q Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1 --frames 8
 s2k khBL2 L h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1 @s6b 1 @s6r 1 --frames 8
+# s2k2 연기 (8 프레임): 실행기 사본 평가 미루기를 복사 스트림으로 (시뮬 스트림은 D2D 사본만) · Rw 를 시뮬 스트림 간격 Ws 로
+s2k2 kR2M M3 q Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1 --frames 8
+s2k2 khR2L L h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1 @s6b 1 @s6r 1 --frames 8
+# s2 (2) 결과 불변 호스트 정리 B·R 의 끝 해시 (s1 hH*0 과 짝) + (3)(4) 단독 a · b: 가벼운 판 + B / + R (Rf 그대로) / + R + Rw (= 후보 'G' + O + 호스트 정리') + 수박 비결정 8 판 (후보 · 가벼운 판만)
+s2 hRL2 L h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1 @s6b 1 @s6r 1
+s2 hRW2 W h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1 @s6b 1 @s6r 1
+s2 hRF2 F h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1 @s6b 1 @s6r 1
+s2 hRB2 B h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1 @s6b 1 @s6r 1
+s2 gW_1 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1
+s2 gL_1 M3 g Gp @s6o 1 @s6l 1
+s2 gW_2 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1
+s2 gL_2 M3 g Gp @s6o 1 @s6l 1
+s2 gW_3 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1
+s2 gL_3 M3 g Gp @s6o 1 @s6l 1
+s2 gW_4 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1
+s2 gL_4 M3 g Gp @s6o 1 @s6l 1
+s2 gW_5 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1
+s2 gL_5 M3 g Gp @s6o 1 @s6l 1
+s2 gW_6 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1
+s2 gL_6 M3 g Gp @s6o 1 @s6l 1
+s2 gW_7 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1
+s2 gL_7 M3 g Gp @s6o 1 @s6l 1
+s2 gW_8 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1
+s2 gL_8 M3 g Gp @s6o 1 @s6l 1
+s2 pWM M3 q Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1 @s6prof 20,26
+s2 pWL L q Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1 @s6prof 20,26
+s2 zBM M3 z Gp @s6o 1 @s6l 1 @s6b 1
+s2 zRM M3 z Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1
+s2 zWM M3 z Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1
+s2 zBL L z Gp @s6o 1 @s6l 1 @s6b 1
+s2 zRL L z Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1
+s2 zWL L z Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1
+s2 zBW W z Gp @s6o 1 @s6l 1 @s6b 1
+s2 zRW W z Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1
+s2 zWW W z Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1
+s2 zBF F z Gp @s6o 1 @s6l 1 @s6b 1
+s2 zRF F z Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1
+s2 zWF F z Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1
+s2 zBB B z Gp @s6o 1 @s6l 1 @s6b 1
+s2 zRB B z Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1
+s2 zWB B z Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1
