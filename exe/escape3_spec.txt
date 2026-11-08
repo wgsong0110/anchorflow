@@ -57,3 +57,5 @@ s2 zB_E B z E
 s2 zB_G B z E @e3g 1 @e3w 2
 s2 zW_E W z E
 s2 zW_G W z E @e3g 1 @e3w 2
+# s0d 디버그 (커밋 뒤 추가): 수박 E+G+W̄ 4 프레임 D3 (ΣW̄·모은 횟수)
+s0dk dEGW M3 g E @e2g 1 @e3w 2 --frames 6

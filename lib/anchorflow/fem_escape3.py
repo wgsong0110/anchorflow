@@ -210,6 +210,7 @@ def install(w=0, g=0, newg=False):
                     finally:
                         s._e3in = False
                     s._e3done = True
+                    s._e3trig = (name, int(getattr(s, "_e3trig", (None, 0))[1]) + 1)          # 진단: 이 풀이기에서 W̄ 를 모은 횟수·마지막으로 앞선 커널
             return _ok(s, name, n, args, b)
         cls.k = k
 

@@ -107,6 +107,8 @@ if os.environ.get("AF_E3_DG", "0") == "1":
             d_wq = zbar + (wq[:nq * 27].reshape(nq, 27).float() * Uz[ids]).sum(1) - ZF
             if bool(has.any()):
                 rec["dwq_max"] = float((d_wq - d_pm).abs()[has].max())
+                sw = wq[:nq * 27].reshape(nq, 27).float().sum(1)[has]
+                rec.update(wsum_min=float(sw.min()), wsum_max=float(sw.max()), wsum_bad=int(((sw - 1).abs() > 1e-3).sum()), trig=list(getattr(s, "_e3trig", (None, 0))))
         below_q = has & (d_pm < 0)
         rec.update(nq_pm_below=int(below_q.sum()), nq_pm_below_bw_above=int((below_q & (d_bw >= 0)).sum()))
         # 입자 G2P 재구성 확인 (G 판이면 노드 질량 가중)
