@@ -1,0 +1,26 @@
+# 절 CM54 rtrender1 판 목록: <단계> <이름> <씬> <방식 z|v> <갱신 0|1> <플래그 (stab_speed4.sh dfl 낱말)>
+# 공통: F (공통 후보) + 결과 불변 가속 A3 (@s4w 1 @s4y 1 @s4x 2, 절 CM50)
+# s0k 연기 (12 프레임): 확인 판 다섯 씬 x 갱신 1 (갱신 0 대조 포함) + 단독 레고 갱신 0 하나
+s0k vL1k L v 1 F @s4w 1 @s4y 1 @s4x 2 --frames 12
+s0k vF1k F v 1 F @s4w 1 @s4y 1 @s4x 2 --frames 12
+s0k vW1k W v 1 F @s4w 1 @s4y 1 @s4x 2 --frames 12
+s0k vB1k B v 1 F @s4w 1 @s4y 1 @s4x 2 --frames 12
+s0k vM1k M3 v 1 F @s4w 1 @s4y 1 @s4x 2 --frames 12
+s0k zL0k L z 0 F @s4w 1 @s4y 1 @s4x 2 --frames 12
+# s1 확인 판 (전체 프레임, 영상 경로 화면 대조): 다섯 씬 x 갱신 1 (같은 프레임 갱신 0 도)
+s1 vL L v 1 F @s4w 1 @s4y 1 @s4x 2
+s1 vF F v 1 F @s4w 1 @s4y 1 @s4x 2
+s1 vW W v 1 F @s4w 1 @s4y 1 @s4x 2
+s1 vB B v 1 F @s4w 1 @s4y 1 @s4x 2
+s1 vM M3 v 1 F @s4w 1 @s4y 1 @s4x 2
+# s2 단독 시간 (한 카드에 차례로 a 다 돌고 b): 다섯 씬 x 갱신 0 (영상 코드 torch 그대로) · 1 (합친 커널)
+s2 zL0 L z 0 F @s4w 1 @s4y 1 @s4x 2
+s2 zF0 F z 0 F @s4w 1 @s4y 1 @s4x 2
+s2 zW0 W z 0 F @s4w 1 @s4y 1 @s4x 2
+s2 zB0 B z 0 F @s4w 1 @s4y 1 @s4x 2
+s2 zM0 M3 z 0 F @s4w 1 @s4y 1 @s4x 2
+s2 zL1 L z 1 F @s4w 1 @s4y 1 @s4x 2
+s2 zF1 F z 1 F @s4w 1 @s4y 1 @s4x 2
+s2 zW1 W z 1 F @s4w 1 @s4y 1 @s4x 2
+s2 zB1 B z 1 F @s4w 1 @s4y 1 @s4x 2
+s2 zM1 M3 z 1 F @s4w 1 @s4y 1 @s4x 2
