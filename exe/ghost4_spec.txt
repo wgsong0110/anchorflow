@@ -80,3 +80,42 @@ s2 zL1 L z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1
 s2 zL2 L z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1
 s2 zL3 L z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1
 s2 zL4 L z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1
+# s3: ficus 구속 노드 면 빼기 (@g4x 1) x 방식 0·1·2 (γ̄ 1e-1, 각 2; 첫 판 검사) + 수박 방식 3 4 판 더 + 레고 원인 가르기 (F 대조 8 · 방식 1 예산 끔 4 · 방식 0 + 질량 8 · 방식 3 8)
+s3 rF_X0_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g4fd 1,5 @g4dump 1,60
+s3 rF_X0_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1
+s3 rF_X1_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1 @g4fd 1,5 @g4dump 1,60
+s3 rF_X1_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1
+s3 rF_X2_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 2 @g4x 1 @g4fd 1,5 @g4dump 1,60
+s3 rF_X2_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 2 @g4x 1
+s3 mT3_5 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
+s3 mT3_6 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
+s3 mT3_7 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
+s3 mT3_8 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
+s3 rL_F1 L nd E @e3w 1 @e5r 2 @e5a 2
+s3 rL_F2 L nd E @e3w 1 @e5r 2 @e5a 2
+s3 rL_F3 L nd E @e3w 1 @e5r 2 @e5a 2
+s3 rL_F4 L nd E @e3w 1 @e5r 2 @e5a 2
+s3 rL_F5 L nd E @e3w 1 @e5r 2 @e5a 2
+s3 rL_F6 L nd E @e3w 1 @e5r 2 @e5a 2
+s3 rL_F7 L nd E @e3w 1 @e5r 2 @e5a 2
+s3 rL_F8 L nd E @e3w 1 @e5r 2 @e5a 2
+s3 rL_NB1 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @tb 1000
+s3 rL_NB2 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @tb 1000
+s3 rL_NB3 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @tb 1000
+s3 rL_NB4 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @tb 1000
+s3 rL_T0_1 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0
+s3 rL_T0_2 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0
+s3 rL_T0_3 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0
+s3 rL_T0_4 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0
+s3 rL_T0_5 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0
+s3 rL_T0_6 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0
+s3 rL_T0_7 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0
+s3 rL_T0_8 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0
+s3 rL_T3_1 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
+s3 rL_T3_2 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
+s3 rL_T3_3 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
+s3 rL_T3_4 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
+s3 rL_T3_5 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
+s3 rL_T3_6 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
+s3 rL_T3_7 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3
+s3 rL_T3_8 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 3

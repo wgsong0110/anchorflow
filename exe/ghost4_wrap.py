@@ -4,6 +4,7 @@
 사용: python exe/ghost3_wrap.py [--g4 g] [--g4m 1] [--g4t 1] [--g4fd 1,5,13] <escape4_wrap 인자...> <실행기.py> <실행기 인자...>
   --g4 g     ghost penalty 3 켬, γ̄ = g (강성 k = g (2μ+λ) h, 질량 k_M = g ρ̄ h³). g = 0 = 커널은 다 돌고 더하는 값 0 (결정적 판 허용, 해시 대조용). 없으면 이 모듈을 안 부름.
   --g4m 0|1  고스트 질량 (기본 1), --g4t 0|1|2|3 면 한정 방식 (기본 1): 0 없음 (절 CM47 면) · 1 3x3x3 열림 두꺼운 칸끼리 (절 CM51) · 2 5x5x5 열림 두꺼운 칸끼리 · 3 내부 칸-경계 칸 면.
+  --g4x 0|1  구속 (cuboid 고정) 노드에 닿는 면 빼기 (기본 0).
   --g4dump L (결과 불변) 프레임 목록 L 의 걸음 뒤 칸 덤프 <out>/g4cells_f<프레임>.npz (칸 좌표 cb·경계·두꺼움·면 표지·격자 A·IP·입자 위치·밀도).
   --g4fd L   (결과 불변) 프레임 목록 L 의 걸음 뒤 그래프 밖 검사·비교·시간 (fem_ghost3.check) -> <out>/g3fd.jsonl
   환경 AF_G1_DG=1 (결과 불변): <out>/g1.jsonl 에 프레임별 경계 칸·면 (빼기 뒤·앞)·두꺼운 칸 수.
@@ -28,11 +29,12 @@ if "g4" in CAND:
     os.environ["AF_G4_GAMMA"] = str(float(CAND["g4"]))
     os.environ["AF_G4_MASS"] = str(int(float(CAND.get("g4m", 1))))
     os.environ["AF_G4_THIN"] = str(int(float(CAND.get("g4t", 1))))
+    os.environ["AF_G4_FIXX"] = str(int(float(CAND.get("g4x", 0))))
     from anchorflow import fem_ghost4 as G3
     from anchorflow import fem_an_rt as ART
     from anchorflow import fem_an_rt_v0 as V0
     G3.install()
-    print(f"[절 CM53] ghost penalty 4 켬 (γ̄ {G3.GAMMA:g}, 질량 {G3.MASS}, 면 한정 방식 {G3.THIN}, 칸별 커널)", flush=True)
+    print(f"[절 CM53] ghost penalty 4 켬 (γ̄ {G3.GAMMA:g}, 질량 {G3.MASS}, 면 한정 방식 {G3.THIN}, 구속 노드 면 빼기 {G3.FIXX}, 칸별 커널)", flush=True)
     FD = {int(q) for q in CAND.get("g4fd", "").split(",") if q.strip()}
     FDUMP = {int(q) for q in CAND.get("g4dump", "").split(",") if q.strip()}
 
@@ -52,7 +54,12 @@ if "g4" in CAND:
                 G3.build_mask(s, _ok, t_, fmt, None)
                 torch.cuda.synchronize()
                 alt[f"thk{t_}"] = s.g3thk[:nc].cpu().numpy().copy(); alt[f"fm{t_}"] = fmt[:nc].cpu().numpy().copy()
+                if getattr(s, "fixd", None) is not None:                                        # 구속 노드에 닿는 면 빼기 뒤 표지도 (FIXX 와 무관하게 기록)
+                    s.k("gq_fix", int(s.capQc), (G3.P(s.IP), G3.P(s.cb), G3.P(s.fixd), G3.P(fmt), G3.P(None)), 128)
+                    torch.cuda.synchronize()
+                    alt[f"fmx{t_}"] = fmt[:nc].cpu().numpy().copy()
             G3.build_mask(s, _ok, G3.THIN, s.g3fm, None)
+            G3.apply_fix(s, _ok, s.g3fm, None)
             torch.cuda.synchronize()
         finally:
             s._gpin = False

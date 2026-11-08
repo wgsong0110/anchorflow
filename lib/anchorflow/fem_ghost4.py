@@ -27,6 +27,7 @@ from . import fem_ghost2 as G2
 
 GAMMA = float(os.environ.get("AF_G4_GAMMA", "1e-1"))                                      # γ̄ (강성 γ̄_K = 질량 γ̄_M)
 MASS = int(os.environ.get("AF_G4_MASS", "1"))                                             # (1) 고스트 질량 켬
+FIXX = int(os.environ.get("AF_G4_FIXX", "0"))                                            # 절 CM53: 구속 (cuboid 고정) 노드에 닿는 면 빼기 (면 36 노드 중 고정 노드가 있으면)
 THIN = int(os.environ.get("AF_G4_THIN", "1"))                                             # 면 한정 방식 (절 CM53): 0 없음 (절 CM47 면) · 1 3x3x3 열림 (절 CM51) · 2 5x5x5 열림 · 3 내부 칸-경계 칸 면
 ST = dict(on=False, said=False, nk={}, nmass=0, nstep=0)
 ELEM = ("rt_elem", "aq_elem", "ao_elem", "ao_elem_s")
@@ -149,6 +150,27 @@ __global__ void gq_face(const int* IP, const int* cb, const int* cidx, const uns
     }
     fm[c] = (unsigned char)m;
     if (cnt) { if (nk) atomicAdd(&cnt[1], nk); if (na) atomicAdd(&cnt[2], na); }
+}
+// ---- 구속 노드에 닿는 면 빼기 (FIXX; rt_bc_box 뒤): 면 표지 비트 a 의 면 36 노드 (칸 27 노드 중 그 축 층 0..2 + 바깥 층 9) 중 fixd 가 있으면 비트를 지움, cnt[1] 에서 뺌
+__global__ void gq_fix(const int* IP, const int* cb, const unsigned char* fixd, unsigned char* fm, int* cnt) {
+#ifdef AF_ADAPT
+    if (AF_SKIP) return;
+#endif
+    int c = blockIdx.x*blockDim.x + threadIdx.x;
+    if (IP[13] || c >= IP[11]) return;
+    int m = fm[c];
+    if (!m) return;
+    int s0, s1; int base = gq_base(IP, cb, c, &s0, &s1);
+    int cf = 0;
+    for (int o=0;o<27;o++) if (fixd[base + (o/9)*s0 + ((o/3)%3)*s1 + (o%3)]) { cf = 1; break; }
+    int m2 = m, nr = 0;
+    for (int a=0;a<3;a++) {
+        if (!(m & (1 << a))) continue;
+        int f = cf;
+        for (int i=0;i<3 && !f;i++) for (int j=0;j<3 && !f;j++) if (fixd[gq_en(base, a, i, j, s0, s1)]) f = 1;
+        if (f) { m2 &= ~(1 << a); nr++; }
+    }
+    if (m2 != m) { fm[c] = (unsigned char)m2; if (cnt) atomicSub(&cnt[1], nr); }
 }
 // ---- 곱: out += kk G dy (f32), kk = k + k_M/τ² (걸음 안) 또는 k
 __global__ void __launch_bounds__(128) gq_mv(const int* IP, const int* cb, const unsigned char* fm, float kk, const float* dy, float* out) {
@@ -477,6 +499,10 @@ def install():
                 ST["said"] = True
                 print("[절 CM53 ghost4] 켬: 경계 칸·두꺼운 칸·칸별 면 표지 (rt_gauss 뒤), 요소·곱·에너지 커널 뒤 칸별 G 몫 (강성 + 걸음 안 질량)", flush=True)
             return
+        if name == "rt_bc_box":                                                                 # 절 CM53 FIXX: 고정 노드 표시 뒤 면 빼기 (상자마다 한 번, 멱등)
+            if FIXX and getattr(s, "g3fm", None) is not None:
+                _go(s, _ok, "gq_fix", int(s.capQc), (P(s.IP), P(s.cb), args[4], P(s.g3fm), P(s.gpcnt)), 128)
+            return
         if name in STEP0:                                                                       # 새 실행기 걸음 시작: τ
             tau = float(args[STEP0[name]])
             s._g3it2 = 1.0 / (tau * tau) if tau > 0 else 0.0
@@ -569,6 +595,23 @@ def ref_struct3(s, thin):
     return R2
 
 
+def ref_struct4(s, thin):
+    """ref_struct3 + FIXX (면 36 노드 중 고정 노드 있는 면 빼기)."""
+    R = ref_struct3(s, thin)
+    if not FIXX or getattr(s, "fixd", None) is None or R["nf"] == 0:
+        return R
+    fx = s.fixd.bool()
+    keep = ~fx[R["ids"].reshape(R["ids"].shape[0], -1)].any(1)
+    R2 = dict(R)
+    R2.update(fc=R["fc"][keep], fa=R["fa"][keep], ids=R["ids"][keep], nf=int(keep.sum()), fkey=torch.sort(R["fc"][keep] * 3 + R["fa"][keep]).values)
+    return R2
+
+
+def apply_fix(s, _ok, fm, cnt):
+    if FIXX and getattr(s, "fixd", None) is not None:
+        _ok(s, "gq_fix", int(s.capQc), (P(s.IP), P(s.cb), P(s.fixd), P(fm), P(cnt)), 128)
+
+
 def mask_keys(fm, nc):
     m = fm[:nc].long()
     ks = []
@@ -625,7 +668,7 @@ def check(s, fi, out, reps=200):
         s.k("gp_face", 3 * capQc, (P(s.IP), P(s.cb), P(s.cidx), P(cut_old), P(cnt_old), P(fl_old)), 128)
         torch.cuda.synchronize()
         R0 = ref_struct3(s, 0)
-        R1 = ref_struct3(s, THIN)
+        R1 = ref_struct4(s, THIN)
         k0s, k1s = mask_keys(fm0, nc), mask_keys(fm1, nc)
         nfo = int(cnt_old[1])
         kold = torch.sort(fl_old[:nfo].long()).values
@@ -724,6 +767,7 @@ def check(s, fi, out, reps=200):
             mask_new=_ev(lambda: build_mask(s, _ok, THIN, fm0, None), reps // 4),
         )
         build_mask(s, _ok, THIN, fm1, None)                                                          # 실행 표지 되돌림 (같은 정의 -> 같은 값)
+        apply_fix(s, _ok, fm1, None)
         torch.cuda.synchronize()
         rs["mask_restored"] = same(mask_keys(s.g3fm, nc), k1s)
         # H. 훅 자리 ('훅 켬 − 훅 끔' = 칸별 커널, k·k_M 1e3 배)

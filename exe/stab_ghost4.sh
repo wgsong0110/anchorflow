@@ -75,7 +75,11 @@ run() {   # run 이름 씬 방식 카드 플래그
     [ $md = u ] && $PY exe/speed3_wolfdiag.py $CELLW $O/$n > $O/$n/wolfdiag.json 2>&1; fi
   [ $s = F ] && [ -f $O/$n/pred.pt ] && $PY exe/fem_p_period.py --data $FI --pred $O/$n/pred.pt > $O/$n/period.txt 2>&1
   log "$n rc=$rc $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200) $(tail -2 $O/$n/period.txt 2>/dev/null | tr '\n' ' ') $(grep -a 'rror' $O/$n/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
-  up $n; }
+  up $n
+  if [ -f $O/$n/pred.pt ]; then                                                              # /dev/shm 가 거의 참 (11-08 7.9 GB 남음): 덤프는 R2 에 올리고 크기 확인 뒤 로컬 사본만 지움 (R2 에 그대로 남음)
+    rclone copyto $O/$n/pred.pt $RO/$n/pred.pt -q
+    [ "$(rclone size $RO/$n/pred.pt --json 2>/dev/null | grep -o '"bytes":[0-9]*' | cut -d: -f2)" = "$(stat -c %s $O/$n/pred.pt)" ] && rm -f $O/$n/pred.pt && log "$n pred.pt R2 확인 뒤 로컬 사본 지움"
+  fi; }
 [ -f exe/ghost4_pre_$STG.sh ] && { log "앞 단계 스크립트 ghost4_pre_$STG.sh"; bash exe/ghost4_pre_$STG.sh $O $RO > $O/pre_$STG.out 2>&1; rclone copy $O $RO -q --include "pre_$STG.out"; }
 SPEC=$(grep -v '^#' exe/ghost4_spec.txt | awk -v s=$STG '$1==s')
 # ---- 판정·비결정·진단 판 (카드마다 하나)
