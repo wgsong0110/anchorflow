@@ -1,0 +1,27 @@
+# 절 CM52 묶음 wolfh1 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_wolfh1.sh)
+# F = 공통 후보 F = E + W̄ (@e3w 1) + R2 (@e5r 2) + A2 (@e5a 2) (절 CM49), E = 공통 후보 D + 시간 예산 T2 (@tb 16.7 @tb_m 0.8 @tb_w 2); 수박 M3 은 + @inv 1 + --sp2 31 (셀 3), 바탕 --gq_mass.
+# '~--플래그' = 조립된 명령에서 그 플래그 (값 없는 것) 를 뺌 (진단 대조 전용). 뒤에 준 값 있는 플래그는 argparse 마지막 값이 이김.
+# 방식 nd = 새 실행기 비결정 + 진단 (wolf 덤프 -> bbox + wolfh1_an), z = 단독 시간 (빈 카드 하나에 a · b), g = 수박 --erec + D1·D2·D5
+# ---- s1 원인 진단 (wolf, 비결정 2 판씩): 대조 F (+ --dump_F 탄성 에너지) · 예산 끔 · 풀이 끝까지 · 걸음 4 · 셀 1 · 고착 끔 · 구속 φ · 덜 풀린 걸음 a0 · ρ∞ 1 · --y0eb 뺌 · 점별 고착
+s1 dF_1 W nd F --dump_F
+s1 dF_2 W nd F --dump_F
+s1 dT_1 W nd F @tb 1000
+s1 dT_2 W nd F @tb 1000
+s1 dN_1 W nd F @tb 1000 --newton 30 --cg 40 --xit_from 0 --xg 0
+s1 dN_2 W nd F @tb 1000 --newton 30 --cg 40 --xit_from 0 --xg 0
+s1 dK4_1 W nd F @tb 1000 --K 4 --ksplit 0 ~--ks_big
+s1 dK4_2 W nd F @tb 1000 --K 4 --ksplit 0 ~--ks_big
+s1 dC1_1 W nd F @tb 1000 --cell 1
+s1 dC1_2 W nd F @tb 1000 --cell 1
+s1 dNS_1 W nd F --fl_nost
+s1 dNS_2 W nd F --fl_nost
+s1 dPH_1 W nd F --pbc_phi
+s1 dPH_2 W nd F --pbc_phi
+s1 dA0_1 W nd F --ue a0
+s1 dA0_2 W nd F --ue a0
+s1 dR1_1 W nd F --rho 1.0
+s1 dR1_2 W nd F --rho 1.0
+s1 dNE_1 W nd F ~--y0eb
+s1 dNE_2 W nd F ~--y0eb
+s1 dPT_1 W nd F --fl_pt
+s1 dPT_2 W nd F --fl_pt
