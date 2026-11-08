@@ -1,0 +1,38 @@
+# 절 CM65 묶음 speed6 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_speed6.sh)
+# Gp = 공통 후보 G' = F (E + W̄ @e3w 1 + R2 @e5r 2 + A2 @e5a 2) + P1X (@g4 1e-1 @g4t 1 @g4x 1) + A3 (@s4w 1 @s4y 1 @s4x 2) + H5 (@hc 5) + Rf (@tc 8), 렌더 포함 (@rr 1: PG 갱신 1 · 수박 갱신 2).
+# @s6o 1 = 겹치기 O (절 CM62) · @s6l 1 = 가벼운 판 (기록 전용 훅 -> 장치 일만, 진단 E1 끔, 실행기 사본 exe/s6/ = 프레임 사이 평가 끝으로) · @s6prof a,b = 프레임 a~b−1 torch.profiler. 벽시계 기록 s6.jsonl 은 늘.
+# 방식: z = 단독 (계산 프로세스 0 인 카드 하나에 a · b 차례로) · q = 단독 a 만 (프로파일) · h = 결정적 끝 해시 (--det --fhash, 예산 @tb 1000 = 안 걸림; 짝 0 = 원래 경로, 1 = 가벼운 판) · g = 수박 비결정 + 진단
+# s0k 연기 (8 프레임)
+s0k kcM M3 q Gp @s6o 1 @s6prof 3,6 --frames 8
+s0k klM M3 q Gp @s6o 1 @s6l 1 @s6prof 3,6 --frames 8
+s0k klL L q Gp @s6o 1 @s6l 1 --frames 8
+s0k khL1 L h Gp @tb 1000 @s6o 1 @s6l 1 --frames 8
+# s1 (1) G' + O 지금 경로 (진단 E1 켬, 절 CM62 단독과 같음) 대 가벼운 판: 벽시계 기록 단독 a · b + 프로파일 (프레임 20~25) + 가벼운 판 결과 불변 (결정적 끝 해시 짝)
+s1 hL0 L h Gp @tb 1000 @s6o 1
+s1 hL1 L h Gp @tb 1000 @s6o 1 @s6l 1
+s1 hW0 W h Gp @tb 1000 @s6o 1
+s1 hW1 W h Gp @tb 1000 @s6o 1 @s6l 1
+s1 hF0 F h Gp @tb 1000 @s6o 1
+s1 hF1 F h Gp @tb 1000 @s6o 1 @s6l 1
+s1 hB0 B h Gp @tb 1000 @s6o 1
+s1 hB1 B h Gp @tb 1000 @s6o 1 @s6l 1
+s1 pCM M3 q Gp @s6o 1 @s6prof 20,26
+s1 pLM M3 q Gp @s6o 1 @s6l 1 @s6prof 20,26
+s1 pCL L q Gp @s6o 1 @s6prof 20,26
+s1 pLL L q Gp @s6o 1 @s6l 1 @s6prof 20,26
+s1 pCW W q Gp @s6o 1 @s6prof 20,26
+s1 pLW W q Gp @s6o 1 @s6l 1 @s6prof 20,26
+s1 pCF F q Gp @s6o 1 @s6prof 20,26
+s1 pLF F q Gp @s6o 1 @s6l 1 @s6prof 20,26
+s1 pCB B q Gp @s6o 1 @s6prof 20,26
+s1 pLB B q Gp @s6o 1 @s6l 1 @s6prof 20,26
+s1 zCM M3 z Gp @s6o 1
+s1 zLM M3 z Gp @s6o 1 @s6l 1
+s1 zCL L z Gp @s6o 1
+s1 zLL L z Gp @s6o 1 @s6l 1
+s1 zCW W z Gp @s6o 1
+s1 zLW W z Gp @s6o 1 @s6l 1
+s1 zCF F z Gp @s6o 1
+s1 zLF F z Gp @s6o 1 @s6l 1
+s1 zCB B z Gp @s6o 1
+s1 zLB B z Gp @s6o 1 @s6l 1
