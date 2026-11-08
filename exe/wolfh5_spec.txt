@@ -1,0 +1,13 @@
+# 절 CM70 묶음 wolfh5 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_wolfh5.sh; 낱말 F·P1X·A3 는 stab 의 dfl 이 펼침)
+# 바탕 G'' = G' + 절 CM67 (2) = 'F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1'. '@w5dg 1' = 매달림 진단 (결과 불변), '@w5s 1' = S_구속 (정답 dx 받침 구속 몫).
+# ---- s0k 연기 (8 프레임): 컴파일·훅·진단 행 (wolf G'' · wolf S_구속 · bread = 구속 속도 씬이라 S_구속 할 일 없음 확인); 앞 단계 = 정답 입자 대조 스크립트 2 프레임
+s0k kD W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5dg 1 --frames 8
+s0k kS W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5dg 1 --frames 8
+s0k kB B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 --frames 8
+# ---- s1 할 일 1 (진단: G'' 2 판, F 덤프 -> 입자 수준 대조) + 할 일 2·3 첫 정의 S_구속 4 판 (진단 켬, 첫 판 F 덤프); 앞 단계 = 정답 입자 대조 (CPU)
+s1 dG_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5dg 1 --dump_F
+s1 dG_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5dg 1 --dump_F
+s1 sS_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5dg 1 --dump_F
+s1 sS_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5dg 1
+s1 sS_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5dg 1
+s1 sS_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5dg 1
