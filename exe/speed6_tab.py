@@ -123,18 +123,18 @@ for st, n, s, md, x in spec:
 
 print("# 절 CM65 speed6 표\n")
 print("## (1) 렌더 포함 프레임 시간: GPU 합 a+b+c 대 벽시계 W (평균 / 최악 / > 16.7 프레임 수, 프레임 3~; ms)\n")
-print("| 단계 | 판 | 씬 | 플래그 | 결과 | 오차 % | **GPU 합 a+b+c** | **벽시계 W** | 시뮬 스트림 간격 Ws | 시뮬 a 평균 | 예산 시계 T 평균 | W − T 평균 | per (GPU 시각) 평균 | 호스트 안 host 평균 | 프레임 사이 gap 평균 | 지연 lat 평균 | 래스터 GPU craw | 시작 늦음 lag 평균 | 그래프 재생 ng | 동기화 nsync | 백업 재사용 | 부하 |")
-print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+print("| 단계 | 판 | 씬 | 플래그 | 결과 | 오차 % | **GPU 합 a+b+c** | **벽시계 W** | 시뮬 스트림 간격 Ws | 시뮬 a 평균 | 예산 시계 T 평균 | W − T 평균 | Rw 몫 평균 | per (GPU 시각) 평균 | 호스트 안 host 평균 | 프레임 사이 gap 평균 | 지연 lat 평균 | 래스터 GPU craw | 시작 늦음 lag 평균 | 그래프 재생 ng | 동기화 nsync | 백업 재사용 | 부하 |")
+print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 for st, n, s, md, x in runs:
     if md == "h":
         continue
     F = frames(n)
     if not F:
-        print(f"| {st} | {n} | {SCN.get(s, s)} | {x} | {res(n)} | {fmt(err(n))} |" + " - |" * 16)
+        print(f"| {st} | {n} | {SCN.get(s, s)} | {x} | {res(n)} | {fmt(err(n))} |" + " - |" * 17)
         continue
     tot = [q.get("a", float("nan")) + q.get("b", 0.0) + q.get("c", 0.0) if "b" in q else None for q in F]
     wt = [q["W"] - q["T"] for q in F if q.get("W") is not None and q.get("T") is not None]
-    print(f"| {st} | {n} | {SCN.get(s, s)} | {x} | {res(n)} | {fmt(err(n))} | {stat(tot)} | {stat([q.get('W') for q in F])} | {stat([q.get('Ws') for q in F])} | {fmt(mean([q.get('a') for q in F]))} | {fmt(mean([q.get('T') for q in F]))} | {fmt(mean(wt))} | "
+    print(f"| {st} | {n} | {SCN.get(s, s)} | {x} | {res(n)} | {fmt(err(n))} | {stat(tot)} | {stat([q.get('W') for q in F])} | {stat([q.get('Ws') for q in F])} | {fmt(mean([q.get('a') for q in F]))} | {fmt(mean([q.get('T') for q in F]))} | {fmt(mean(wt))} | {fmt(mean([(q.get('rw') or [None, None])[1] for q in F]))} | "
           f"{fmt(mean([q.get('per') for q in F]))} | {fmt(mean([q.get('host') for q in F]))} | "
           f"{fmt(mean([q.get('gap') for q in F]))} | {fmt(mean([q.get('lat') for q in F]))} | {fmt(mean([q.get('craw') for q in F]))} | {fmt(mean([q.get('lag') for q in F]), 3)} | {fmt(mean([q.get('ng') for q in F]), 1)} | {fmt(mean([q.get('nsync') for q in F]), 1)} | "
           f"{sum(q.get('bkhit', 0) or 0 for q in F)} | {load(n)} |")

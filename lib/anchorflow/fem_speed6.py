@@ -22,7 +22,8 @@
 (R) 렌더를 시뮬 스트림 밖으로 (--s6r 1, O 위; 래스터화·갱신은 읽기만이라 풀이 결과 불변, Rf 가 빼는 몫만 바뀜): 프레임 끝 시뮬 스트림 S 에서는 가우시안 입자 x·F 를
     두 칸 버퍼로 모으기 (index_select) 만 하고, 갱신·래스터화는 기본 스트림 D 에서 그 사본으로. 래스터화 띄우기 (전처리 개수 읽기에서 호스트가 막힘) 는
     다음 프레임 첫 그래프 재생을 띄운 바로 뒤로 미룸 -> 호스트가 막힌 동안에도 S 는 시뮬을 돎. rr.jsonl b = 모으기 (S), c = 0 (S 에 드러난 래스터화 없음).
-(Rw) 벽시계 렌더 몫 (--s6rw 1, 결과 바뀜 = Rf 의 벽시계 판): 프레임 n 의 예산 한도에서 빼는 몫 TC_RMS = Ws_k − T_k (k = 프레임 n 시작 때 이미 끝난 가장 최근 프레임,
+(Rw) 벽시계 렌더 몫 (--s6rw 1, 결과 바뀜 = Rf 의 벽시계 판): 프레임 n 의 예산 한도에서 빼는 몫 TC_RMS = 중앙값_k (Ws_k − T_k) (k = 프레임 n 시작 때 이미 끝난 가장 최근 프레임 다섯
+    (프레임 3 부터; 첫 세 프레임은 준비·첫 캡처·첫 그래프 프레임이라 T 가 어긋남; 중앙값 = 그래프 다시 캡처 같은 한 번 튐이 다음 프레임 예산을 통째로 지우지 않게),
     Ws = 시뮬 스트림 프레임 끝 사이 벽시계 간격 (R 이면 렌더가 다른 스트림에서 겹쳐 돌아 이것이 관 (pipeline) 주기; 그림 끝 간격 W 는 래스터화 끝 시각이 흔들려 잡음이 큼),
     T = 시간 예산 시계 (globaltimer) 가 잰 그 프레임 시뮬 구간 TB_TE − TB_T0) -- 시뮬 예산 시계 밖의 모든 것 (렌더·호스트 빈틈·
     프레임 사이 코드) 을 벽시계로 뺌. k 가 없으면 (처음 몇 프레임) Rf 값 그대로. 클램프 없음.
@@ -522,6 +523,7 @@ def _frame_r(RR, s, upd, ras):
 
 # ======================= (Rw) 벽시계 렌더 몫 =======================
 class RW:
+    nmed = 5
     tv = None
     ring = None
     k = 0
@@ -561,13 +563,18 @@ def rw_set():
     from . import fem_speed3 as S3
     if S3.TB.mod is None:
         return None
+    vs = []
     for r in reversed(W.recs):
-        if r.get("Ws") is not None and r.get("T") is not None:
-            v = r["Ws"] - r["T"]
-            import cupy as cp
-            cp.ndarray((1,), dtype=cp.int64, memptr=S3.TB.mod.get_global("TC_RMS"))[0] = int(round(v * 1e6))
-            return [r["t"], round(v, 4)]
-    return None
+        if r["t"] >= 3 and r.get("Ws") is not None and r.get("T") is not None:
+            vs.append((r["t"], r["Ws"] - r["T"]))
+            if len(vs) == RW.nmed:
+                break
+    if not vs:
+        return None
+    v = float(np.median([q[1] for q in vs]))
+    import cupy as cp
+    cp.ndarray((1,), dtype=cp.int64, memptr=S3.TB.mod.get_global("TC_RMS"))[0] = int(round(v * 1e6))
+    return [vs[0][0], round(v, 4), len(vs)]
 
 
 # ======================= (P) 프로파일 =======================

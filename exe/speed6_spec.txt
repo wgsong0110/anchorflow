@@ -105,3 +105,17 @@ s3 gV_5 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
 s3 gV_6 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
 s3 gV_7 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
 s3 gV_8 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+# s4 최종 후보 'G' + O + 호스트 정리' = 가벼운 판 + 백업 한 번 B + 벽시계 렌더 몫 Rw (중앙값 다섯 프레임, 프레임 3 부터) -- R 없음: 다섯 씬 단독 a · b + 수박 비결정 8 판
+s4 zFM M3 z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s4 zFL L z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s4 zFW W z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s4 zFF F z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s4 zFB B z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s4 gF_1 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s4 gF_2 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s4 gF_3 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s4 gF_4 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s4 gF_5 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s4 gF_6 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s4 gF_7 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s4 gF_8 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
