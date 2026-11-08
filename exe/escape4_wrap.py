@@ -95,7 +95,10 @@ if os.environ.get("AF_E5_DG", "0") == "1":
             dcar = Z().index_add_(0, q, m * pv["hr"].nan_to_num(0)) / M.clamp_min(1e-30)
             if dq is not None and getattr(s, "e5hr", None) is not None:
                 lifted = has & ~(dcar > 0)
-                rec["car_dev_err"] = float(((dcar - da0) - dl).abs()[has & ~lifted].max()) if bool((has & ~lifted).any()) else None
+                l0 = has & ((dl - (dcar - da0)) > 1e-5)                                  # A2: 걸음 시작 판정 자리에서 더 옮긴 점 (프레임 시작 이어 받은 값보다 큼)
+                rec["n_l0"] = int((l0 & ~lifted).sum())
+                ck = has & ~lifted & ~l0
+                rec["car_dev_err"] = float(((dcar - da0) - dl).abs()[ck].max()) if bool(ck.any()) else None
         # 가르기: 시작 높이 ≤ 0 인 표본점 (실제 d_q; R 판이면 기준 d̃ 옮기기 전 = 이어 받은 값)
         cats = {}
         for nm, d0 in (("act", da0), ("car", dcar)):
@@ -184,6 +187,8 @@ if os.environ.get("AF_E5_DG", "0") == "1":
         # 다음 프레임에 쓸 입자별 앞 표본점 정보
         de = da1 + dl
         hr = de[q]
+        if R_ == 2:                                                                     # R2: 받침 밖 (d̃ 끝 ≥ d̂) 은 입자 실제 높이
+            hr = torch.where(de[q] < dh, de[q], hp1)
         D["prev"] = dict(qa=bact[q].clone(), de=de[q].clone(), hr=hr.clone(), qid=q.clone())
         LOG.write(json.dumps(rec) + "\n")
         LOG.flush()

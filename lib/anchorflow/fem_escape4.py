@@ -14,6 +14,12 @@ R (--e5r 1, 정의 변경): 입자마다 '자기 칸 표본점의 걸음 끝 장
   (G2P 가 U 에 선형이라 정확히) -> 장벽이 보장한 값 (> 0) 이 곧 다음 프레임 시작 기준 높이의 재료 (h_p). 다시 모아도 새 칸의 시작 기준 높이는 그 입자들이 받은
   보장 값의 질량 평균이라 > 0 (앞 칸이 모두 활성이었으면). 처음 h_p = d(x_p) (δ = 0). 질량 가중 Σ_q m_q δ_q 는 다시 모으기에 보존 (Σ_{p∈q} m_p (x̄_q − x_p) = 0) -> 처음 0 이면 0.
   입자 배열 읽기·쓰기는 프레임에 두 번 (P2G 뒤·G2P 뒤, W̄ 모으기와 같은 자리) -- 걸음·뉴턴 안에서는 입자를 안 읽음. 문턱·클램프·노드 바닥 없음.
+R2 (--e5r 2, 정의 변경): R 과 같되 프레임 끝 표본점 기준 높이가 장벽 받침 안 (d̃_q < d̂, 장벽 에너지가 걸린 점) 일 때만 h_p 로 이어 받고,
+  받침 밖이면 h_p = d(x_p) (입자 실제 높이) -- 접촉 없는 동안 (자유 낙하 중 다시 모으기) 기준 높이가 실제와 어긋나는 것 (s1·s2: R 판 첫 접촉 전 |δ| ~1 cm, wolf 다리)
+  을 없앰. d̂ 는 장벽 자체 받침 두께 (새 값 아님).
+A2 (--e5a 2, 정의 변경): A 를 실제 '걸음 시작 판정' 자리 (rt_bar_q mode 0) 에 -- 그 판정은 y = 걸음 시작점에서 하는데 고정 노드 (m_n < mthr, pm 2) 는
+  rt_ga_y0 가 시작점으로 안 돌리고 관성 예측 ŷ 에 둠 (s3 진단: R+A 판의 남은 비활성 표본점은 W̄ 무게 0.07~0.36 이 고정 노드, 프레임 시작 기준은 d̂ 인데
+  판정 자리에서 d ≤ 0). 그 자리에서 d ≤ 0 이면 빼지 않고 기준 x̄_q 를 (d̂ − d) n 만큼 옮겨 d = d̂ (δ_q 에도 더해 R·R2 가 이어 받음). 프레임 시작 A 도 그대로.
 A (--e5a 1, 정의 변경): 걸음 시작 기준 높이 d̃_q ≤ 0 인 표본점을 장벽에서 빼지 않고, 그 점의 장벽 원점을 걸음 시작 위치로 옮긴 상대 장벽:
     d̃_q (시작) ← d̂ (δ_q = d̂ − d_q) -- 시작 위치가 장벽 받침 가장자리 (에너지 0) 가 되고, 시작 위치보다 d̂ 더 들어가는 이동에서 장벽이 무한 -> '더 들어가는 이동만 막음'.
   d̂ 는 장벽 자체의 받침 두께 (새 값 아님). R 과 함께면 옮긴 기준이 h_p 로 이어져 다음 프레임에도 유지.
@@ -36,7 +42,7 @@ __device__ __forceinline__ size_t e5_q(int p, const float* fx, const int* pcd, c
 }
 __global__ void e5_z(const int* IP, float* R, int* cnt) {
     int q = blockIdx.x*blockDim.x + threadIdx.x;
-    if (q == 0) { cnt[0] = 0; cnt[1] = 0; }
+    if (q == 0) { cnt[0] = 0; cnt[1] = 0; cnt[2] = 0; }
     if (q >= IP[12]) return;
     R[q] = 0.f;
 }
@@ -64,21 +70,49 @@ __global__ void e5_ep(int N, const int* IP, const float* fx, const float* m, con
     if (p >= N || IP[13]) return;
     atomicAdd(&S[e5_q(p, fx, pcd, cidx)], m[p]*(x[p*3]*n0 + x[p*3+1]*n1 + x[p*3+2]*n2 - pn));
 }
-__global__ void e5_eh(int N, const int* IP, const float* fx, const int* pcd, const int* cidx, const float* S, const float* DQ, float* hr) {
+// R2 (rmode 2): 장벽 받침 안 (d̃_q 끝 < d̂ -- 장벽 에너지가 걸린 점) 만 표본점 기준 높이를 이어 받고, 받침 밖은 입자 실제 높이 (δ 0 으로 돌아감)
+__global__ void e5_eh(int N, const int* IP, const float* fx, const int* pcd, const int* cidx, const float* S, const float* DQ, float* hr,
+                      const float* x, float n0, float n1, float n2, float pn, float dh, int rmode) {
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N || IP[13]) return;
     size_t q = e5_q(p, fx, pcd, cidx);
     float bm = AF_BX[q*4+3];
-    if (bm > 0.f) hr[p] = DQ[q] + S[q]/bm;
+    if (!(bm > 0.f)) return;
+    float de = DQ[q] + S[q]/bm;
+    hr[p] = (rmode == 2 && !(de < dh)) ? (x[p*3]*n0 + x[p*3+1]*n1 + x[p*3+2]*n2 - pn) : de;
 }
 '''
+
+
+A0_OLD = "        if (mode == 0) AF_BACT[qq] = (d > 0.f) ? 1 : 0;"
+A0_NEW = ("        if (mode == 0 && !(d > 0.f) && E5_DQ) { float de_ = dh - d; AF_BX[qq*4] += bm*de_*n0; AF_BX[qq*4+1] += bm*de_*n1; AF_BX[qq*4+2] += bm*de_*n2;"
+          " E5_DQ[qq] += de_; d = dh; atomicAdd(&E5_CNT[2], 1); }   // 절 CM49 A2: 걸음 시작 판정 자리 (고정 노드는 관성 예측) 에서 d ≤ 0 -> 빼지 않고 그 자리를 원점으로 한 상대 장벽 (기준 d̂)\n"
+          + A0_OLD)
 
 
 def _apply(src):
     if "__device__ float* AF_BX;" not in src:
         return src
+    src = src.replace('extern "C" {', 'extern "C" {\n__device__ float* E5_DQ;\n__device__ int* E5_CNT;', 1)
+    if ST["a"] == 2:
+        assert src.count(A0_OLD) == 1, "--e5a 2: rt_bar_q 걸음 시작 판정 줄"
+        src = src.replace(A0_OLD, A0_NEW, 1)
     i = src.rstrip().rfind("}")
     return src[:i] + E5_SRC + "\n}\n"
+
+
+def _bind5(s):
+    """E5_DQ·E5_CNT 장치 전역을 이 풀이기 모듈에 (A2 의 걸음 시작 판정 커널이 씀; 다시 할당·모듈 바꿈 뒤마다)."""
+    if getattr(s, "e5DQ", None) is None or getattr(s, "mod", None) is None:
+        return
+    from . import fem_an_rt as ART
+    try:
+        g = s.mod.get_global("E5_DQ")
+    except Exception:
+        return
+    ART.cp.ndarray((1,), dtype=ART.cp.uint64, memptr=g)[0] = int(s.e5DQ.data_ptr())
+    ART.cp.ndarray((1,), dtype=ART.cp.uint64, memptr=s.mod.get_global("E5_CNT"))[0] = int(s.e5cnt.data_ptr())
+    s._e5bound = (id(s.mod), int(s.e5DQ.data_ptr()))
 
 
 class _BK(tuple):
@@ -131,6 +165,8 @@ def install(r=0, a=0):
                 s._e5st = True
                 s._e5in = True
                 try:
+                    if ST["a"] == 2:
+                        assert getattr(s, "_e5bound", None) == (id(s.mod), int(s.e5DQ.data_ptr())), "--e5a 2: E5_DQ 가 이 모듈·버퍼에 안 묶임"
                     init_hr(s)
                     nr, pn, dh = plane(s)
                     i32, f = np.int32, np.float32
@@ -149,13 +185,13 @@ def install(r=0, a=0):
             if name in G2PK and ST["r"] and hasbar(s) and getattr(s, "e5hr", None) is not None:
                 s._e5in = True
                 try:
-                    nr, pn, _ = plane(s)
+                    nr, pn, dh = plane(s)
                     i32, f = np.int32, np.float32
                     N = int(s.N)
                     nq = s.capQc * 8
                     _ok(s, "e5_z", nq, (P(s.IP), P(s.e5S), P(s.e5cnt2)), 256)
                     _ok(s, "e5_ep", N, (i32(N), P(s.IP), P(s.fx), P(s.m), P(s.pcd), P(s.cidx), P(s.x), *[f(q) for q in nr], f(pn), P(s.e5S)), 256)
-                    _ok(s, "e5_eh", N, (i32(N), P(s.IP), P(s.fx), P(s.pcd), P(s.cidx), P(s.e5S), P(s.e5DQ), P(s.e5hr)), 256)
+                    _ok(s, "e5_eh", N, (i32(N), P(s.IP), P(s.fx), P(s.pcd), P(s.cidx), P(s.e5S), P(s.e5DQ), P(s.e5hr), P(s.x), *[f(q) for q in nr], f(pn), f(dh), i32(ST["r"])), 256)
                 finally:
                     s._e5in = False
             return r_
@@ -169,8 +205,9 @@ def install(r=0, a=0):
             nq = s.capQc * 8                                                           # 표본점 용량 (AF_BX 와 같은 capQc·8; bx 는 하위 alloc 이 뒤에 만들 수 있어 용량으로)
             Z = lambda: torch.zeros(nq, device=s.dev, dtype=torch.float32)
             s.e5R, s.e5S, s.e5DQ = Z(), Z(), Z()
-            s.e5cnt = torch.zeros(2, device=s.dev, dtype=torch.int32)
-            s.e5cnt2 = torch.zeros(2, device=s.dev, dtype=torch.int32)
+            s.e5cnt = torch.zeros(4, device=s.dev, dtype=torch.int32)
+            s.e5cnt2 = torch.zeros(4, device=s.dev, dtype=torch.int32)
+            _bind5(s)
             return r_
         cls.alloc = alloc
 
@@ -195,6 +232,20 @@ def install(r=0, a=0):
     for cls in (ART.RTSolver, V0.RTSolver):
         wrap_k(cls)
         wrap_alloc(cls)
+    _ob = ART.RTSolver.oct_bind
+
+    def oct_bind(s):
+        r_ = _ob(s)
+        _bind5(s)
+        return r_
+    ART.RTSolver.oct_bind = oct_bind
+    _oba = AORT.AORTSolver.bind_act
+
+    def bind_act(s):
+        r_ = _oba(s)
+        _bind5(s)
+        return r_
+    AORT.AORTSolver.bind_act = bind_act
     for cls in {ART.RTSolver, V0.RTSolver, DET.DetMixin, MAT.MatRT, AORT.AORTSolver}:
         if "_bk" in cls.__dict__ and "_rs" in cls.__dict__:
             wrap_bk(cls)

@@ -110,3 +110,63 @@ s3 dfRA_1 M3 g V2NF @e3w 1 @e5r 1 @e5a 1
 s3 dfRA_2 M3 g V2NF @e3w 1 @e5r 1 @e5a 1
 s3 dfRA_3 M3 g V2NF @e3w 1 @e5r 1 @e5a 1
 s3 dfRA_4 M3 g V2NF @e3w 1 @e5r 1 @e5a 1
+# s4k 연기: R2 (@e5r 2, 장벽 받침 안 표본점만 기준 높이 이어 받음) · A2 (@e5a 2, 걸음 시작 판정 자리 상대 장벽) -- 수박 E·V2NF 14 프레임, 레고·wolf 8 프레임
+s4k kR2A2 M3 g E @e3w 1 @e5r 2 @e5a 2 --frames 14
+s4k kA2 M3 g E @e3w 1 @e5a 2 --frames 14
+s4k kfR2A2 M3 g V2NF @e3w 1 @e5r 2 @e5a 2 --frames 14
+s4k kL2 L nd E @e3w 1 @e5r 2 @e5a 2 --frames 8
+s4k kWo2 W nd E @e3w 1 @e5r 2 @e5a 2 --frames 8
+# s4 수박: E+W̄+R2+A2 8 · E+W̄+A2 8 · V2NF+W̄+R2+A2 8 · V2NF+W̄+A2 8 (대조는 s1 mW·fW), 단독 시간 각 a · b
+s4 mR2A2_1 M3 g E @e3w 1 @e5r 2 @e5a 2
+s4 mR2A2_2 M3 g E @e3w 1 @e5r 2 @e5a 2
+s4 mR2A2_3 M3 g E @e3w 1 @e5r 2 @e5a 2
+s4 mR2A2_4 M3 g E @e3w 1 @e5r 2 @e5a 2
+s4 mR2A2_5 M3 g E @e3w 1 @e5r 2 @e5a 2
+s4 mR2A2_6 M3 g E @e3w 1 @e5r 2 @e5a 2
+s4 mR2A2_7 M3 g E @e3w 1 @e5r 2 @e5a 2
+s4 mR2A2_8 M3 g E @e3w 1 @e5r 2 @e5a 2
+s4 mA2_1 M3 g E @e3w 1 @e5a 2
+s4 mA2_2 M3 g E @e3w 1 @e5a 2
+s4 mA2_3 M3 g E @e3w 1 @e5a 2
+s4 mA2_4 M3 g E @e3w 1 @e5a 2
+s4 mA2_5 M3 g E @e3w 1 @e5a 2
+s4 mA2_6 M3 g E @e3w 1 @e5a 2
+s4 mA2_7 M3 g E @e3w 1 @e5a 2
+s4 mA2_8 M3 g E @e3w 1 @e5a 2
+s4 fR2A2_1 M3 g V2NF @e3w 1 @e5r 2 @e5a 2
+s4 fR2A2_2 M3 g V2NF @e3w 1 @e5r 2 @e5a 2
+s4 fR2A2_3 M3 g V2NF @e3w 1 @e5r 2 @e5a 2
+s4 fR2A2_4 M3 g V2NF @e3w 1 @e5r 2 @e5a 2
+s4 fR2A2_5 M3 g V2NF @e3w 1 @e5r 2 @e5a 2
+s4 fR2A2_6 M3 g V2NF @e3w 1 @e5r 2 @e5a 2
+s4 fR2A2_7 M3 g V2NF @e3w 1 @e5r 2 @e5a 2
+s4 fR2A2_8 M3 g V2NF @e3w 1 @e5r 2 @e5a 2
+s4 fA2_1 M3 g V2NF @e3w 1 @e5a 2
+s4 fA2_2 M3 g V2NF @e3w 1 @e5a 2
+s4 fA2_3 M3 g V2NF @e3w 1 @e5a 2
+s4 fA2_4 M3 g V2NF @e3w 1 @e5a 2
+s4 fA2_5 M3 g V2NF @e3w 1 @e5a 2
+s4 fA2_6 M3 g V2NF @e3w 1 @e5a 2
+s4 fA2_7 M3 g V2NF @e3w 1 @e5a 2
+s4 fA2_8 M3 g V2NF @e3w 1 @e5a 2
+s4 zmR2A2 M3 z E @e3w 1 @e5r 2 @e5a 2
+s4 zmA2 M3 z E @e3w 1 @e5a 2
+s4 zfR2A2 M3 z V2NF @e3w 1 @e5r 2 @e5a 2
+s4 zfA2 M3 z V2NF @e3w 1 @e5a 2
+# s5 다른 씬 회귀 (레고·wolf; ficus·bread 는 장벽 바닥 없어 해당 없음 -- s2 에서 E 와 같은 값 확인): E+W̄+R2+A2 · E+W̄+A2, 대조 E 는 s2
+s5 rL_R2A2_1 L nd E @e3w 1 @e5r 2 @e5a 2
+s5 rL_R2A2_2 L nd E @e3w 1 @e5r 2 @e5a 2
+s5 rL_A2_1 L nd E @e3w 1 @e5a 2
+s5 rL_A2_2 L nd E @e3w 1 @e5a 2
+s5 rW_R2A2_1 W nd E @e3w 1 @e5r 2 @e5a 2
+s5 rW_R2A2_2 W nd E @e3w 1 @e5r 2 @e5a 2
+s5 rW_R2A2_3 W nd E @e3w 1 @e5r 2 @e5a 2
+s5 rW_R2A2_4 W nd E @e3w 1 @e5r 2 @e5a 2
+s5 rW_A2_1 W nd E @e3w 1 @e5a 2
+s5 rW_A2_2 W nd E @e3w 1 @e5a 2
+s5 rW_A2_3 W nd E @e3w 1 @e5a 2
+s5 rW_A2_4 W nd E @e3w 1 @e5a 2
+s5 zL_R2A2 L z E @e3w 1 @e5r 2 @e5a 2
+s5 zL_A2 L z E @e3w 1 @e5a 2
+s5 zW_R2A2 W z E @e3w 1 @e5r 2 @e5a 2
+s5 zW_A2 W z E @e3w 1 @e5a 2
