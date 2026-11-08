@@ -1,0 +1,99 @@
+# 절 CM49 묶음 escape4 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_escape4.sh)
+# E = 공통 후보 D + 시간 예산 T2 (@tb 16.7 @tb_m 0.8 @tb_w 2), 수박 M3 은 + 가속 I (@inv 1) + --sp2 31 (셀 3); 수박 바탕 (WMB) 에 --gq_mass 원래 있음.
+# V2NF = 절 CM44·CM46 V2NF 글자 그대로 (BW4 + --ws3 1 --ws3_win 1 --ws3_lj 1 --ws3_pf 1). @e3w 1 = 절 CM45 W̄ (원래 G2P 기저; ficus·bread 는 장벽 바닥 없어 해당 없음).
+# @e5r 1 = 절 CM49 R (걸음 끝 장벽 기준 높이 이어 받기), @e5a 1 = 절 CM49 A (걸음 시작 기준 높이 ≤ 0 표본점 상대 장벽, 기준 d̂).
+# 방식 g = 수박 --erec + 진단 D1·D2·D5, nd = 새 실행기 비결정 + 진단 (wolf 덤프 -> bbox, ficus 덤프 -> 주기), z = 단독 시간 (빈 카드 하나에 a · b)
+# s0k 연기: 수박 E+W̄ (대조) · E+W̄+R · E+W̄+R+A · V2NF+W̄+R+A (14 프레임), 레고·wolf E+W̄+R+A (8 프레임) -- 컴파일·훅·기준 높이 확인
+s0k kEW M3 g E @e3w 1 --frames 14
+s0k kER M3 g E @e3w 1 @e5r 1 --frames 14
+s0k kERA M3 g E @e3w 1 @e5r 1 @e5a 1 --frames 14
+s0k kFRA M3 g V2NF @e3w 1 @e5r 1 @e5a 1 --frames 14
+s0k kL L nd E @e3w 1 @e5r 1 @e5a 1 --frames 8
+s0k kWo W nd E @e3w 1 @e5r 1 @e5a 1 --frames 8
+# s1 수박: E+W̄ 대조 4 · +R 8 · +R+A 8 · +A 8, V2NF+W̄ 대조 4 · +R 8 · +R+A 8 (진단 D1·D2·D5), 단독 시간 각 a · b
+s1 mW_1 M3 g E @e3w 1
+s1 mW_2 M3 g E @e3w 1
+s1 mW_3 M3 g E @e3w 1
+s1 mW_4 M3 g E @e3w 1
+s1 mR_1 M3 g E @e3w 1 @e5r 1
+s1 mR_2 M3 g E @e3w 1 @e5r 1
+s1 mR_3 M3 g E @e3w 1 @e5r 1
+s1 mR_4 M3 g E @e3w 1 @e5r 1
+s1 mR_5 M3 g E @e3w 1 @e5r 1
+s1 mR_6 M3 g E @e3w 1 @e5r 1
+s1 mR_7 M3 g E @e3w 1 @e5r 1
+s1 mR_8 M3 g E @e3w 1 @e5r 1
+s1 mRA_1 M3 g E @e3w 1 @e5r 1 @e5a 1
+s1 mRA_2 M3 g E @e3w 1 @e5r 1 @e5a 1
+s1 mRA_3 M3 g E @e3w 1 @e5r 1 @e5a 1
+s1 mRA_4 M3 g E @e3w 1 @e5r 1 @e5a 1
+s1 mRA_5 M3 g E @e3w 1 @e5r 1 @e5a 1
+s1 mRA_6 M3 g E @e3w 1 @e5r 1 @e5a 1
+s1 mRA_7 M3 g E @e3w 1 @e5r 1 @e5a 1
+s1 mRA_8 M3 g E @e3w 1 @e5r 1 @e5a 1
+s1 mA_1 M3 g E @e3w 1 @e5a 1
+s1 mA_2 M3 g E @e3w 1 @e5a 1
+s1 mA_3 M3 g E @e3w 1 @e5a 1
+s1 mA_4 M3 g E @e3w 1 @e5a 1
+s1 mA_5 M3 g E @e3w 1 @e5a 1
+s1 mA_6 M3 g E @e3w 1 @e5a 1
+s1 mA_7 M3 g E @e3w 1 @e5a 1
+s1 mA_8 M3 g E @e3w 1 @e5a 1
+s1 fW_1 M3 g V2NF @e3w 1
+s1 fW_2 M3 g V2NF @e3w 1
+s1 fW_3 M3 g V2NF @e3w 1
+s1 fW_4 M3 g V2NF @e3w 1
+s1 fR_1 M3 g V2NF @e3w 1 @e5r 1
+s1 fR_2 M3 g V2NF @e3w 1 @e5r 1
+s1 fR_3 M3 g V2NF @e3w 1 @e5r 1
+s1 fR_4 M3 g V2NF @e3w 1 @e5r 1
+s1 fR_5 M3 g V2NF @e3w 1 @e5r 1
+s1 fR_6 M3 g V2NF @e3w 1 @e5r 1
+s1 fR_7 M3 g V2NF @e3w 1 @e5r 1
+s1 fR_8 M3 g V2NF @e3w 1 @e5r 1
+s1 fRA_1 M3 g V2NF @e3w 1 @e5r 1 @e5a 1
+s1 fRA_2 M3 g V2NF @e3w 1 @e5r 1 @e5a 1
+s1 fRA_3 M3 g V2NF @e3w 1 @e5r 1 @e5a 1
+s1 fRA_4 M3 g V2NF @e3w 1 @e5r 1 @e5a 1
+s1 fRA_5 M3 g V2NF @e3w 1 @e5r 1 @e5a 1
+s1 fRA_6 M3 g V2NF @e3w 1 @e5r 1 @e5a 1
+s1 fRA_7 M3 g V2NF @e3w 1 @e5r 1 @e5a 1
+s1 fRA_8 M3 g V2NF @e3w 1 @e5r 1 @e5a 1
+s1 zmW M3 z E @e3w 1
+s1 zmR M3 z E @e3w 1 @e5r 1
+s1 zmRA M3 z E @e3w 1 @e5r 1 @e5a 1
+s1 zmA M3 z E @e3w 1 @e5a 1
+s1 zfW M3 z V2NF @e3w 1
+s1 zfR M3 z V2NF @e3w 1 @e5r 1
+s1 zfRA M3 z V2NF @e3w 1 @e5r 1 @e5a 1
+# s2 다른 씬 회귀 (새 실행기): E 대조 · E+W̄+R · E+W̄+R+A, 단독 시간 a · b (ficus·bread 는 장벽 바닥이 없어 W̄·R·A 해당 없음 -- 같은 소스인지 확인용 한 판씩)
+s2 rL_E1 L nd E
+s2 rL_E2 L nd E
+s2 rL_R1 L nd E @e3w 1 @e5r 1
+s2 rL_R2 L nd E @e3w 1 @e5r 1
+s2 rL_RA1 L nd E @e3w 1 @e5r 1 @e5a 1
+s2 rL_RA2 L nd E @e3w 1 @e5r 1 @e5a 1
+s2 rW_E1 W nd E
+s2 rW_E2 W nd E
+s2 rW_R1 W nd E @e3w 1 @e5r 1
+s2 rW_R2 W nd E @e3w 1 @e5r 1
+s2 rW_R3 W nd E @e3w 1 @e5r 1
+s2 rW_R4 W nd E @e3w 1 @e5r 1
+s2 rW_RA1 W nd E @e3w 1 @e5r 1 @e5a 1
+s2 rW_RA2 W nd E @e3w 1 @e5r 1 @e5a 1
+s2 rW_RA3 W nd E @e3w 1 @e5r 1 @e5a 1
+s2 rW_RA4 W nd E @e3w 1 @e5r 1 @e5a 1
+s2 rF_E1 F nd E
+s2 rF_RA1 F nd E @e3w 1 @e5r 1 @e5a 1
+s2 rB_E1 B nd E
+s2 rB_RA1 B nd E @e3w 1 @e5r 1 @e5a 1
+s2 zL_E L z E
+s2 zL_R L z E @e3w 1 @e5r 1
+s2 zL_RA L z E @e3w 1 @e5r 1 @e5a 1
+s2 zW_E W z E
+s2 zW_R W z E @e3w 1 @e5r 1
+s2 zW_RA W z E @e3w 1 @e5r 1 @e5a 1
+s2 zF_E F z E
+s2 zF_RA F z E @e3w 1 @e5r 1 @e5a 1
+s2 zB_E B z E
+s2 zB_RA B z E @e3w 1 @e5r 1 @e5a 1
