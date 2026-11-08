@@ -1,0 +1,138 @@
+# 절 CM61 묶음 hhtc2 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_hhtc2.sh; 낱말 F·P1X·A3 는 stab 의 dfl 이 펼침; '@hc M' = exe/hhtc2_wrap.py 모드)
+# 바탕 = 공통 후보 F + P1X (절 CM53). Rf = '@rr 1 @tc 8' (절 CM56, 렌더를 같은 프로세스에서 + 예산 16.7 − 앞 프레임 렌더) + A3. 모든 판 hc.jsonl 'mo' (걸음마다 몸 운동량) 진단 켬.
+# s0k 연기 (8 프레임): 컴파일·훅·진단 줄 확인
+s0k kL0 L nd F P1X A3 @hc 0 @rr 1 @tc 8 --frames 8
+s0k kL5 L nd F P1X @hc 5 --frames 8
+s0k kM0 M3 r F P1X @hc 0 --frames 8
+s0k kM5 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 --frames 8
+s0k kW5 W nd F P1X @hc 5 --frames 8
+# s1 진단 (할 일 1): 레고 접촉 걸음 몸 질량중심 법선 속도 -- P1X 대조 (@hc 0) · H4 (@hc 4), 둘 다 Rf; 수박 첫 접촉 수렴 사건 (짧은 판 @hc 0, 절 CM58 s1 과 같은 명령); wolf 대조 1
+s1 lC_1 L nd F P1X A3 @hc 0 @rr 1 @tc 8
+s1 l4_1 L nd F P1X A3 @hc 4 @rr 1 @tc 8
+s1 lC_2 L nd F P1X A3 @hc 0 @rr 1 @tc 8
+s1 l4_2 L nd F P1X A3 @hc 4 @rr 1 @tc 8
+s1 lC_3 L nd F P1X A3 @hc 0 @rr 1 @tc 8
+s1 l4_3 L nd F P1X A3 @hc 4 @rr 1 @tc 8
+s1 lC_4 L nd F P1X A3 @hc 0 @rr 1 @tc 8
+s1 l4_4 L nd F P1X A3 @hc 4 @rr 1 @tc 8
+s1 wC_1 W nd F P1X A3 @hc 0 @rr 1 @tc 8
+s1 rM0_1 M3 r F P1X @hc 0 --frames 8
+s1 rM0_2 M3 r F P1X @hc 0 --frames 8
+s1 rM0_3 M3 r F P1X @hc 0 --frames 8
+s1 rM0_4 M3 r F P1X @hc 0 --frames 8
+s1 rM0_5 M3 r F P1X @hc 0 --frames 8
+s1 rM0_6 M3 r F P1X @hc 0 --frames 8
+s1 rM0_7 M3 r F P1X @hc 0 --frames 8
+s1 rM0_8 M3 r F P1X @hc 0 --frames 8
+s1 rM0_9 M3 r F P1X @hc 0 --frames 8
+s1 rM0_10 M3 r F P1X @hc 0 --frames 8
+s1 rM0_11 M3 r F P1X @hc 0 --frames 8
+s1 rM0_12 M3 r F P1X @hc 0 --frames 8
+s1 rM0_13 M3 r F P1X @hc 0 --frames 8
+s1 rM0_14 M3 r F P1X @hc 0 --frames 8
+s1 rM0_15 M3 r F P1X @hc 0 --frames 8
+s1 rM0_16 M3 r F P1X @hc 0 --frames 8
+s1 rM0_17 M3 r F P1X @hc 0 --frames 8
+s1 rM0_18 M3 r F P1X @hc 0 --frames 8
+s1 rM0_19 M3 r F P1X @hc 0 --frames 8
+s1 rM0_20 M3 r F P1X @hc 0 --frames 8
+s1 rM0_21 M3 r F P1X @hc 0 --frames 8
+s1 rM0_22 M3 r F P1X @hc 0 --frames 8
+s1 rM0_23 M3 r F P1X @hc 0 --frames 8
+s1 rM0_24 M3 r F P1X @hc 0 --frames 8
+s1 rM0_25 M3 r F P1X @hc 0 --frames 8
+s1 rM0_26 M3 r F P1X @hc 0 --frames 8
+s1 rM0_27 M3 r F P1X @hc 0 --frames 8
+s1 rM0_28 M3 r F P1X @hc 0 --frames 8
+s1 rM0_29 M3 r F P1X @hc 0 --frames 8
+s1 rM0_30 M3 r F P1X @hc 0 --frames 8
+s1 rM0_31 M3 r F P1X @hc 0 --frames 8
+s1 rM0_32 M3 r F P1X @hc 0 --frames 8
+s1 rM0_33 M3 r F P1X @hc 0 --frames 8
+s1 rM0_34 M3 r F P1X @hc 0 --frames 8
+s1 rM0_35 M3 r F P1X @hc 0 --frames 8
+s1 rM0_36 M3 r F P1X @hc 0 --frames 8
+s1 rM0_37 M3 r F P1X @hc 0 --frames 8
+s1 rM0_38 M3 r F P1X @hc 0 --frames 8
+s1 rM0_39 M3 r F P1X @hc 0 --frames 8
+s1 rM0_40 M3 r F P1X @hc 0 --frames 8
+s1 rM0_41 M3 r F P1X @hc 0 --frames 8
+s1 rM0_42 M3 r F P1X @hc 0 --frames 8
+s1 rM0_43 M3 r F P1X @hc 0 --frames 8
+s1 rM0_44 M3 r F P1X @hc 0 --frames 8
+s1 rM0_45 M3 r F P1X @hc 0 --frames 8
+s1 rM0_46 M3 r F P1X @hc 0 --frames 8
+s1 rM0_47 M3 r F P1X @hc 0 --frames 8
+s1 rM0_48 M3 r F P1X @hc 0 --frames 8
+s1 rM0_49 M3 r F P1X @hc 0 --frames 8
+s1 rM0_50 M3 r F P1X @hc 0 --frames 8
+s1 rM0_51 M3 r F P1X @hc 0 --frames 8
+s1 rM0_52 M3 r F P1X @hc 0 --frames 8
+s1 rM0_53 M3 r F P1X @hc 0 --frames 8
+s1 rM0_54 M3 r F P1X @hc 0 --frames 8
+s1 rM0_55 M3 r F P1X @hc 0 --frames 8
+s1 rM0_56 M3 r F P1X @hc 0 --frames 8
+s1 rM0_57 M3 r F P1X @hc 0 --frames 8
+s1 rM0_58 M3 r F P1X @hc 0 --frames 8
+s1 rM0_59 M3 r F P1X @hc 0 --frames 8
+s1 rM0_60 M3 r F P1X @hc 0 --frames 8
+s1 rM0_61 M3 r F P1X @hc 0 --frames 8
+s1 rM0_62 M3 r F P1X @hc 0 --frames 8
+s1 rM0_63 M3 r F P1X @hc 0 --frames 8
+s1 rM0_64 M3 r F P1X @hc 0 --frames 8
+s1 rM0_65 M3 r F P1X @hc 0 --frames 8
+s1 rM0_66 M3 r F P1X @hc 0 --frames 8
+s1 rM0_67 M3 r F P1X @hc 0 --frames 8
+s1 rM0_68 M3 r F P1X @hc 0 --frames 8
+s1 rM0_69 M3 r F P1X @hc 0 --frames 8
+s1 rM0_70 M3 r F P1X @hc 0 --frames 8
+s1 rM0_71 M3 r F P1X @hc 0 --frames 8
+s1 rM0_72 M3 r F P1X @hc 0 --frames 8
+s1 rM0_73 M3 r F P1X @hc 0 --frames 8
+s1 rM0_74 M3 r F P1X @hc 0 --frames 8
+s1 rM0_75 M3 r F P1X @hc 0 --frames 8
+s1 rM0_76 M3 r F P1X @hc 0 --frames 8
+s1 rM0_77 M3 r F P1X @hc 0 --frames 8
+s1 rM0_78 M3 r F P1X @hc 0 --frames 8
+s1 rM0_79 M3 r F P1X @hc 0 --frames 8
+s1 rM0_80 M3 r F P1X @hc 0 --frames 8
+s1 rM0_81 M3 r F P1X @hc 0 --frames 8
+s1 rM0_82 M3 r F P1X @hc 0 --frames 8
+s1 rM0_83 M3 r F P1X @hc 0 --frames 8
+s1 rM0_84 M3 r F P1X @hc 0 --frames 8
+s1 rM0_85 M3 r F P1X @hc 0 --frames 8
+s1 rM0_86 M3 r F P1X @hc 0 --frames 8
+s1 rM0_87 M3 r F P1X @hc 0 --frames 8
+s1 rM0_88 M3 r F P1X @hc 0 --frames 8
+s1 rM0_89 M3 r F P1X @hc 0 --frames 8
+s1 rM0_90 M3 r F P1X @hc 0 --frames 8
+s1 rM0_91 M3 r F P1X @hc 0 --frames 8
+s1 rM0_92 M3 r F P1X @hc 0 --frames 8
+s1 rM0_93 M3 r F P1X @hc 0 --frames 8
+s1 rM0_94 M3 r F P1X @hc 0 --frames 8
+s1 rM0_95 M3 r F P1X @hc 0 --frames 8
+s1 rM0_96 M3 r F P1X @hc 0 --frames 8
+s1 rM0_97 M3 r F P1X @hc 0 --frames 8
+s1 rM0_98 M3 r F P1X @hc 0 --frames 8
+s1 rM0_99 M3 r F P1X @hc 0 --frames 8
+s1 rM0_100 M3 r F P1X @hc 0 --frames 8
+s1 rM0_101 M3 r F P1X @hc 0 --frames 8
+s1 rM0_102 M3 r F P1X @hc 0 --frames 8
+s1 rM0_103 M3 r F P1X @hc 0 --frames 8
+s1 rM0_104 M3 r F P1X @hc 0 --frames 8
+s1 rM0_105 M3 r F P1X @hc 0 --frames 8
+s1 rM0_106 M3 r F P1X @hc 0 --frames 8
+s1 rM0_107 M3 r F P1X @hc 0 --frames 8
+s1 rM0_108 M3 r F P1X @hc 0 --frames 8
+s1 rM0_109 M3 r F P1X @hc 0 --frames 8
+s1 rM0_110 M3 r F P1X @hc 0 --frames 8
+s1 rM0_111 M3 r F P1X @hc 0 --frames 8
+s1 rM0_112 M3 r F P1X @hc 0 --frames 8
+s1 rM0_113 M3 r F P1X @hc 0 --frames 8
+s1 rM0_114 M3 r F P1X @hc 0 --frames 8
+s1 rM0_115 M3 r F P1X @hc 0 --frames 8
+s1 rM0_116 M3 r F P1X @hc 0 --frames 8
+s1 rM0_117 M3 r F P1X @hc 0 --frames 8
+s1 rM0_118 M3 r F P1X @hc 0 --frames 8
+s1 rM0_119 M3 r F P1X @hc 0 --frames 8
+s1 rM0_120 M3 r F P1X @hc 0 --frames 8
