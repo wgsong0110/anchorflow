@@ -4,7 +4,6 @@ s0k kW2 M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 2 @s7src 1 --frames 20
 s0k kW1 M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 --frames 20
 s0k kG M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s8g 1e6 --frames 20
 s0k kI M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 --xit_from 1 --frames 20
-s0k kIL L r Hc @s7nm 1 @s7z 1 @s7p 1 --cap_mul 4 --xit_from 1 --frames 10
 s1 vW_1 M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 2
 s1 vW_2 M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 2
 s1 vW_3 M3 r Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 2

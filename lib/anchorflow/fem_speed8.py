@@ -176,8 +176,16 @@ def w_bind(s):
 def w_install(out, mode):
     from . import fem_ao_rt as AORT
     C.w = int(mode)
-    o_s = AORT._src
-    AORT._src = lambda *a, **kw: _w_src(o_s(*a, **kw))
+    import cupy as cp                                                                 # 글자 고침은 RawModule 에서 (실행기 인자 --sp2 가 _src 를 나중에 감싸 rt_p2g·gq_p2q 를 고치므로 _src 에서는 최종 글자가 아님 -- s0k 첫 판)
+    o_rm = cp.RawModule
+
+    def RawModule(*a, **kw):
+        if "code" in kw and isinstance(kw["code"], str):
+            kw["code"] = _w_src(kw["code"])
+        elif a and isinstance(a[0], str):
+            a = (_w_src(a[0]),) + tuple(a[1:])
+        return o_rm(*a, **kw)
+    cp.RawModule = RawModule
     cls = AORT.AORTSolver
     ob = cls.bind_act
 
