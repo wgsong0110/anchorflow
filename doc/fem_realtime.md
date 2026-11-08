@@ -7236,7 +7236,7 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 ### CM50.7 출력
 - R2 lbours/speed4/ (판마다 cmd·log·summary·fem.jsonl·s3.jsonl·s4.jsonl (단계 기록 sp · S1/S2 셈 · X1/X2/X3e4 셈 · 경계 호스트 몫 hb · X2 확인 x2c · GC), apps_at_*, speed4_s*.log, go_*.log·END, boot.log, speed4_table.md, speed4.END, code/ (bundle·launch.txt·speed4_boot.sh)). 상주 시작점은 끝에 launch.txt 'stop' 으로 멈춤.
 
-## CM52. wolf 가 정답보다 높게 쌓임 (공통 후보 F f50 질량중심 574~602 mm, 정답 533) -- 원인 확인 + 고침 후보 (조정자 위임 11-08; 바탕 F = E + W̄ `@e3w 1` + R2 `@e5r 2` + A2 `@e5a 2`, 서브스텝 1) -- 가지 k1new, 커밋 9594505 (s1) · dc61ee8 (s2) · 86ebfd2 (s3) · de504b2 (s4·s5) · c8c4dc5 (s6·s7, 못 돎), 묶음 wolfh1 (PBS 잡 133077 ece-a6gpu9 상주 시작점 exe/wolfh1_boot.sh, lib/anchorflow/fem_wolfh1.py, exe/wolfh1_wrap.py·stab_wolfh1.sh·go_wolfh1.sh·wolfh1_spec.txt·wolfh1_an.py·wolfh1_tab.py·wolfh1_pre_s5.sh·wolfh1_pre_s6.sh·wolfh1_pre_s7.sh, 표 R2 lbours/wolfh1/wolfh1_table.md)
+## CM52. wolf 가 정답보다 높게 쌓임 (공통 후보 F f50 질량중심 574~602 mm, 정답 533) -- 원인 확인 + 고침 후보 (조정자 위임 11-08; 바탕 F = E + W̄ `@e3w 1` + R2 `@e5r 2` + A2 `@e5a 2`, 서브스텝 1) -- 가지 k1new, 커밋 9594505 (s1) · dc61ee8 (s2) · 86ebfd2 (s3) · de504b2 (s4·s5) · c8c4dc5 (s6·s7 첫 시도, 노드 /tmp 넘침) · 323f5f1 (/dev/shm 로 옮김, s6·s7) · a7cf05b (s8·s9), 묶음 wolfh1 (PBS 잡 133077 ece-a6gpu9 상주 시작점 exe/wolfh1_boot.sh, lib/anchorflow/fem_wolfh1.py, exe/wolfh1_wrap.py·stab_wolfh1.sh·go_wolfh1.sh·wolfh1_spec.txt·wolfh1_an.py·wolfh1_tab.py·wolfh1_pre_s5.sh·wolfh1_pre_s6.sh·wolfh1_pre_s7.sh, 표 R2 lbours/wolfh1/wolfh1_table.md)
 ### CM52.0 진단 정의 (모두 결과 불변, exe/wolfh1_an.py -- 정답·우리 같은 함수, pred.pt 위치만)
 - 높이 = 바닥 법선 높이 (질량중심·최대; 표의 '질량중심 mm' 은 실행기 --hgt 와 같은 세계 z, 곡선은 바닥 (z 0.48) 위 높이), 접촉 면적 = 바닥 1 cm 안 입자를 5 mm 칸에 투영한 점유 넓이, 퍼짐 = 평면 회전 반경, 속도 = 프레임 유한 차분 (정답·우리 같음), 운동 에너지, 위치 에너지 감소, 남는 몫 (= 위치 에너지 감소 − 운동, 소성·수치 감쇠·고착이 가져간 것), 높이 층 [0,2)·[2,4)·[4,8) cm 접선 속력.
 - 탄성 에너지: 정답 (h5 F) 은 전 구간 ≤ 0.2 J 라 에너지 흐름에서 무시할 몫. 우리 --dump_F 의 Hencky 값은 23~1e5 J 로 덤프 F 해석이 틀린 것으로 보임 (확인 안 함) -- 결론에 안 씀.
@@ -7281,11 +7281,18 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 | N + PT2 + ghost 1e-1 | 4 | 0 | 584~608 | 684~686 | 5.16~5.32 | 0 | 18.2 |
 
 - 고착·시작점을 풀면 무너짐 속도는 정답과 맞으나 (N·PT2 f30 551~582, 정답 573) 가벼운 노드 튐으로 4/4 판 이탈·절반 메모리 발산. ghost penalty 를 더하면 튐은 0/4 로 막지만 같이 무너짐도 막아 f30 684~699 · f50 584~615 (F 와 같은 범위) -- ghost 벌점이 얇게 흐르는 가장자리 층을 굳힘.
-- **통과 후보 없음**. 그래서 단독 시간 2 회·레고·ficus·bread·수박 회귀는 안 함 (규칙: 통과 후보만). 단독 시간 판 (s4 zF·zN) 은 노드 디스크 넘침으로 실패 (아래).
+- **통과 후보 없음**. 그래서 레고·ficus·bread·수박 회귀는 안 함 (규칙: 통과 후보만). 단독 시간은 F·N 만 (아래 CM52.4).
 ### CM52.3 결론
 - 원인 (확인): wolf 가 높게 남는 것은 바닥에 닿은 모래가 옆으로 퍼지지 못하기 때문 -- (1) 띠 고착의 노드 거듭제곱 (1 − r)^KEX 가 셀 2 B-스플라인 받침 (6 cm) 안 노드를 통째로 묶음 (주), (2) 국소 시작점 섞기가 접선 성분까지 걸음 시작에 둠 (둘째). 둘 중 하나만 풀어도 정답 속도로 무너짐. 덜 풀린 걸음·후퇴 오일러·한 걸음 RM 커밋·HHT 감쇠·예산·구속은 아님 (끝까지 풀기·걸음 4 도 같은 높이).
 - 막는 것: 바닥이 풀리면 가장자리 가벼운 노드 튐 (절 CM43·CM47 꼴) 이 터짐. 지금 F 의 높은 더미는 사실상 그 튐을 묶어 둔 상태. ghost penalty 3 은 튐을 막으나 무너짐도 막음.
 - 다음 갈래 (실행 안 함, 결정은 조정자): 튐을 받침 쪽이 아니라 원인 쪽에서 (가벼운 노드의 걸음 평형 변위 -- 절 CM43.1 (a)) 막는 후보를 N 또는 PT2 와 묶기; 또는 ghost penalty 를 굳히지 않는 꼴 (고스트 질량만 `@g3m`, 강성 빼기) 로 N 과 묶기.
-### CM52.4 영상·출력
-- 영상: R2 lbours/wolfh1/vid/fem_wolfh1_cmp.mp4 (정답 | F, 1200x750, 51 프레임, yuv420p·faststart, ~/vidcache/wolfh1 에서 ffprobe·프레임 확인) -- F 는 정답보다 좁고 높은 더미. **'최선 판 (N)' 칸은 못 만듦**: vN_1 덤프 (--dump_F) 가 /dev/shm 넘침으로 쓰기 실패 (s4), 다시 하는 s6·s7 은 노드 /tmp (루트 디스크 438 G) 100 %·/dev/shm 99 % (다른 묶음 /dev/shm 덤프 gqm 51 G·wmbar 47 G·fint 41 G 등) 로 코드 받기부터 실패 -- 노드 디스크가 비면 R2 launch.txt 에 'c8c4dc5 s6,s7' 을 다시 쓰면 상주 시작점이 이어 함 (s6 앞 스크립트가 이 묶음 덤프를 R2 대조 뒤 /tmp 로 옮김).
-- R2 lbours/wolfh1/ (판마다 cmd·log·summary·fem.jsonl·e1.jsonl·bbox.txt·pred.pt, wolfh1_an_s*.json (프레임별 곡선)·wolfh1_table.md·wolfh1_s*.log·go_s*.log·boot.log, vid/ (dF_1 렌더, 합성 영상), code/ (git bundle·wolfh1_boot.sh·launch.txt)). 끝 표식 wolfh1.END 는 영상·단독 시간이 남아 안 씀.
+### CM52.4 단독 시간 (계산 프로세스 0 인 카드 하나에 a · b 차례로; 평균 / 최대 / >16.7 프레임 수; s6, 커밋 323f5f1)
+| 판 | a | b |
+|---|---|---|
+| F | 11.26 / 16.4 / 0 | 11.52 / 16.4 / 0 |
+| N (`@h1n 1`) | 31.16 / 185.1 / 13 | 20.63 / 93.8 / 17 (f 중간 GPU 메모리 넘침 발산 -- 이탈로 노드 상자 커짐) |
+- N 은 단독에서도 이탈로 상자가 커져 60 fps·발산 조건 둘 다 못 맞춤 (F 는 최악 16.4 ms 유지). ghost 를 더한 판들은 통과 후보가 아니라 (높이 F 와 같음) 단독 시간 안 잼.
+### CM52.5 영상·출력
+- 영상: result/anchorflow/v20261009/fem_wolfh1_cmp.mp4 = R2 lbours/wolfh1/vid/fem_wolfh1_cmp.mp4 (3DGS, 정답 | F (dF_1) | 후보 N (vN2_1, f50 질량중심 535 mm · 오차 4.72 % · 이탈 328 개 3.3 m), 1800x750 (칸 600 x 3, 가로 ≤ 2400), 51 프레임, yuv420p·faststart, ~/vidcache/wolfh1 에서 ffprobe·프레임 확인) -- F 는 정답보다 좁고 높은 더미, N 은 높이는 정답과 같으나 f30 뒤 모래가 가장자리에서 흩날려 튐 (가벼운 노드 튐이 눈으로 보임).
+- 첫 시도 s4 (vN_1 덤프·단독 시간) 는 노드 /dev/shm 넘침으로 실패, s6·s7 첫 시도는 노드 /tmp 100 % 로 코드 받기 실패 -- 조정자 /dev/shm 정리 뒤 코드 받기·덤프를 /dev/shm/dkta 로 옮긴 둘째 상주 시작점 (exe/wolfh1b_boot.sh, R2 code/launch2.txt) 로 s6 (단독 시간)·s8 (vN2_1)·s9 (렌더) 다시 (커밋 323f5f1 · a7cf05b). 첫 상주 시작점은 'stop' 으로 끝냄.
+- R2 lbours/wolfh1/ (판마다 cmd·log·summary·fem.jsonl·e1.jsonl·bbox.txt·pred.pt, 단독 z*_a·b, wolfh1_an_s*.json (프레임별 곡선)·wolfh1_table.md·wolfh1_s*.log·go_s*.log·boot.log·boot2.log, vid/ (dF_1·vN2_1 렌더, 합성 영상), code/ (git bundle·wolfh1_boot.sh·wolfh1b_boot.sh·launch*.txt)), 끝 표식 wolfh1.END.
