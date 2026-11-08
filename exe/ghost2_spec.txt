@@ -1,0 +1,69 @@
+# 절 CM48 묶음 ghost2 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_ghost2.sh)
+# E = 공통 후보 D + 시간 예산 T2 (@tb 16.7 @tb_m 0.8 @tb_w 2), 수박 M3 은 + 가속 I (@inv 1) + --sp2 31 (셀 3); @e3w 1 = 절 CM45 W̄.
+# @g2 g = 절 CM47 ghost penalty, γ_a = (2μ+λ)·g (절 CM47 = 1e-4); g = 0 = 커널 다 돌고 더하는 값 0. @g2fd 프레임 = 그래프 밖 검사, @g2sys 1 = 선탐색 기록 (--lsfast 뺌), @g2fs 1 = 면 집합 바뀜.
+# 방식 d = 결정적 판정 (해시), nd = 비결정 + 진단, g = 수박 --erec + 진단 D2·D3, n = 진단 없음, z = 단독 시간
+# s0k 연기 (6 프레임): 검사·기록 훅이 도는지
+s0k kW W nd E @e3w 1 @g2 1e-4 @g2fd 3 @g2fs 1 --frames 6
+s0k kWs W nd E @e3w 1 @g2 1e-4 @g2sys 1 --frames 6
+s0k kM M3 g E @e3w 1 @g2 1e-4 @g2fd 4 @g2fs 1 --frames 6
+# s0 (1) 검사: 커널·훅·유한차분 (CM47 판 g 1e-4)
+s0 fW W nd E @e3w 1 @g2 1e-4 @g2fd 1,5,13,20,30,40 @g2fs 1
+s0 fM M3 g E @e3w 1 @g2 1e-4 @g2fd 1,4,5,8,20,50 @g2fs 1
+s0 fL L nd E @e3w 1 @g2 1e-4 @g2fd 1,20,60
+s0 fF F nd E @e3w 1 @g2 1e-4 @g2fd 1,60
+s0 fB B nd E @e3w 1 @g2 1e-4 @g2fd 1,150
+# s0 (1) 전체 목적 함수 선탐색 기록 (g 0 · 1e-4 · 1e-1, wolf 30 프레임; 레고 g 1e-1)
+s0 sW0 W nd E @e3w 1 @g2 0 @g2sys 1 --frames 30
+s0 sW4 W nd E @e3w 1 @g2 1e-4 @g2sys 1 --frames 30
+s0 sW1 W nd E @e3w 1 @g2 1e-1 @g2sys 1 --frames 30
+s0 sL1 L nd E @e3w 1 @g2 1e-1 @g2sys 1 --frames 30
+# s0 (1) g = 0 결정적 해시 (예산 안 걸리게 @tb 1000): E 대 E + ghost(g 0)
+s0 dW_E W d E @e3w 1 @tb 1000
+s0 dW_E2 W d E @e3w 1 @tb 1000
+s0 dW_0 W d E @e3w 1 @tb 1000 @g2 0
+s0 dL_E L d E @e3w 1 @tb 1000
+s0 dL_0 L d E @e3w 1 @tb 1000 @g2 0
+s0 dF_E F d E @e3w 1 @tb 1000
+s0 dF_0 F d E @e3w 1 @tb 1000 @g2 0
+s0 dB_E B d E @e3w 1 @tb 1000
+s0 dB_0 B d E @e3w 1 @tb 1000 @g2 0
+s0 dM_E M3 n E @e3w 1 --det
+s0 dM_0 M3 n E @e3w 1 --det @g2 0
+# s0 (1) wolf 가설: 비용 (g 0, 커널은 돎) · 예산 (g 1e-4, 예산 끔) · 대조
+s0 hWE_1 W nd E @e3w 1
+s0 hWE_2 W nd E @e3w 1
+s0 hW4_1 W nd E @e3w 1 @g2 1e-4
+s0 hW4_2 W nd E @e3w 1 @g2 1e-4
+s0 hW4_3 W nd E @e3w 1 @g2 1e-4
+s0 hW4_4 W nd E @e3w 1 @g2 1e-4
+s0 hW0_1 W nd E @e3w 1 @g2 0
+s0 hW0_2 W nd E @e3w 1 @g2 0
+s0 hW0_3 W nd E @e3w 1 @g2 0
+s0 hW0_4 W nd E @e3w 1 @g2 0
+s0 hWnb_1 W nd E @e3w 1 @g2 1e-4 @tb 1000
+s0 hWnb_2 W nd E @e3w 1 @g2 1e-4 @tb 1000
+s0 hWnb_3 W nd E @e3w 1 @g2 1e-4 @tb 1000
+s0 hWnb_4 W nd E @e3w 1 @g2 1e-4 @tb 1000
+s0 hWEnb_1 W nd E @e3w 1 @tb 1000
+s0 hWEnb_2 W nd E @e3w 1 @tb 1000
+# s1 (2) 수박 E + W̄ + ghost, g = 1e-3 · 1e-2 · 1e-1 · 1 (문헌 범위) 각 4 판 + 대조 4 판 (진단 D2·D3)
+s1 mW_1 M3 g E @e3w 1
+s1 mW_2 M3 g E @e3w 1
+s1 mW_3 M3 g E @e3w 1
+s1 mW_4 M3 g E @e3w 1
+s1 m3_1 M3 g E @e3w 1 @g2 1e-3
+s1 m3_2 M3 g E @e3w 1 @g2 1e-3
+s1 m3_3 M3 g E @e3w 1 @g2 1e-3
+s1 m3_4 M3 g E @e3w 1 @g2 1e-3
+s1 m2_1 M3 g E @e3w 1 @g2 1e-2
+s1 m2_2 M3 g E @e3w 1 @g2 1e-2
+s1 m2_3 M3 g E @e3w 1 @g2 1e-2
+s1 m2_4 M3 g E @e3w 1 @g2 1e-2
+s1 m1_1 M3 g E @e3w 1 @g2 1e-1
+s1 m1_2 M3 g E @e3w 1 @g2 1e-1
+s1 m1_3 M3 g E @e3w 1 @g2 1e-1
+s1 m1_4 M3 g E @e3w 1 @g2 1e-1
+s1 m0_1 M3 g E @e3w 1 @g2 1
+s1 m0_2 M3 g E @e3w 1 @g2 1
+s1 m0_3 M3 g E @e3w 1 @g2 1
+s1 m0_4 M3 g E @e3w 1 @g2 1
