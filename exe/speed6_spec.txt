@@ -91,3 +91,17 @@ s2 zWF F z Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1
 s2 zBB B z Gp @s6o 1 @s6l 1 @s6b 1
 s2 zRB B z Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1
 s2 zWB B z Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1
+# s3 렌더를 시뮬 스트림 밖으로 (R) 없이 벽시계 렌더 몫 Rw 만 (가벼운 판 + B + Rw): s2 에서 R 은 래스터화가 시뮬과 GPU 를 나눠 써 반복 시간 예측이 흔들리고 (wolf 한도 넘음) 레고·wolf 벽시계를 줄이지 못함
+s3 zVM M3 z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s3 zVL L z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s3 zVW W z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s3 zVF F z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s3 zVB B z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s3 gV_1 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s3 gV_2 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s3 gV_3 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s3 gV_4 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s3 gV_5 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s3 gV_6 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s3 gV_7 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s3 gV_8 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
