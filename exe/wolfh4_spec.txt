@@ -15,3 +15,5 @@ s1 fb_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w4fb 1 @w4dg 1
 s1 fb_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w4fb 1 @w4dg 1
 s1 fbT_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @tb 1000 @w4fb 1 @w4dg 1
 s1 fbT_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @tb 1000 @w4fb 1 @w4dg 1
+# ---- s2: 통과 후보 없음 (F-bar = G' 높이) -> 영상용 F-bar 판 (--dump_F); s3 = 렌더만 (exe/wolfh4_pre_s3.sh, 판 목록 없음). G' 칸은 절 CM63 vC_1 렌더 그대로
+s2 vFB_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w4fb 1 @w4dg 1 --dump_F
