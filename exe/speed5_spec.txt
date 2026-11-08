@@ -49,3 +49,7 @@ s3 gX_7 M3 g G @s4e 1e6 @s5o 1
 s3 gO_8 M3 g G @s5o 1
 s3 gX_8 M3 g G @s4e 1e6 @s5o 1
 s3 zXM M3 z G @s4e 1e6 @s5o 1
+# s4 결과 바뀌는 후보: 겹치기 O 판에서 예산 여유 @tb_m 0.8 -> 1.6 (Rf 한도 = 16.7 − m − 드러난 렌더; O 는 드러난 렌더가 작아 시뮬이 한도 넘김 몫 (마지막 반복) 만큼 16.7 을 넘는 프레임이 남음)
+s4 zOmW W z G @s5o 1 @tb_m 1.6
+s4 zOmL L z G @s5o 1 @tb_m 1.6
+s4 zOmM M3 z G @s5o 1 @tb_m 1.6
