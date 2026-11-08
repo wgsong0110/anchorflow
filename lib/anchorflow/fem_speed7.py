@@ -9,9 +9,16 @@
 (Z) 지연 백업 (--s7z 1, 결과 불변 -- 옛 실행기 (수박) 만): 프레임 시작 입자 상태 백업 (x·v·F·m·vol·perm·pa·ysp·ljp·alp + R2 h_p, 수박 약 190 MB, 프레임마다
      복사 0.65 ms) 을 바로 뜨지 않고 '아직 안 뜬 백업' 표시만. 근거: 옛 실행기 K 1 그래프는 X1 (절 CM50) 로 꼬리 (걸음 끝·RM 커밋·G2P·R2 끝) 를 버려질 시도에서
      안 띄우고, 넘침 (IP[13]) 이면 커널이 일찍 돌아가므로, 같은 프레임 안 되돌리기 (_rs) 때 입자 상태는 늘 프레임 시작 그대로 -> 되돌리기는 할 일 없음.
-     상태를 바꾸는 일 앞에서는 실제로 뜸: (가) 그래프 캡처 (데움 실행이 상태를 바꿈), (나) K ≥ 2 쪼갠 시도 (꼬리가 늘 돎) -- set_K_ga(K > 1) 때.
+     상태를 바꾸는 일 앞에서는 실제로 뜸: (가) 그래프 밖 record (캡처의 데움 실행이 상태를 바꿈), (나) K ≥ 2 쪼갠 시도 (꼬리가 늘 돎) -- set_K_ga(K > 1) 때.
      확인 판 (--s7z 2): 위와 같이 하되 프레임 시작에 실제 백업도 떠 두고, 할 일 없는 되돌리기마다 지금 입자 상태와 비트 대조 (다르면 실제 백업으로 되돌리고 셈),
      지연 백업을 실제로 뜰 때도 프레임 시작 백업과 비트 대조 -> <out>/s7z.jsonl (프레임마다 셈).
+(P) 장벽 표본점 거르기 (--s7p 1, 결과 불변 -- 옛 실행기 (수박) 만): 장벽 커널 (rt_bar_y0e·rt_bar_kfe·ws_bk·rt_bar_q·wb_floor_q·mf_mark) 은 활성 표본점마다
+     27 노드를 모아 위치 x_q = x̄_q + Σ_o w_qo (U_o + θ⁻¹ (y_o − U_o)) 와 바닥 거리 d = n·x_q − p_n 을 셈 (몸 거의 전부 = 수박 약 1.6 백만 점).
+     w ≥ 0, Σ_o w = 1 (B-스플라인·W̄ 모두) 이라 d ≥ d̄_q + min_o n·t_o (d̄_q = n·x̄_q − p_n, t_o = U_o + θ⁻¹ (y_o − U_o)). 커널을 띄우기 바로 앞에
+     노드 4x4x4 덩이마다 min n·t 를 모으고 (s7_bmin, 그 커널이 쓰는 y 그대로; 비유한이면 −∞), 점은 자기 27 노드가 걸친 덩이 (≤ 8) 최소로 하한을 잡아
+     하한 > 문턱 T + 여유 (T = d̂ 또는 0 -- 커널이 그 점을 '띠 밖' 으로 다루는 조건) 이면 27 노드 모으기를 건너뛰고 d = 1e30 (띠 밖 갈래 그대로 = 같은 출력).
+     커널 뒤 s7_brst 가 덩이 표를 +∞ 로·준비 표시를 0 으로 (다른 경로로 띄운 같은 커널은 거르기 안 함). 확인 판 (--s7p 2): 거르지 않고 다 센 뒤
+     '하한이 거르라는데 실제 d 가 문턱 밑' 인 점 (어김) 과 거를 점 수를 셈 -> <out>/s7p.jsonl.
 """
 import gzip
 import json
@@ -27,6 +34,7 @@ class C:
     kp = None
     nm = 0
     z = 0
+    p = 0
 
 
 class LZ:
@@ -123,6 +131,13 @@ def lz_install(out):
             LZ.cur.mat()
         return ocap(s, *a, **kw)
     cls.capture = capture
+    orec = cls.record
+
+    def record(s, *a, **kw):                                                            # 데움 (그래프 밖 record = 상태를 바꿈) 앞 -- C3 (--xg) 는 인스턴스 capture 를 바꾸므로 여기서
+        if LZ.cur is not None and LZ.cur.s is s and not torch.cuda.is_current_stream_capturing():
+            LZ.cur.mat()
+        return orec(s, *a, **kw)
+    cls.record = record
     oK = AORT.set_K_ga
 
     def set_K_ga(s, K, *a, **kw):
@@ -144,6 +159,258 @@ def lz_frame_end(fr):
         LZ.st[k] = 0 if not isinstance(LZ.st[k], list) else LZ.st[k]
     LZ.st.pop("mis_names", None)
     LZ.cur = None
+
+
+P_SRC = r"""
+// ---- 절 CM72 (P) 장벽 표본점 거르기 ----
+__device__ int* S7B;
+__device__ int S7ON;
+__device__ int S7RDY;
+__device__ unsigned long long* S7VIOL;
+__device__ float S7MARG;
+__device__ __forceinline__ int s7key(float f) { int i = __float_as_int(f); return i >= 0 ? i : (i ^ 0x7fffffff); }
+__device__ __forceinline__ float s7unkey(int k) { return __int_as_float(k >= 0 ? k : (k ^ 0x7fffffff)); }
+#define S7_CNT(f_, v_) if (S7ON == 2) { atomicAdd(&S7VIOL[2], 1ULL); if (f_) { atomicAdd(&S7VIOL[1], 1ULL); if (v_) atomicAdd(&S7VIOL[0], 1ULL); } }
+// sk1·sk2 = 뒤 커널이 바로 돌아가는 장치 표시 (AF_SKIP·WS4_DN) 자리 -- 켜져 있으면 덩이 표를 안 만들고 준비 표시 0
+__global__ void s7_bmin(const int* IP, const float* U, const float* ya, const float* yb, float thinv, float n0, float n1, float n2, const int* sk1, const int* sk2) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if ((sk1 && *sk1) || (sk2 && *sk2)) { if (n == 0) S7RDY = 0; return; }
+    if (n == 0) S7RDY = 1;
+    if (n >= IP[9] || IP[13]) return;
+    int nb1 = IP[7], nb2 = IP[8];
+    int i = n / (nb1*nb2), j = (n / nb2) % nb1, k = n % nb2;
+    float u0 = U[n*3], u1 = U[n*3+1], u2 = U[n*3+2];
+    float ta = (u0 + thinv*(ya[n*3] - u0))*n0 + (u1 + thinv*(ya[n*3+1] - u1))*n1 + (u2 + thinv*(ya[n*3+2] - u2))*n2;
+    float t = ta; bool ok = isfinite(ta);
+    if (yb) { float tb = (u0 + thinv*(yb[n*3] - u0))*n0 + (u1 + thinv*(yb[n*3+1] - u1))*n1 + (u2 + thinv*(yb[n*3+2] - u2))*n2; ok = ok && isfinite(tb); t = fminf(t, tb); }
+    if (!ok) t = -INFINITY;
+    int b = ((i >> 2)*((nb1 + 3) >> 2) + (j >> 2))*((nb2 + 3) >> 2) + (k >> 2);
+    atomicMin(&S7B[b], s7key(t));
+}
+__global__ void s7_brst(const int* IP, int cap) {
+    int b = blockIdx.x*blockDim.x + threadIdx.x;
+    if (b == 0) S7RDY = 0;
+    int nb = ((IP[6] + 3) >> 2)*((IP[7] + 3) >> 2)*((IP[8] + 3) >> 2);
+    if (b < nb && b < cap) S7B[b] = 0x7f800000;
+}
+// 점 q 의 거리 하한 > 문턱 T + 여유 이면 참 (S7RDY 0 = 앞에 s7_bmin 이 안 돌았음 -> 거짓)
+__device__ __forceinline__ bool s7far(int q, const int* IP, const int* cb, float db, float T) {
+    if (S7ON == 0 || S7RDY == 0 || IP[13]) return false;
+    int c = q >> 3; int b0 = cb[c*3], b1 = cb[c*3+1], b2 = cb[c*3+2];
+    int B1 = (IP[7] + 3) >> 2, B2 = (IP[8] + 3) >> 2;
+    int m = 0x7fffffff;
+    for (int x = b0 >> 2; x <= (b0 + 2) >> 2; x++) for (int y = b1 >> 2; y <= (b1 + 2) >> 2; y++) for (int z = b2 >> 2; z <= (b2 + 2) >> 2; z++) m = min(m, S7B[(x*B1 + y)*B2 + z]);
+    float mn = s7unkey(m);
+    return db + mn > T + S7MARG;
+}
+"""
+# 커널 이름 -> (U, ya, yb (None = 한 위치), thinv, n0) 인자 자리 (커널 글자 고침은 _p_patch)
+PK = {"rt_bar_y0e": (6, 4, 5, 7, 8), "rt_bar_kfe": (5, 3, 4, 6, 7), "ws_bk": (5, 3, 4, 6, 7), "yl_kq": (6, 4, 5, 7, 8),
+      "rt_bar_q": (5, 4, None, 6, 7), "wb_floor_q": (5, 4, None, 6, 7), "yl_chk": (4, 3, None, 5, 6), "en_phi_q": (7, 6, None, 8, 13),
+      "mf_mark": (4, 4, 3, 5, 6), "hc_bar": (4, 4, 3, 5, 6)}
+PSK2 = {"ws_bk"}                                                                         # 뒤 커널이 WS4_DN 이면 바로 돌아감 (절 CM50 S1)
+
+
+def _db(Q):
+    return f"(AF_BX[{Q}*4]/bm)*n0 + (AF_BX[{Q}*4+1]/bm)*n1 + (AF_BX[{Q}*4+2]/bm)*n2 - pn"
+
+
+def _pre(Q, T, loop):
+    """27 노드 모으기 고리 앞: 거르기 판정 + 거르면 (모드 1) 고리 건너뜀."""
+    ind = loop[:len(loop) - len(loop.lstrip())]
+    return f"{ind}bool s7f_ = s7far({Q}, IP, cb, {_db(Q)}, {T});\n{ind}if (!(s7f_ && S7ON == 1))\n" + loop
+
+
+# 커널 이름 -> [(옛 글자, 새 글자)] (덤프 s7src: 장벽 판 옛 실행기 + W̄ (E3W)·mfix (MFW)·hhtc2 (HC_W) 고친 뒤 글자)
+L2 = "for (int o=0;o<27;o++) { float w = E3W(q, o); int id = ids[o];\n"
+D2 = "    float d0 = xa[0]*n0 + xa[1]*n1 + xa[2]*n2 - pn, d1 = xb[0]*n0 + xb[1]*n1 + xb[2]*n2 - pn;\n"
+PATCH = {
+    "rt_bar_y0e": [("        for (int o=0;o<27;o++) { float w = E3W(qq, o); int id = ids[o];\n", _pre("qq", "dh", "        for (int o=0;o<27;o++) { float w = E3W(qq, o); int id = ids[o];\n")),
+                   ("        d0 = xa[0]*n0 + xa[1]*n1 + xa[2]*n2 - pn; d1 = xb[0]*n0 + xb[1]*n1 + xb[2]*n2 - pn;\n",
+                    "        d0 = xa[0]*n0 + xa[1]*n1 + xa[2]*n2 - pn; d1 = xb[0]*n0 + xb[1]*n1 + xb[2]*n2 - pn;\n        S7_CNT(s7f_, !(fminf(d0, d1) >= dh)); if (s7f_ && S7ON == 1) { d0 = 1e30f; d1 = 1e30f; }\n")],
+    "rt_bar_kfe": [("    " + L2, _pre("q", "0.f", "    " + L2)), (D2, D2 + "    S7_CNT(s7f_, !(d1 > 0.f)); if (s7f_ && S7ON == 1) return;\n")],
+    "ws_bk": [("    " + L2, _pre("q", "0.f", "    " + L2)), (D2, D2 + "    S7_CNT(s7f_, !(d1 > 0.f)); if (s7f_ && S7ON == 1) return;\n")],
+    "yl_kq": [("    " + L2, _pre("q", "dh", "    " + L2)), (D2, D2 + "    S7_CNT(s7f_, !(fminf(d0, d1) >= dh)); if (s7f_ && S7ON == 1) { d0 = 1e30f; d1 = 1e30f; }\n")],
+    "rt_bar_q": [("        for (int o=0;o<27;o++) { float w = E3W(qq, o); int id = ids[o];\n", _pre("qq", "dh", "        for (int o=0;o<27;o++) { float w = E3W(qq, o); int id = ids[o];\n")),
+                 ("        float d = xq[0]*n0 + xq[1]*n1 + xq[2]*n2 - pn;\n",
+                  "        float d = xq[0]*n0 + xq[1]*n1 + xq[2]*n2 - pn;\n        S7_CNT(s7f_, !(d >= dh)); if (s7f_ && S7ON == 1) d = 1e30f;\n")],
+    "wb_floor_q": [("    " + L2, _pre("q", "dh", "    " + L2)),
+                   ("    float d = xq[0]*n0 + xq[1]*n1 + xq[2]*n2 - pn;\n    if (!(d < dh)) return;\n",
+                    "    float d = xq[0]*n0 + xq[1]*n1 + xq[2]*n2 - pn;\n    S7_CNT(s7f_, !(d >= dh)); if (s7f_ && S7ON == 1) return;\n    if (!(d < dh)) return;\n")],
+    "yl_chk": [("    for (int o=0;o<27;o++) { float w = E3W(q, o); int id = ids[o]; for (int a=0;a<3;a++) xa[a] +=",
+                _pre("q", "0.f", "    for (int o=0;o<27;o++) { float w = E3W(q, o); int id = ids[o]; for (int a=0;a<3;a++) xa[a] +=")),
+               ("    if (xa[0]*n0 + xa[1]*n1 + xa[2]*n2 - pn > 0.f) return;\n",
+                "    { float d_ = xa[0]*n0 + xa[1]*n1 + xa[2]*n2 - pn; S7_CNT(s7f_, !(d_ > 0.f)); if (s7f_ && S7ON == 1) return; if (d_ > 0.f) return; }\n")],
+    "en_phi_q": [("            for (int o=0;o<27;o++) { float w = E3W(q, o); int id = ids[o]; for (int a=0;a<3;a++) xq[a] +=",
+                  _pre("q", "dh", "            for (int o=0;o<27;o++) { float w = E3W(q, o); int id = ids[o]; for (int a=0;a<3;a++) xq[a] +=")),
+                 ("            float d = xq[0]*n0 + xq[1]*n1 + xq[2]*n2 - pn;\n            if (d < dh) {\n",
+                  "            float d = xq[0]*n0 + xq[1]*n1 + xq[2]*n2 - pn;\n            S7_CNT(s7f_, !(d >= dh)); if (s7f_ && S7ON == 1) d = 1e30f;\n            if (d < dh) {\n")],
+    "mf_mark": [("    for (int o=0;o<27;o++) { float w = MFW(q, oc, o); int id = ids[o];\n", _pre("q", "dh", "    for (int o=0;o<27;o++) { float w = MFW(q, oc, o); int id = ids[o];\n")),
+                ("    float ds = xs[0]*n0 + xs[1]*n1 + xs[2]*n2 - pn, dp = xp[0]*n0 + xp[1]*n1 + xp[2]*n2 - pn;\n",
+                 "    float ds = xs[0]*n0 + xs[1]*n1 + xs[2]*n2 - pn, dp = xp[0]*n0 + xp[1]*n1 + xp[2]*n2 - pn;\n    S7_CNT(s7f_, !(fminf(ds, dp) >= dh)); if (s7f_ && S7ON == 1) return;\n")],
+    "hc_bar": [("    for (int o=0;o<27;o++) { float w = HC_W(q, oc, o); int id = ids[o];\n", _pre("q", "dh", "    for (int o=0;o<27;o++) { float w = HC_W(q, oc, o); int id = ids[o];\n")),
+               ("    float ds = xs[0]*n0 + xs[1]*n1 + xs[2]*n2 - pn, de = xe[0]*n0 + xe[1]*n1 + xe[2]*n2 - pn;\n",
+                "    float ds = xs[0]*n0 + xs[1]*n1 + xs[2]*n2 - pn, de = xe[0]*n0 + xe[1]*n1 + xe[2]*n2 - pn;\n    S7_CNT(s7f_, !(fminf(ds, de) >= dh)); if (s7f_ && S7ON == 1) return;\n")],
+}
+
+
+class PP:
+    mode = 0
+    marg = 1e-4
+    patched = set()
+    log = None
+    bad = set()
+    said = set()
+
+
+def _p_patch(src):
+    """장벽 커널 글자 고침 (PATCH 표; 소스에 그 커널이 없으면 건너뜀). 고친 커널 이름 -> PP.patched."""
+    import re
+    for nm, reps in PATCH.items():
+        m = re.search(r"__global__\s+void\s+(?:__launch_bounds__\(\d+\)\s+)?" + nm + r"\s*\(", src)
+        if not m:
+            continue
+        i = m.start()
+        j = src.find("\n__global__", m.end())
+        j = len(src) if j < 0 else j
+        body = src[i:j]
+        ok = True
+        for old, new in reps:
+            if body.count(old) != 1:
+                ok = False
+                PP.bad.add((nm, old[:60], body.count(old)))
+                break
+            body = body.replace(old, new, 1)
+        if ok:
+            src = src[:i] + body + src[j:]
+            PP.patched.add(nm)
+    return src
+
+
+def _p_src(src):
+    if "s7_bmin(" in src or "__device__ float* AF_BX;" not in src:
+        return src
+    src = _p_patch(src)
+    k = src.find("__global__")                                                         # 장치 함수·전역은 첫 커널 앞에 (고친 커널이 s7far 를 부름)
+    k = src.rfind("\n", 0, k) + 1
+    return src[:k] + P_SRC + src[k:]
+
+
+class _PFn(dict):
+    """풀이기 s.fn (이름 -> cupy 함수): 고친 장벽 커널을 꺼내면 앞에 s7_bmin, 뒤에 s7_brst 를 붙여 띄우는 함수를 돌려줌."""
+
+    def __init__(s_, src, owner):
+        super().__init__(src)
+        s_.owner = owner
+
+    def __getitem__(s_, name):
+        f = dict.__getitem__(s_, name)
+        if PP.mode and name in PP.patched and name in PK:
+            return _PCall(s_.owner, name, f)
+        return f
+
+
+class _PCall:
+    def __init__(s_, s, name, f):
+        s_.s, s_.name, s_.f = s, name, f
+
+    def __call__(s_, grid, block, args, **kw):
+        s = s_.s
+        iU, ia, ib, it, i0 = PK[s_.name]
+        a = args
+        ok = len(a) > i0 + 2 and all(isinstance(a[q], np.uint64) for q in (iU, ia) + ((ib,) if ib is not None else ())) and all(isinstance(a[q], np.float32) for q in (it, i0, i0 + 1, i0 + 2))
+        if not ok:
+            if s_.name not in PP.said:
+                PP.said.add(s_.name)
+                print(f"[절 CM72] 장벽 거르기: {s_.name} 인자 꼴이 달라 거르지 않음 ({[type(q).__name__ for q in a]})", flush=True)
+            return s_.f(grid, block, args, **kw)
+        fb = s.fn.get_raw("s7_bmin")
+        fr = s.fn.get_raw("s7_brst")
+        capN = int(s.capN)
+        sk1, sk2 = _skp(s, "AF_SKIP"), (_skp(s, "WS4_DN") if s_.name in PSK2 else np.uint64(0))
+        fb(((capN + 255) // 256,), (256,), (a[0], a[iU], a[ia], a[ib] if ib is not None else np.uint64(0), a[it], a[i0], a[i0 + 1], a[i0 + 2], sk1, sk2))
+        r = s_.f(grid, block, args, **kw)
+        cap = int(s.s7b.numel())
+        fr(((cap + 255) // 256,), (256,), (a[0], np.int32(cap)))
+        return r
+
+
+def _skp(s, nm):
+    c = getattr(s, "_s7skp", None)
+    if c is None:
+        c = s._s7skp = {}
+    if nm not in c:
+        try:
+            c[nm] = np.uint64(s.mod.get_global(nm).ptr)
+        except Exception:
+            c[nm] = np.uint64(0)
+    return c[nm]
+
+
+def _pfn_get_raw(self, name):
+    if not dict.__contains__(self, name):
+        dict.__setitem__(self, name, self.owner.mod.get_function(name))
+    return dict.__getitem__(self, name)
+
+
+_PFn.get_raw = _pfn_get_raw
+
+
+def p_bind(s):
+    import cupy as cp
+    capN = int(s.capN)
+    cap = capN // 8 + 1024
+    if getattr(s, "s7b", None) is None or s.s7b.numel() < cap:
+        s.s7b = torch.full((cap,), 0x7f800000, device=s.x.device, dtype=torch.int32)
+    if getattr(s, "s7v", None) is None:
+        s.s7v = torch.zeros(4, device=s.x.device, dtype=torch.int64)
+    m = s.mod
+    cp.ndarray((1,), dtype=cp.uint64, memptr=m.get_global("S7B"))[0] = int(s.s7b.data_ptr())
+    cp.ndarray((1,), dtype=cp.uint64, memptr=m.get_global("S7VIOL"))[0] = int(s.s7v.data_ptr())
+    cp.ndarray((1,), dtype=cp.int32, memptr=m.get_global("S7ON"))[0] = int(PP.mode)
+    cp.ndarray((1,), dtype=cp.int32, memptr=m.get_global("S7RDY"))[0] = 0
+    cp.ndarray((1,), dtype=cp.float32, memptr=m.get_global("S7MARG"))[0] = float(PP.marg)
+    if not isinstance(s.fn, _PFn):
+        s.fn = _PFn(s.fn, s)
+
+
+def p_install(out, mode, marg=1e-4):
+    from . import fem_ao_rt as AORT
+    PP.mode, PP.marg = int(mode), float(marg)
+    PP.log = open(os.path.join(out, "s7p.jsonl"), "w")
+    o_s = AORT._src
+    AORT._src = lambda *a, **kw: _p_src(o_s(*a, **kw))
+    cls = AORT.AORTSolver
+    ob = cls.bind_act
+
+    def bind_act(s, *a, **kw):
+        r = ob(s, *a, **kw)
+        if "s7_bmin(" in getattr(s, "_s7code", "s7_bmin(") and getattr(s, "mod", None) is not None:
+            try:
+                p_bind(s)
+            except Exception as e_:
+                PP.bad.add(("bind", str(e_)[:200], 0))
+        return r
+    cls.bind_act = bind_act
+    print(f"[절 CM72] 장벽 거르기 P 켬 (모드 {PP.mode}, 여유 {PP.marg} m)", flush=True)
+
+
+def p_frame_end(s, fr):
+    if PP.log is None or getattr(s, "s7v", None) is None:
+        return
+    rec = dict(f=fr)
+    if fr <= 3 or PP.mode == 2:
+        rec["patched"] = sorted(PP.patched) if fr <= 3 else None
+        rec["bad"] = [list(b) for b in sorted(PP.bad)] if fr <= 3 else None
+        rec["fnwrap"] = isinstance(s.fn, _PFn) if fr <= 3 else None
+    if PP.mode == 2:
+        torch.cuda.synchronize()
+        v = s.s7v.tolist()
+        s.s7v.zero_()
+        rec.update(viol=v[0], far=v[1], act=v[2])
+    if len(rec) > 1:
+        PP.log.write(json.dumps({k: v for k, v in rec.items() if v is not None}, ensure_ascii=False) + "\n")
+        PP.log.flush()
 
 
 class KP:
@@ -256,6 +523,8 @@ def frame_install():
                 dep[0] -= 1
                 if dep[0] == 0:
                     lz_frame_end(S6.W.fr)
+                    if C.p:
+                        p_frame_end(s, S6.W.fr)
         return w
     ART.split_step = outer(ART.split_step)
     AORT.split_step = outer(AORT.split_step)
@@ -297,9 +566,11 @@ def ovf_install(out):
     ART.RTSolver.alloc = alloc
 
 
-def install(out, kp=None, nm=0, z=0, src=0, ovf=0):
+def install(out, kp=None, nm=0, z=0, src=0, ovf=0, p=0, pm=1e-4):
     """실행기를 runpy 로 띄우는 순간, speed6 설치 뒤 (가장 바깥) 에 부름."""
-    C.out, C.nm, C.z = out, int(nm), int(z)
+    C.out, C.nm, C.z, C.p = out, int(nm), int(z), int(p)
+    if C.p:
+        p_install(out, C.p, pm)
     if int(src):
         src_install(out)
     if int(ovf):
@@ -307,6 +578,7 @@ def install(out, kp=None, nm=0, z=0, src=0, ovf=0):
     if C.z:
         LZ.mode = C.z
         lz_install(out)
+    if C.z or C.p:
         frame_install()
     if kp:
         C.kp = tuple(int(q) for q in str(kp).split(","))
