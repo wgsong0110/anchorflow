@@ -1,0 +1,58 @@
+# 절 CM47 묶음 ghost1 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_ghost1.sh)
+# E = 공통 후보 D + 시간 예산 T2 (@tb 16.7 @tb_m 0.8 @tb_w 2), 수박 M3 은 + 가속 I (@inv 1) + --sp2 31 (셀 3); 수박 바탕 (WMB) 에 --gq_mass 원래 있음.
+# @e3w 1 = 절 CM45 W̄ (장벽 표본점 이동을 원래 G2P 기저의 칸 입자 질량 평균으로; ficus·bread 는 장벽 바닥 없어 해당 없음), @g1 1 = 절 CM47 ghost penalty (γ_a = (2μ+λ)·1e-4).
+# 방식 g = 수박 --erec + 진단 D2·D3, nd = 새 실행기 비결정 + 진단 (wolf 덤프 -> bbox, ficus 덤프 -> 주기), z = 단독 시간 (빈 카드 하나에 a · b)
+# s0k 연기: 수박 E+W̄+ghost (14 프레임), 새 실행기 네 씬 E+W̄+ghost (8 프레임) -- 컴파일·훅·면 수 확인
+s0k kMW M3 g E @e3w 1 --frames 14
+s0k kMWg M3 g E @e3w 1 @g1 1 --frames 14
+s0k kL L nd E @e3w 1 @g1 1 --frames 8
+s0k kWo W nd E @e3w 1 @g1 1 --frames 8
+s0k kB B nd E @e3w 1 @g1 1 --frames 8
+s0k kF F nd E @e3w 1 @g1 1 --frames 8
+# s1 수박: E+W̄ 대조 6 판 + E+W̄+ghost 12 판 (진단 D2·D3), 단독 시간 E+W̄ · E+W̄+ghost (a · b)
+s1 mW_1 M3 g E @e3w 1
+s1 mW_2 M3 g E @e3w 1
+s1 mW_3 M3 g E @e3w 1
+s1 mW_4 M3 g E @e3w 1
+s1 mW_5 M3 g E @e3w 1
+s1 mW_6 M3 g E @e3w 1
+s1 mWg_1 M3 g E @e3w 1 @g1 1
+s1 mWg_2 M3 g E @e3w 1 @g1 1
+s1 mWg_3 M3 g E @e3w 1 @g1 1
+s1 mWg_4 M3 g E @e3w 1 @g1 1
+s1 mWg_5 M3 g E @e3w 1 @g1 1
+s1 mWg_6 M3 g E @e3w 1 @g1 1
+s1 mWg_7 M3 g E @e3w 1 @g1 1
+s1 mWg_8 M3 g E @e3w 1 @g1 1
+s1 mWg_9 M3 g E @e3w 1 @g1 1
+s1 mWg_10 M3 g E @e3w 1 @g1 1
+s1 mWg_11 M3 g E @e3w 1 @g1 1
+s1 mWg_12 M3 g E @e3w 1 @g1 1
+s1 zMW M3 z E @e3w 1
+s1 zMWg M3 z E @e3w 1 @g1 1
+# s2 다른 씬 회귀 (새 실행기): E 대조 · E+W̄+ghost, 단독 시간 E · E+W̄+ghost (a · b)
+s2 rL_E1 L nd E
+s2 rL_E2 L nd E
+s2 rL_g1 L nd E @e3w 1 @g1 1
+s2 rL_g2 L nd E @e3w 1 @g1 1
+s2 rL_g3 L nd E @e3w 1 @g1 1
+s2 rF_E1 F nd E
+s2 rF_g1 F nd E @e3w 1 @g1 1
+s2 rF_g2 F nd E @e3w 1 @g1 1
+s2 rB_E1 B nd E
+s2 rB_g1 B nd E @e3w 1 @g1 1
+s2 rB_g2 B nd E @e3w 1 @g1 1
+s2 rW_E1 W nd E
+s2 rW_E2 W nd E
+s2 rW_g1 W nd E @e3w 1 @g1 1
+s2 rW_g2 W nd E @e3w 1 @g1 1
+s2 rW_g3 W nd E @e3w 1 @g1 1
+s2 rW_g4 W nd E @e3w 1 @g1 1
+s2 zL_E L z E
+s2 zL_g L z E @e3w 1 @g1 1
+s2 zF_E F z E
+s2 zF_g F z E @e3w 1 @g1 1
+s2 zB_E B z E
+s2 zB_g B z E @e3w 1 @g1 1
+s2 zW_E W z E
+s2 zW_g W z E @e3w 1 @g1 1
