@@ -1,0 +1,102 @@
+# 절 CM64 묶음 wmfloor 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_wmfloor.sh; 낱말 F·P1X·A3 는 stab 의 dfl 이 펼침; '@wfm M' = exe/wmfloor_wrap.py 고스트 질량 더한 면 (0 M0 · 5 M5 · -1 없음 = 진단만), '@wfd6 1' 진단 D6, '@wfchk L' 검사)
+# 바탕 = 공통 후보 G' = F + A3 + P1X + H5 + Rf (절 CM61) = 'F P1X A3 @hc 5 @rr 1 @tc 8'.
+# s0k 연기 (8 프레임): 컴파일·훅·검사 (면 수·곱) 다섯 씬
+s0k kC M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm -1 @wfd6 1 --frames 8
+s0k kM0 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfd6 1 @wfchk 2,5,8 --frames 8
+s0k kM5 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfd6 1 @wfchk 2,5,8 --frames 8
+s0k kL0 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfchk 2,5 --frames 8
+s0k kF0 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfchk 2,5 --frames 8
+s0k kF5 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfchk 2,5 --frames 8
+s0k kW0 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfchk 2,5 --frames 8
+s0k kB0 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfchk 2,5 --frames 8
+# s1 (할 일 1·3): 수박 G' 대조 + D6 8 판 (가라앉음 진단), M0·M5 수박 각 16 판, 다른 씬 M0·M5 각 (레고 8 · wolf·ficus·bread 4), 단독 렌더 포함 a · b 다섯 씬 × 두 후보
+s1 mC_1 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm -1 @wfd6 1
+s1 mC_2 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm -1 @wfd6 1
+s1 mC_3 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm -1 @wfd6 1
+s1 mC_4 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm -1 @wfd6 1
+s1 mC_5 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm -1 @wfd6 1
+s1 mC_6 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm -1 @wfd6 1
+s1 mC_7 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm -1 @wfd6 1
+s1 mC_8 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm -1 @wfd6 1
+s1 mM0_1 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfd6 1
+s1 mM0_2 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfd6 1
+s1 mM0_3 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfd6 1
+s1 mM0_4 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfd6 1
+s1 mM0_5 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfd6 1
+s1 mM0_6 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfd6 1
+s1 mM0_7 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfd6 1
+s1 mM0_8 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfd6 1
+s1 mM0_9 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfd6 1
+s1 mM0_10 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfd6 1
+s1 mM0_11 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfd6 1
+s1 mM0_12 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfd6 1
+s1 mM0_13 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfd6 1
+s1 mM0_14 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfd6 1
+s1 mM0_15 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfd6 1
+s1 mM0_16 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0 @wfd6 1
+s1 mM5_1 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfd6 1
+s1 mM5_2 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfd6 1
+s1 mM5_3 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfd6 1
+s1 mM5_4 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfd6 1
+s1 mM5_5 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfd6 1
+s1 mM5_6 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfd6 1
+s1 mM5_7 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfd6 1
+s1 mM5_8 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfd6 1
+s1 mM5_9 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfd6 1
+s1 mM5_10 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfd6 1
+s1 mM5_11 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfd6 1
+s1 mM5_12 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfd6 1
+s1 mM5_13 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfd6 1
+s1 mM5_14 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfd6 1
+s1 mM5_15 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfd6 1
+s1 mM5_16 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5 @wfd6 1
+s1 lM0_1 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 lM0_2 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 lM0_3 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 lM0_4 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 lM0_5 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 lM0_6 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 lM0_7 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 lM0_8 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 wM0_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 wM0_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 wM0_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 wM0_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 fM0_1 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 fM0_2 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 fM0_3 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 fM0_4 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 bM0_1 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 bM0_2 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 bM0_3 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 bM0_4 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 lM5_1 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 lM5_2 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 lM5_3 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 lM5_4 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 lM5_5 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 lM5_6 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 lM5_7 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 lM5_8 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 wM5_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 wM5_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 wM5_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 wM5_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 fM5_1 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 fM5_2 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 fM5_3 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 fM5_4 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 bM5_1 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 bM5_2 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 bM5_3 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 bM5_4 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 zM0M3 M3 z F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 zM0L L z F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 zM0F F z F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 zM0W W z F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 zM0B B z F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 0
+s1 zM5M3 M3 z F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 zM5L L z F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 zM5F F z F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 zM5W W z F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
+s1 zM5B B z F P1X A3 @hc 5 @rr 1 @tc 8 @wfm 5
