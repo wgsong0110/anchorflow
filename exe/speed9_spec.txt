@@ -45,3 +45,12 @@ s1 pD M3 q H3 @s9dg 1 @s7kp 3,100
 s1 pE M3 q H3 @s9dg 1 @s7kp 3,100
 s1 pA M3 q H3 @s9c 1 @s9y 1 @s9e 1 @s9dg 1 @s7kp 3,100
 s1 pP M3 q H3 @s9c 1 @s9y 1 @s9e 1 @s9p 0.9 @s9dg 1 @s7kp 3,100
+# s2: 다섯 씬 렌더 포함 벽시계 단독 (카드 하나에 a 다 돌고 b). 수박은 H3 · H3 + 가속을 두 이름씩 (= 4 판씩), 네 씬은 H3 + 가속 (옛 실행기 가속이라 H3 와 같은 경로) 2 판
+s2 xHM M3 z H3
+s2 xAM M3 z H3 @s9c 1 @s9y 1 @s9e 1
+s2 xHM2 M3 z H3
+s2 xAM2 M3 z H3 @s9c 1 @s9y 1 @s9e 1
+s2 xAL L z H3 @s9c 1 @s9y 1 @s9e 1 --cap_mul 4
+s2 xAW W z H3 @s9c 1 @s9y 1 @s9e 1 --cap_mul 4
+s2 xAF F z H3 @s9c 1 @s9y 1 @s9e 1 --cap_mul 4
+s2 xAB B z H3 @s9c 1 @s9y 1 @s9e 1 --cap_mul 4
