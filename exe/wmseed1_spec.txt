@@ -1,0 +1,25 @@
+# 절 CM60 묶음 wmseed1 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_wmseed1.sh)
+# P1X = 공통 후보 F + 벌점 P1X (절 CM53 '@g4 1e-1 @g4t 1 @g4x 1'), 수박 M3 = 셀 3 + --sp2 31 + @inv 1 + --gq_mass. N = P1X + 접촉 CFL 새로 닿는 입자 (절 CM59 '@wc1k 2 --ksplit 4').
+# SEEDB = --seedb wm_seed.npz (절 CM28 (a) 입자 β 3e9), @sd1 1 = 씨 입자 몫 (lib/anchorflow/fem_wmseed.py, 절 CM60.2). 방식 r = 기록 판 (결과 불변 진단), z = 단독 시간.
+# s0k 연기 (8 프레임): 소스 바꾸기 (aq_p2g_s·aq_elem·en_phi_q·fpi_p) 컴파일·감싸개 줄·기록 확인
+s0k kSP M3 r P1X SEEDB @sd1 1 --frames 8
+s0k kSN M3 r P1X @wc1k 2 --ksplit 4 SEEDB @sd1 1 --frames 8
+# s1: 두 바탕 각 8 판 + 단독 z a·b
+s1 SP_1 M3 r P1X SEEDB @sd1 1
+s1 SP_2 M3 r P1X SEEDB @sd1 1
+s1 SP_3 M3 r P1X SEEDB @sd1 1
+s1 SP_4 M3 r P1X SEEDB @sd1 1
+s1 SP_5 M3 r P1X SEEDB @sd1 1
+s1 SP_6 M3 r P1X SEEDB @sd1 1
+s1 SP_7 M3 r P1X SEEDB @sd1 1
+s1 SP_8 M3 r P1X SEEDB @sd1 1
+s1 SN_1 M3 r P1X @wc1k 2 --ksplit 4 SEEDB @sd1 1
+s1 SN_2 M3 r P1X @wc1k 2 --ksplit 4 SEEDB @sd1 1
+s1 SN_3 M3 r P1X @wc1k 2 --ksplit 4 SEEDB @sd1 1
+s1 SN_4 M3 r P1X @wc1k 2 --ksplit 4 SEEDB @sd1 1
+s1 SN_5 M3 r P1X @wc1k 2 --ksplit 4 SEEDB @sd1 1
+s1 SN_6 M3 r P1X @wc1k 2 --ksplit 4 SEEDB @sd1 1
+s1 SN_7 M3 r P1X @wc1k 2 --ksplit 4 SEEDB @sd1 1
+s1 SN_8 M3 r P1X @wc1k 2 --ksplit 4 SEEDB @sd1 1
+s1 zSP M3 z P1X SEEDB @sd1 1
+s1 zSN M3 z P1X @wc1k 2 --ksplit 4 SEEDB @sd1 1
