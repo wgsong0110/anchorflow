@@ -396,3 +396,210 @@ s2 zHW W z F P1X A3 @hc 1 @rr 1
 s2 zRW W z F P1X A3 @hc 1 @rr 1 @tc 8
 s2 zHB B z F P1X A3 @hc 1 @rr 1
 s2 zRB B z F P1X A3 @hc 1 @rr 1 @tc 8
+# s3k·s3 정의 H4 (@hc 4 = 충돌 걸음 중 HHT 가 새 접촉 노드들의 법선 속도 합을 뒤집는 걸음만 몸 전체 후퇴 오일러; s2 에서 H1 이 레고 오차 21 %·wolf f50 694 mm 로 깸)
+s3k kM4 M3 r F P1X @hc 4 --frames 8
+s3k kL4 L nd F P1X @hc 4 --frames 8
+s3k kW4 W nd F P1X @hc 4 --frames 8
+# s3 재현 120 판 (8 프레임) + 다섯 씬 (Rf 판·뺀 판) + 단독 렌더 포함 a · b
+s3 rM4_1 M3 r F P1X @hc 4 --frames 8
+s3 rM4_2 M3 r F P1X @hc 4 --frames 8
+s3 rM4_3 M3 r F P1X @hc 4 --frames 8
+s3 rM4_4 M3 r F P1X @hc 4 --frames 8
+s3 rM4_5 M3 r F P1X @hc 4 --frames 8
+s3 rM4_6 M3 r F P1X @hc 4 --frames 8
+s3 rM4_7 M3 r F P1X @hc 4 --frames 8
+s3 rM4_8 M3 r F P1X @hc 4 --frames 8
+s3 rM4_9 M3 r F P1X @hc 4 --frames 8
+s3 rM4_10 M3 r F P1X @hc 4 --frames 8
+s3 rM4_11 M3 r F P1X @hc 4 --frames 8
+s3 rM4_12 M3 r F P1X @hc 4 --frames 8
+s3 rM4_13 M3 r F P1X @hc 4 --frames 8
+s3 rM4_14 M3 r F P1X @hc 4 --frames 8
+s3 rM4_15 M3 r F P1X @hc 4 --frames 8
+s3 rM4_16 M3 r F P1X @hc 4 --frames 8
+s3 rM4_17 M3 r F P1X @hc 4 --frames 8
+s3 rM4_18 M3 r F P1X @hc 4 --frames 8
+s3 rM4_19 M3 r F P1X @hc 4 --frames 8
+s3 rM4_20 M3 r F P1X @hc 4 --frames 8
+s3 rM4_21 M3 r F P1X @hc 4 --frames 8
+s3 rM4_22 M3 r F P1X @hc 4 --frames 8
+s3 rM4_23 M3 r F P1X @hc 4 --frames 8
+s3 rM4_24 M3 r F P1X @hc 4 --frames 8
+s3 rM4_25 M3 r F P1X @hc 4 --frames 8
+s3 rM4_26 M3 r F P1X @hc 4 --frames 8
+s3 rM4_27 M3 r F P1X @hc 4 --frames 8
+s3 rM4_28 M3 r F P1X @hc 4 --frames 8
+s3 rM4_29 M3 r F P1X @hc 4 --frames 8
+s3 rM4_30 M3 r F P1X @hc 4 --frames 8
+s3 rM4_31 M3 r F P1X @hc 4 --frames 8
+s3 rM4_32 M3 r F P1X @hc 4 --frames 8
+s3 rM4_33 M3 r F P1X @hc 4 --frames 8
+s3 rM4_34 M3 r F P1X @hc 4 --frames 8
+s3 rM4_35 M3 r F P1X @hc 4 --frames 8
+s3 rM4_36 M3 r F P1X @hc 4 --frames 8
+s3 rM4_37 M3 r F P1X @hc 4 --frames 8
+s3 rM4_38 M3 r F P1X @hc 4 --frames 8
+s3 rM4_39 M3 r F P1X @hc 4 --frames 8
+s3 rM4_40 M3 r F P1X @hc 4 --frames 8
+s3 rM4_41 M3 r F P1X @hc 4 --frames 8
+s3 rM4_42 M3 r F P1X @hc 4 --frames 8
+s3 rM4_43 M3 r F P1X @hc 4 --frames 8
+s3 rM4_44 M3 r F P1X @hc 4 --frames 8
+s3 rM4_45 M3 r F P1X @hc 4 --frames 8
+s3 rM4_46 M3 r F P1X @hc 4 --frames 8
+s3 rM4_47 M3 r F P1X @hc 4 --frames 8
+s3 rM4_48 M3 r F P1X @hc 4 --frames 8
+s3 rM4_49 M3 r F P1X @hc 4 --frames 8
+s3 rM4_50 M3 r F P1X @hc 4 --frames 8
+s3 rM4_51 M3 r F P1X @hc 4 --frames 8
+s3 rM4_52 M3 r F P1X @hc 4 --frames 8
+s3 rM4_53 M3 r F P1X @hc 4 --frames 8
+s3 rM4_54 M3 r F P1X @hc 4 --frames 8
+s3 rM4_55 M3 r F P1X @hc 4 --frames 8
+s3 rM4_56 M3 r F P1X @hc 4 --frames 8
+s3 rM4_57 M3 r F P1X @hc 4 --frames 8
+s3 rM4_58 M3 r F P1X @hc 4 --frames 8
+s3 rM4_59 M3 r F P1X @hc 4 --frames 8
+s3 rM4_60 M3 r F P1X @hc 4 --frames 8
+s3 rM4_61 M3 r F P1X @hc 4 --frames 8
+s3 rM4_62 M3 r F P1X @hc 4 --frames 8
+s3 rM4_63 M3 r F P1X @hc 4 --frames 8
+s3 rM4_64 M3 r F P1X @hc 4 --frames 8
+s3 rM4_65 M3 r F P1X @hc 4 --frames 8
+s3 rM4_66 M3 r F P1X @hc 4 --frames 8
+s3 rM4_67 M3 r F P1X @hc 4 --frames 8
+s3 rM4_68 M3 r F P1X @hc 4 --frames 8
+s3 rM4_69 M3 r F P1X @hc 4 --frames 8
+s3 rM4_70 M3 r F P1X @hc 4 --frames 8
+s3 rM4_71 M3 r F P1X @hc 4 --frames 8
+s3 rM4_72 M3 r F P1X @hc 4 --frames 8
+s3 rM4_73 M3 r F P1X @hc 4 --frames 8
+s3 rM4_74 M3 r F P1X @hc 4 --frames 8
+s3 rM4_75 M3 r F P1X @hc 4 --frames 8
+s3 rM4_76 M3 r F P1X @hc 4 --frames 8
+s3 rM4_77 M3 r F P1X @hc 4 --frames 8
+s3 rM4_78 M3 r F P1X @hc 4 --frames 8
+s3 rM4_79 M3 r F P1X @hc 4 --frames 8
+s3 rM4_80 M3 r F P1X @hc 4 --frames 8
+s3 rM4_81 M3 r F P1X @hc 4 --frames 8
+s3 rM4_82 M3 r F P1X @hc 4 --frames 8
+s3 rM4_83 M3 r F P1X @hc 4 --frames 8
+s3 rM4_84 M3 r F P1X @hc 4 --frames 8
+s3 rM4_85 M3 r F P1X @hc 4 --frames 8
+s3 rM4_86 M3 r F P1X @hc 4 --frames 8
+s3 rM4_87 M3 r F P1X @hc 4 --frames 8
+s3 rM4_88 M3 r F P1X @hc 4 --frames 8
+s3 rM4_89 M3 r F P1X @hc 4 --frames 8
+s3 rM4_90 M3 r F P1X @hc 4 --frames 8
+s3 rM4_91 M3 r F P1X @hc 4 --frames 8
+s3 rM4_92 M3 r F P1X @hc 4 --frames 8
+s3 rM4_93 M3 r F P1X @hc 4 --frames 8
+s3 rM4_94 M3 r F P1X @hc 4 --frames 8
+s3 rM4_95 M3 r F P1X @hc 4 --frames 8
+s3 rM4_96 M3 r F P1X @hc 4 --frames 8
+s3 rM4_97 M3 r F P1X @hc 4 --frames 8
+s3 rM4_98 M3 r F P1X @hc 4 --frames 8
+s3 rM4_99 M3 r F P1X @hc 4 --frames 8
+s3 rM4_100 M3 r F P1X @hc 4 --frames 8
+s3 rM4_101 M3 r F P1X @hc 4 --frames 8
+s3 rM4_102 M3 r F P1X @hc 4 --frames 8
+s3 rM4_103 M3 r F P1X @hc 4 --frames 8
+s3 rM4_104 M3 r F P1X @hc 4 --frames 8
+s3 rM4_105 M3 r F P1X @hc 4 --frames 8
+s3 rM4_106 M3 r F P1X @hc 4 --frames 8
+s3 rM4_107 M3 r F P1X @hc 4 --frames 8
+s3 rM4_108 M3 r F P1X @hc 4 --frames 8
+s3 rM4_109 M3 r F P1X @hc 4 --frames 8
+s3 rM4_110 M3 r F P1X @hc 4 --frames 8
+s3 rM4_111 M3 r F P1X @hc 4 --frames 8
+s3 rM4_112 M3 r F P1X @hc 4 --frames 8
+s3 rM4_113 M3 r F P1X @hc 4 --frames 8
+s3 rM4_114 M3 r F P1X @hc 4 --frames 8
+s3 rM4_115 M3 r F P1X @hc 4 --frames 8
+s3 rM4_116 M3 r F P1X @hc 4 --frames 8
+s3 rM4_117 M3 r F P1X @hc 4 --frames 8
+s3 rM4_118 M3 r F P1X @hc 4 --frames 8
+s3 rM4_119 M3 r F P1X @hc 4 --frames 8
+s3 rM4_120 M3 r F P1X @hc 4 --frames 8
+s3 m4H_1 M3 g F P1X @hc 4
+s3 m4R_1 M3 g F P1X A3 @hc 4 @rr 1 @tc 8
+s3 m4H_2 M3 g F P1X @hc 4
+s3 m4R_2 M3 g F P1X A3 @hc 4 @rr 1 @tc 8
+s3 m4H_3 M3 g F P1X @hc 4
+s3 m4R_3 M3 g F P1X A3 @hc 4 @rr 1 @tc 8
+s3 m4H_4 M3 g F P1X @hc 4
+s3 m4R_4 M3 g F P1X A3 @hc 4 @rr 1 @tc 8
+s3 m4H_5 M3 g F P1X @hc 4
+s3 m4R_5 M3 g F P1X A3 @hc 4 @rr 1 @tc 8
+s3 m4H_6 M3 g F P1X @hc 4
+s3 m4R_6 M3 g F P1X A3 @hc 4 @rr 1 @tc 8
+s3 m4H_7 M3 g F P1X @hc 4
+s3 m4R_7 M3 g F P1X A3 @hc 4 @rr 1 @tc 8
+s3 m4H_8 M3 g F P1X @hc 4
+s3 m4R_8 M3 g F P1X A3 @hc 4 @rr 1 @tc 8
+s3 m4H_9 M3 g F P1X @hc 4
+s3 m4R_9 M3 g F P1X A3 @hc 4 @rr 1 @tc 8
+s3 m4H_10 M3 g F P1X @hc 4
+s3 m4R_10 M3 g F P1X A3 @hc 4 @rr 1 @tc 8
+s3 m4H_11 M3 g F P1X @hc 4
+s3 m4R_11 M3 g F P1X A3 @hc 4 @rr 1 @tc 8
+s3 m4H_12 M3 g F P1X @hc 4
+s3 m4R_12 M3 g F P1X A3 @hc 4 @rr 1 @tc 8
+s3 m4H_13 M3 g F P1X @hc 4
+s3 m4R_13 M3 g F P1X A3 @hc 4 @rr 1 @tc 8
+s3 m4H_14 M3 g F P1X @hc 4
+s3 m4R_14 M3 g F P1X A3 @hc 4 @rr 1 @tc 8
+s3 m4H_15 M3 g F P1X @hc 4
+s3 m4R_15 M3 g F P1X A3 @hc 4 @rr 1 @tc 8
+s3 m4H_16 M3 g F P1X @hc 4
+s3 m4R_16 M3 g F P1X A3 @hc 4 @rr 1 @tc 8
+s3 l4H_1 L nd F P1X @hc 4
+s3 l4R_1 L nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 l4H_2 L nd F P1X @hc 4
+s3 l4R_2 L nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 l4H_3 L nd F P1X @hc 4
+s3 l4R_3 L nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 l4H_4 L nd F P1X @hc 4
+s3 l4R_4 L nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 l4H_5 L nd F P1X @hc 4
+s3 l4R_5 L nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 l4H_6 L nd F P1X @hc 4
+s3 l4R_6 L nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 l4H_7 L nd F P1X @hc 4
+s3 l4R_7 L nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 l4H_8 L nd F P1X @hc 4
+s3 l4R_8 L nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 f4H_1 F nd F P1X @hc 4
+s3 f4R_1 F nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 f4H_2 F nd F P1X @hc 4
+s3 f4R_2 F nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 f4H_3 F nd F P1X @hc 4
+s3 f4R_3 F nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 f4H_4 F nd F P1X @hc 4
+s3 f4R_4 F nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 w4H_1 W nd F P1X @hc 4
+s3 w4R_1 W nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 w4H_2 W nd F P1X @hc 4
+s3 w4R_2 W nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 w4H_3 W nd F P1X @hc 4
+s3 w4R_3 W nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 w4H_4 W nd F P1X @hc 4
+s3 w4R_4 W nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 b4H_1 B nd F P1X @hc 4
+s3 b4R_1 B nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 b4H_2 B nd F P1X @hc 4
+s3 b4R_2 B nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 b4H_3 B nd F P1X @hc 4
+s3 b4R_3 B nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 b4H_4 B nd F P1X @hc 4
+s3 b4R_4 B nd F P1X A3 @hc 4 @rr 1 @tc 8
+s3 z4HM3 M3 z F P1X A3 @hc 4 @rr 1
+s3 z4RM3 M3 z F P1X A3 @hc 4 @rr 1 @tc 8
+s3 z4HL L z F P1X A3 @hc 4 @rr 1
+s3 z4RL L z F P1X A3 @hc 4 @rr 1 @tc 8
+s3 z4HF F z F P1X A3 @hc 4 @rr 1
+s3 z4RF F z F P1X A3 @hc 4 @rr 1 @tc 8
+s3 z4HW W z F P1X A3 @hc 4 @rr 1
+s3 z4RW W z F P1X A3 @hc 4 @rr 1 @tc 8
+s3 z4HB B z F P1X A3 @hc 4 @rr 1
+s3 z4RB B z F P1X A3 @hc 4 @rr 1 @tc 8

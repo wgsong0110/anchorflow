@@ -14,6 +14,9 @@ y 이고, HHT (Newmark γ 0.676, β 0.34) 의 걸음 끝 속도 v1 = α (y − z
      충돌 아닌 걸음은 그대로 (HHT, 덜 풀린 걸음은 --ue_loc 집합 S 후퇴 오일러 그대로).
   2 (H2, 새 접촉 노드만 후퇴 오일러): 새 접촉 노드만 위 후퇴 오일러, 나머지 그대로.
   3 (H3, 걸음 끝 접촉 노드 가속도 기억 0): 걸음 끝 접촉 노드 (장벽 힘이 걸린 노드) 는 위치·속도 HHT 그대로, 가속도 기억만 0 (절 CM24 --ue a0 와 같은 식).
+  4 (H4, H1 을 '적분이 만든 되튐' 걸음으로 좁힘): 충돌 걸음 중 HHT 걸음 끝 속도 v1 = α (y − z0) 가 새 접촉 노드들의 법선 속도 합을 걸음 시작의 들어가는 쪽
+     (Σ v0·n < 0) 에서 나오는 쪽 (Σ v1·n > 0) 으로 뒤집는 걸음만 몸 전체 후퇴 오일러 (H1 은 쉬거나 미끄러지며 받침에 새로 드는 노드가 있는 걸음마다 켜져
+     레고·wolf 를 몸 전체 감쇠로 깸 -- s2). 모드 0 은 뒤집힘 걸음 수만 셈 (nflip).
   덜 풀린 걸음 (판정 커널 uf/cj = 1) 의 집합 S 노드는 원래 갱신 (--ue be) 이 먼저 (같은 후퇴 오일러).
 근거: Newmark 계열 적분은 접촉 힘처럼 한 걸음 안에서 켜지고 꺼지는 힘을 걸음 양 끝 평균 (사다리꼴) 으로 넣어 충돌에서 에너지를 만들거나 되튐을 과장한다 --
   Deuflhard, Krause, Ertel 2008 (IJNME 73:1274, 'A contact-stabilized Newmark method for dynamical contact problems') 은 접촉 힘을 걸음 끝 시점에만 (암시적, 평균 없이)
@@ -78,6 +81,21 @@ __global__ void hc_all(const int* IP, int* st, int* hm) {                     //
     if (n >= IP[9] || st[2] == 0) return;
     hm[n] = 1; atomicAdd(&st[5], 1);
 }
+// H4: 충돌 걸음 중 HHT 걸음 끝 속도 v1 = α (y − z0) 가 새 접촉 노드들의 법선 속도 합을 들어가는 쪽 (Σ v0·n < 0) 에서 나오는 쪽 (Σ v1·n > 0) 으로 뒤집는 걸음만 몸 전체
+__global__ void hc_fz(double* fa) { fa[0] = 0.0; fa[1] = 0.0; }
+__global__ void hc_flip(const int* IP, const int* ms, const int* me, const float* y, const float* z0, const float* vk, float al, float n0, float n1, float n2, double* fa) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9] || !(me[n] && !ms[n])) return;
+    float v0 = vk[n*3]*n0 + vk[n*3+1]*n1 + vk[n*3+2]*n2;
+    float v1 = al*((y[n*3] - z0[n*3])*n0 + (y[n*3+1] - z0[n*3+1])*n1 + (y[n*3+2] - z0[n*3+2])*n2);
+    atomicAdd(&fa[0], (double)v0); atomicAdd(&fa[1], (double)v1);
+}
+__global__ void hc_all4(const int* IP, int* st, const double* fa, int* hm) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n == 0 && st[2] > 0 && fa[0] < 0.0 && fa[1] > 0.0) atomicAdd(&st[6], 1);   // 뒤집힌 충돌 걸음 수
+    if (n >= IP[9] || !(st[2] > 0 && fa[0] < 0.0 && fa[1] > 0.0)) return;
+    hm[n] = 1; atomicAdd(&st[5], 1);
+}
 __global__ void hc_cnt(int* st) { st[4] += 1; if (st[2] > 0) st[3] += 1; }
 '''
 
@@ -122,6 +140,7 @@ def _buf(s, n):
     if getattr(s, "_hcst", None) is None:
         assert not torch.cuda.is_current_stream_capturing(), "절 CM58 버퍼는 데움 record 에서"
         s._hcst = torch.zeros(8, device=s.dev, dtype=torch.int32)
+        s._hcfa = torch.zeros(2, device=s.dev, dtype=torch.float64)
     if getattr(s, "_hcm", None) is None or s._hcm.numel() < n:
         assert not torch.cuda.is_current_stream_capturing(), "절 CM58 노드 버퍼는 데움 record 에서"
         if getattr(s, "_hcm", None) is not None:                                         # 앞 그래프가 옛 포인터를 들고 있을 수 있어 버리지 않음
@@ -130,6 +149,7 @@ def _buf(s, n):
         s._hcm = torch.zeros(m, device=s.dev, dtype=torch.int32)
         s._hcms = torch.zeros(m, device=s.dev, dtype=torch.int32)
         s._hcme = torch.zeros(m, device=s.dev, dtype=torch.int32)
+        s._hcdum = torch.zeros(m, device=s.dev, dtype=torch.int32)                     # 모드 0 의 H4 셈용 버림 표시
 
 
 def _wrap_k(cls, nm, nh):
@@ -150,9 +170,13 @@ def _wrap_k(cls, nm, nh):
             ok(s, "hc_fin", capN, (IP, P(s._hcms), P(s._hcme), i32(MODE), P(s._hcm), P(s._hcst)), 256)
             if MODE == 1:
                 ok(s, "hc_all", capN, (IP, P(s._hcst), P(s._hcm)), 256)
+            if MODE in (0, 4):                                                           # H4 (모드 0 은 셈만): HHT 가 새 접촉 노드 법선 속도를 뒤집는지
+                ok(s, "hc_fz", 1, (P(s._hcfa),), 1)
+                ok(s, "hc_flip", capN, (IP, P(s._hcms), P(s._hcme), y, args[6], args[8], args[4], ba[7], ba[8], ba[9], P(s._hcfa)), 256)
+                ok(s, "hc_all4", capN, (IP, P(s._hcst), P(s._hcfa), P(s._hcm) if MODE == 4 else P(s._hcdum)), 256)
             ok(s, "hc_cnt", 1, (P(s._hcst),), 1)
             s._hcn = getattr(s, "_hcn", 0) + 1
-            if MODE in (1, 2, 3):
+            if MODE in (1, 2, 3, 4):
                 return ok(s, nh, n, tuple(args) + (P(s._hcm), i32(2 if MODE == 3 else 1)), b)
         return ok(s, name, n, args, b)
     cls.k = k
@@ -173,7 +197,7 @@ def _wrap_step(cls):
                 c = [int(q) for q in s._hcst.cpu().tolist()]
                 s._hcst.zero_()
                 ST["log"].write(json.dumps(dict(t=float(t), h=float(getattr(s, "h", 0.0) or 0.0), K=int(getattr(s, "Kcur", getattr(s, "K", 1)) or 1),
-                                                new=c[0], eng=c[1], ncol=c[3], nstep=c[4], napp=c[5], nlaunch=int(getattr(s, "_hcn", 0)),
+                                                new=c[0], eng=c[1], ncol=c[3], nstep=c[4], napp=c[5], nflip=c[6], nlaunch=int(getattr(s, "_hcn", 0)),
                                                 ms=float(getattr(s, "last_ms", float("nan")) or float("nan")))) + "\n")
                 ST["log"].flush()
             except Exception as e_:
@@ -187,7 +211,7 @@ def install(mode, out):
     """실행기 runpy 순간 (다른 감싸개 뒤) 에 부름. mode 0 = 진단만 (결과 불변), 1 H1 · 2 H2 · 3 H3."""
     global MODE
     MODE = int(mode)
-    assert MODE in (0, 1, 2, 3), MODE
+    assert MODE in (0, 1, 2, 3, 4), MODE
     from . import fem_an_rt as ART
     from . import fem_an_rt_v0 as V0
     from . import fem_ao_rt as AORT
@@ -200,7 +224,7 @@ def install(mode, out):
     _wrap_k(AORT.AORTSolver, "ao_stepend_ufl", "ao_stepend_hc")
     for cls in (ART.RTSolver, V0.RTSolver):
         _wrap_step(cls)
-    name = {0: "진단만 (결과 불변)", 1: "H1 충돌 걸음 몸 전체 후퇴 오일러", 2: "H2 새 접촉 노드 후퇴 오일러", 3: "H3 걸음 끝 접촉 노드 가속도 기억 0"}[MODE]
+    name = {0: "진단만 (결과 불변)", 1: "H1 충돌 걸음 몸 전체 후퇴 오일러", 2: "H2 새 접촉 노드 후퇴 오일러", 3: "H3 걸음 끝 접촉 노드 가속도 기억 0", 4: "H4 HHT 가 새 접촉 노드 법선 속도를 뒤집는 충돌 걸음만 몸 전체 후퇴 오일러"}[MODE]
     print(f"[절 CM58] hhtc 켬 -- 모드 {MODE}: {name}", flush=True)
 
     import atexit

@@ -202,7 +202,7 @@ def hcsum(n):
     L = hcl(n)
     if not L:
         return None
-    return dict(nstep=sum(q["nstep"] for q in L), ncol=sum(q["ncol"] for q in L), new=sum(q["new"] for q in L), eng=sum(q["eng"] for q in L), napp=sum(q["napp"] for q in L))
+    return dict(nstep=sum(q["nstep"] for q in L), ncol=sum(q["ncol"] for q in L), new=sum(q["new"] for q in L), eng=sum(q["eng"] for q in L), napp=sum(q["napp"] for q in L), nflip=sum(q.get("nflip", 0) for q in L))
 
 
 def hcof(fl):
@@ -211,7 +211,7 @@ def hcof(fl):
     return int(m.group(1)) if m else None
 
 
-HCN = {None: "P1X (훅 없음)", 0: "P1X (대조, 진단만)", 1: "P1X + H1 (충돌 걸음 몸 전체 후퇴 오일러)", 2: "P1X + H2 (새 접촉 노드 후퇴 오일러)", 3: "P1X + H3 (접촉 노드 가속도 기억 0)"}
+HCN = {None: "P1X (훅 없음)", 0: "P1X (대조, 진단만)", 1: "P1X + H1 (충돌 걸음 몸 전체 후퇴 오일러)", 2: "P1X + H2 (새 접촉 노드 후퇴 오일러)", 3: "P1X + H3 (접촉 노드 가속도 기억 0)", 4: "P1X + H4 (HHT 가 뒤집는 충돌 걸음만 몸 전체 후퇴 오일러)"}
 
 
 def rfof(fl):
@@ -389,14 +389,14 @@ for (sc, h, rf), ns in RG.items():
         es = [e for e in (e1s(n) for n, _ in rs) if e]
         met = f"이탈 {sum(1 for e in es if e['nfar'] > 20)}/{len(es)} (최대 {max(e['nfar'] for e in es)} 개)" if es else "-"
     hs = [q for q in (hcsum(n) for n, _ in rs) if q]
-    hcc = (f"{min(q['ncol'] for q in hs)}~{max(q['ncol'] for q in hs)} / {min(q['nstep'] for q in hs)}~{max(q['nstep'] for q in hs)} · {max(q['napp'] for q in hs)}") if hs else "-"
+    hcc = (f"{min(q['ncol'] for q in hs)}~{max(q['ncol'] for q in hs)} (뒤집힘 {min(q['nflip'] for q in hs)}~{max(q['nflip'] for q in hs)}) / {min(q['nstep'] for q in hs)}~{max(q['nstep'] for q in hs)} · {max(q['napp'] for q in hs)}") if hs else "-"
     ff = [e1f(n) for n, _ in rs]
     fmx = max((a for a, _ in ff if a is not None), default=None)
     fr = [b for _, b in ff if b is not None]
     rows.append(f"| {SCN[sc]} | {HCN.get(h, h)}{' + Rf' if rf else ''} | {len(rs)} | {dv} | {fmt(mean(E_))} [{rng(E_)}] | {met} | {fmx} · {sum(1 for b in fr if b > 20)}/{len(fr)} ({max(fr) if fr else '-'}) | {hcc} | {zcol2(sc, h, rf)} |")
 if rows:
     print("## 다른 씬 (비결정 판 + 단독 렌더 포함 a · b)\n")
-    print("| 씬 | 정의 | 판 | 발산 | 오차 % 평균 [범위] | 씬 지표 | 빠른 노드 (> 3 m/s) 최대 · 이탈 판 (최대 개) | 충돌 걸음 / 걸음 · 바꾼 노드 합 최대 | 단독 렌더 포함 평균 / 최악 ms (> 16.7 프레임) a · b |")
+    print("| 씬 | 정의 | 판 | 발산 | 오차 % 평균 [범위] | 씬 지표 | 빠른 노드 (> 3 m/s) 최대 · 이탈 판 (최대 개) | 충돌 걸음 (그중 HHT 뒤집힘) / 걸음 · 바꾼 노드 합 최대 | 단독 렌더 포함 평균 / 최악 ms (> 16.7 프레임) a · b |")
     print("|---|---|---|---|---|---|---|---|---|")
     print("\n".join(rows))
     print()
@@ -430,7 +430,7 @@ if out:
 
 # ---- 판별
 print("## 판별 (판마다; 시간은 동시 판이라 참고)\n")
-print("| 판 | 씬 | 플래그 | 결과 | 오차 % | 손상 f5 · f6 · f8 · 끝 % | wolf f50 mm · ficus 주기 비 | 이탈 최대 수 · 거리 m | 튐 프레임 · 바닥 뚫음 · z 최소 m | 노드 상자 최대 | 충돌 걸음 / 걸음 · 새 접촉 노드 · 바꾼 노드 | 첫 접촉 시도 · vz |")
+print("| 판 | 씬 | 플래그 | 결과 | 오차 % | 손상 f5 · f6 · f8 · 끝 % | wolf f50 mm · ficus 주기 비 | 이탈 최대 수 · 거리 m | 튐 프레임 · 바닥 뚫음 · z 최소 m | 노드 상자 최대 | 충돌 걸음 (뒤집힘) / 걸음 · 새 접촉 노드 · 바꾼 노드 | 첫 접촉 시도 · vz |")
 print("|---|---|---|---|---|---|---|---|---|---|---|---|")
 for st, n, sc, md, fl in spec:
     if md in ("z",):
@@ -448,5 +448,5 @@ for st, n, sc, md, fl in spec:
     ee = ev(n) if sc.startswith("M") else None
     print(f"| {n} | {SCN.get(sc, sc)} | `{fl.strip()}` | {res(n)} | {fmt(err(n))} | {dmg} | {met} | {(str(e['nfar']) + ' · ' + fmt(e['dmax'])) if e else '-'} | "
           f"{(str(e2['nk']) + ' · ' + str(e2['below'])) if e2 else '-'} · {fmt(zm + ZF if zm is not None else None, 3)} | {(max(x.get('nn', 0) for x in r) / 1e6) if r else 0:.2f} 백만 | "
-          f"{(str(hs['ncol']) + '/' + str(hs['nstep']) + ' · ' + str(hs['new']) + ' · ' + str(hs['napp'])) if hs else '-'} | {(str(ee['tries']) + ' · ' + fmt(ee['vz1']) + ' → ' + fmt(ee['vz2'])) if ee else '-'} |")
+          f"{(str(hs['ncol']) + ' (' + str(hs['nflip']) + ')/' + str(hs['nstep']) + ' · ' + str(hs['new']) + ' · ' + str(hs['napp'])) if hs else '-'} | {(str(ee['tries']) + ' · ' + fmt(ee['vz1']) + ' → ' + fmt(ee['vz2'])) if ee else '-'} |")
 print()
