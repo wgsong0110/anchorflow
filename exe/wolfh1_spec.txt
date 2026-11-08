@@ -25,3 +25,20 @@ s1 dNE_1 W nd F ~--y0eb
 s1 dNE_2 W nd F ~--y0eb
 s1 dPT_1 W nd F --fl_pt
 s1 dPT_2 W nd F --fl_pt
+# ---- s2 고침 후보 (wolf 비결정 4 판씩): PT2 = 점별 고착 + 띠 밖 정답 sticky 가중 (--fl_pt --fl_bst 2), N = 시작점 섞기 β 법선만 (@h1n 1), N + 점별 고착, N + PT2
+s2 cPT2_1 W nd F --fl_pt --fl_bst 2
+s2 cPT2_2 W nd F --fl_pt --fl_bst 2
+s2 cPT2_3 W nd F --fl_pt --fl_bst 2
+s2 cPT2_4 W nd F --fl_pt --fl_bst 2
+s2 cN_1 W nd F @h1n 1
+s2 cN_2 W nd F @h1n 1
+s2 cN_3 W nd F @h1n 1
+s2 cN_4 W nd F @h1n 1
+s2 cNPT_1 W nd F @h1n 1 --fl_pt
+s2 cNPT_2 W nd F @h1n 1 --fl_pt
+s2 cNPT_3 W nd F @h1n 1 --fl_pt
+s2 cNPT_4 W nd F @h1n 1 --fl_pt
+s2 cNPT2_1 W nd F @h1n 1 --fl_pt --fl_bst 2
+s2 cNPT2_2 W nd F @h1n 1 --fl_pt --fl_bst 2
+s2 cNPT2_3 W nd F @h1n 1 --fl_pt --fl_bst 2
+s2 cNPT2_4 W nd F @h1n 1 --fl_pt --fl_bst 2

@@ -54,17 +54,17 @@ idle_wait() {   # 단독: 노드 7 장 모두 계산 프로세스 0 이고 1 분
     sleep 20; done
   echo $(( $(date +%s) - t0 )); }
 run() {   # run 이름 씬 방식 카드 플래그
-  local n=$1 s=$2 md=$3 g=$4 x="$(dfl $2 "$5")" c b pre="" wo="" w2="" w3="" w5=""
+  local n=$1 s=$2 md=$3 g=$4 x="$(dfl $2 "$5")" c b pre="" wo="" w2="" w3="" w5="" w1=""
   [ -f $O/$n/summary.json ] && return
   local rm_="$(echo " $x " | grep -o ' ~--[a-z0-9_]*' | sed 's/^ ~//' | tr '\n' ' ')"; x="$(echo " $x " | sed 's/ ~--[a-z0-9_]*//g')"   # 빼기 낱말
-  wo="$(echo " $x " | grep -o '@[a-z0-9_]* [0-9.e+-]*' | grep -v '^@e[235]' | sed 's/^@/--/' | tr '\n' ' ')"; w5="$(echo " $x " | grep -o '@e5[a-z0-9_]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"; w2="$(echo " $x " | grep -o '@e2[a-z0-9_]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"; w3="$(echo " $x " | grep -o '@e3[a-z0-9_]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"; x="$(echo " $x " | sed 's/@[a-z0-9_]* [0-9.e+-]*//g')"   # '@tb 16.7' 따위 = 감싸개 인자
+  wo="$(echo " $x " | grep -o '@[a-z0-9_]* [0-9.e+-]*' | grep -v '^@e[235]' | grep -v '^@h1' | sed 's/^@/--/' | tr '\n' ' ')"; w1="$(echo " $x " | grep -o '@h1[a-z0-9_]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"; w5="$(echo " $x " | grep -o '@e5[a-z0-9_]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"; w2="$(echo " $x " | grep -o '@e2[a-z0-9_]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"; w3="$(echo " $x " | grep -o '@e3[a-z0-9_]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"; x="$(echo " $x " | sed 's/@[a-z0-9_]* [0-9.e+-]*//g')"   # '@tb 16.7' 따위 = 감싸개 인자
   b="$(base_of $s)"; [ -n "$(nw "$x")" ] && b="${b/--newton 2/--newton $(nw "$x")}" && x="$(echo "$x" | sed 's/--newton [0-9]*//g')"
   c=" $b $(dg_of $s $md) $x "
   for t_ in $rm_; do c="${c// $t_ / }"; done
   [ $md = u ] && pre="AF_S3_UL=1"
   [ $md = g ] && pre="AF_E2_DG=1 AF_E5_DG=1"                                          # 절 CM43 진단 D2 + 절 CM49 진단 D5 (결과 불변)
   case $md in z|p) ;; *) case " $5 " in *" @nodg "*) ;; *) pre="$pre AF_E1_DG=1";; esac;; esac   # @nodg 1 = 진단 훅 끔 (훅 무간섭 대조)                                   # 절 CM42 진단 (결과 불변; 단독 시간 판은 끔)
-  c="exe/escape4_wrap.py $w5 $w3 $w2 $wo $c"
+  c="exe/wolfh1_wrap.py $w1 $w5 $w3 $w2 $wo $c"
   [ $md = p ] && case $s in M*) c="exe/speed1_prof.py $c";; esac
   rm -rf $O/$n; mkdir -p $O/$n; echo "$pre $PY -u $c --out $O/$n" > $O/$n/cmd.txt
   nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader > $O/$n/apps_at_start.txt 2>&1; cat /proc/loadavg >> $O/$n/apps_at_start.txt
