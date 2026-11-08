@@ -18,7 +18,13 @@
      노드 4x4x4 덩이마다 min n·t 를 모으고 (s7_bmin, 그 커널이 쓰는 y 그대로; 비유한이면 −∞), 점은 자기 27 노드가 걸친 덩이 (≤ 8) 최소로 하한을 잡아
      하한 > 문턱 T + 여유 (T = d̂ 또는 0 -- 커널이 그 점을 '띠 밖' 으로 다루는 조건) 이면 27 노드 모으기를 건너뛰고 d = 1e30 (띠 밖 갈래 그대로 = 같은 출력).
      커널 뒤 s7_brst 가 덩이 표를 +∞ 로·준비 표시를 0 으로 (다른 경로로 띄운 같은 커널은 거르기 안 함). 확인 판 (--s7p 2): 거르지 않고 다 센 뒤
-     '하한이 거르라는데 실제 d 가 문턱 밑' 인 점 (어김) 과 거를 점 수를 셈 -> <out>/s7p.jsonl.
+     '하한이 거르라는데 실제 d 가 문턱 밑' 인 점 (어김) 과 거를 점 수를 셈 -> <out>/s7p.jsonl. 고칠 커널 = --s7pk (기본 PSEL: 덩이 표 값 (부름당 ~16 µs) 보다
+     모으기 몫이 큰 것만 -- s4 프로파일).
+(Y) 시작점 후보 에너지 나눠 셈 (--s7y 1, 결과 불변 -- 옛 실행기): rt_bar_y0e 는 β_i = 2^-(k0+i) 후보 59 개의 장벽 에너지를 블록 합 60 번으로 한꺼번에 셈
+     (띠 안 점이 든 블록마다; 접촉이 퍼질수록 0.1 -> 1.0 ms). 고르기 rt_y0epick 은 '앞에서부터 E_i ≤ E_0 인 첫 i' 라 앞 M 개 (--s7ym, 기본 4) 안에서 찾으면
+     뒤 후보 값은 안 쓰임 -> 앞 M 개 + E_0 만 먼저 셈, 장치에서 앞 M 개 안에 고를 것이 있는지 보고 (s7_ychk, rt_y0epick 과 같은 조건) 없을 때만
+     같은 재생 안에서 나머지 후보를 셈 (같은 커널·같은 점별 값·같은 블록 합; c_i 는 2 의 거듭제곱이라 ldexpf 시작값 = 되풀이 반감과 비트 같음).
+     확인 판 (--s7y 2): 나머지도 늘 세고, 고른 kk 가 '앞 M 개 안에 있다' 는 판정과 맞는지 셈 -> s7p.jsonl ychk·yviol.
 """
 import gzip
 import json
@@ -193,6 +199,21 @@ __global__ void s7_brst(const int* IP, int cap) {
     int nb = ((IP[6] + 3) >> 2)*((IP[7] + 3) >> 2)*((IP[8] + 3) >> 2);
     if (b < nb && b < cap) S7B[b] = 0x7f800000;
 }
+// (Y) 시작점 후보 에너지 나눠 셈
+__device__ int S7YI0 = 0;
+__device__ int S7YI1 = 1073741824;
+__device__ int S7YON = 0;
+__device__ int S7YGT = 0;
+__device__ int S7YK0 = 0;
+__device__ int S7YM = 0;
+__global__ void s7_yset(int i0, int i1, int on) { S7YI0 = i0; S7YI1 = i1; S7YON = on; }
+__global__ void s7_ychk(const double* SC, const int* kk, int M, int cnt) {
+    double E0 = SC[0]; int g = 0;
+    for (int i=0;i<M;i++) { double E1 = SC[1+i]; if (isfinite(E1) && E1 <= E0) { g = 1; break; } }
+    S7YGT = g; S7YK0 = kk[0]; S7YM = M;
+    if (cnt) { atomicAdd(&S7VIOL[3], 1ULL); if (g) atomicAdd(&S7VIOL[4], 1ULL); }
+}
+__global__ void s7_ycmp(const int* kk) { if (S7YGT && !(kk[0] >= S7YK0 && kk[0] < S7YK0 + S7YM)) atomicAdd(&S7VIOL[5], 1ULL); }
 // 점 q 의 거리 하한 > 문턱 T + 여유 이면 참 (S7RDY 0 = 앞에 s7_bmin 이 안 돌았음 -> 거짓)
 __device__ __forceinline__ bool s7far(int q, const int* IP, const int* cb, float db, float T) {
     if (S7ON == 0 || S7RDY == 0 || IP[13]) return false;
@@ -254,7 +275,16 @@ PATCH = {
 }
 
 
+PSEL = ("rt_bar_kfe", "rt_bar_q", "wb_floor_q", "mf_mark", "hc_bar", "rt_bar_y0e", "yl_kq")
+YPATCH = [("{ if (AF_SKIP) return;\n", "{ if (AF_SKIP) return; if (S7YON && S7YGT) return;\n"),
+          ("    blocksum_add(e, &SC[0]);\n    float c = ldexpf(1.f, -kk[0]);\n    for (int i=0;i<NE;i++) {\n",
+           "    if (S7YI0 == 0) blocksum_add(e, &SC[0]);\n    float c = ldexpf(1.f, -kk[0] - S7YI0);\n    for (int i=S7YI0;i<min(NE, S7YI1);i++) {\n")]
+
+
 class PP:
+    y = 0
+    ym = 4
+    sel = PSEL
     mode = 0
     marg = 1e-4
     patched = set()
@@ -266,7 +296,12 @@ class PP:
 def _p_patch(src):
     """장벽 커널 글자 고침 (PATCH 표; 소스에 그 커널이 없으면 건너뜀). 고친 커널 이름 -> PP.patched."""
     import re
-    for nm, reps in PATCH.items():
+    items = [(nm, list(r)) for nm, r in PATCH.items() if (PP.mode and nm in PP.sel)]
+    if PP.y:
+        d_ = dict(items)
+        d_["rt_bar_y0e"] = d_.get("rt_bar_y0e", []) + YPATCH
+        items = list(d_.items())
+    for nm, reps in items:
         m = re.search(r"__global__\s+void\s+(?:__launch_bounds__\(\d+\)\s+)?" + nm + r"\s*\(", src)
         if not m:
             continue
@@ -305,6 +340,10 @@ class _PFn(dict):
 
     def __getitem__(s_, name):
         f = dict.__getitem__(s_, name)
+        if PP.y and name == "rt_bar_y0e" and name in PP.patched:
+            return _YCall(s_.owner, name, f)
+        if PP.y == 2 and name == "rt_y0epick":
+            return _YPick(s_.owner, f)
         if PP.mode and name in PP.patched and name in PK:
             return _PCall(s_.owner, name, f)
         return f
@@ -314,7 +353,7 @@ class _PCall:
     def __init__(s_, s, name, f):
         s_.s, s_.name, s_.f = s, name, f
 
-    def __call__(s_, grid, block, args, **kw):
+    def pre(s_, args):
         s = s_.s
         iU, ia, ib, it, i0 = PK[s_.name]
         a = args
@@ -323,15 +362,55 @@ class _PCall:
             if s_.name not in PP.said:
                 PP.said.add(s_.name)
                 print(f"[절 CM72] 장벽 거르기: {s_.name} 인자 꼴이 달라 거르지 않음 ({[type(q).__name__ for q in a]})", flush=True)
-            return s_.f(grid, block, args, **kw)
-        fb = s.fn.get_raw("s7_bmin")
-        fr = s.fn.get_raw("s7_brst")
-        capN = int(s.capN)
+            return False
         sk1, sk2 = _skp(s, "AF_SKIP"), (_skp(s, "WS4_DN") if s_.name in PSK2 else np.uint64(0))
-        fb(((capN + 255) // 256,), (256,), (a[0], a[iU], a[ia], a[ib] if ib is not None else np.uint64(0), a[it], a[i0], a[i0 + 1], a[i0 + 2], sk1, sk2))
+        capN = int(s.capN)
+        s.fn.get_raw("s7_bmin")(((capN + 255) // 256,), (256,), (a[0], a[iU], a[ia], a[ib] if ib is not None else np.uint64(0), a[it], a[i0], a[i0 + 1], a[i0 + 2], sk1, sk2))
+        return True
+
+    def post(s_, args):
+        cap = int(s_.s.s7b.numel())
+        s_.s.fn.get_raw("s7_brst")(((cap + 255) // 256,), (256,), (args[0], np.int32(cap)))
+
+    def __call__(s_, grid, block, args, **kw):
+        ok = s_.pre(args)
         r = s_.f(grid, block, args, **kw)
-        cap = int(s.s7b.numel())
-        fr(((cap + 255) // 256,), (256,), (a[0], np.int32(cap)))
+        if ok:
+            s_.post(args)
+        return r
+
+
+class _YCall:
+    """rt_bar_y0e: (P 면 덩이 표) -> 앞 M 후보 -> 판정 -> 나머지 (판정이 찾았으면 장치에서 건너뜀) -> 기본값 되돌림."""
+
+    def __init__(s_, s, name, f):
+        s_.s, s_.name, s_.f = s, name, f
+
+    def __call__(s_, grid, block, args, **kw):
+        s = s_.s
+        fs, fc = s.fn.get_raw("s7_yset"), s.fn.get_raw("s7_ychk")
+        NE = int(args[16])
+        M = min(int(PP.ym), NE)
+        pc = _PCall(s, s_.name, s_.f) if (PP.mode and s_.name in PP.sel) else None
+        ok = pc.pre(args) if pc is not None else False
+        fs((1,), (1,), (np.int32(0), np.int32(M), np.int32(0)))
+        s_.f(grid, block, args, **kw)
+        fc((1,), (1,), (args[15], args[14], np.int32(M), np.int32(1 if PP.y == 2 else 0)))
+        fs((1,), (1,), (np.int32(M), np.int32(NE), np.int32(1 if PP.y == 1 else 0)))
+        r = s_.f(grid, block, args, **kw)
+        fs((1,), (1,), (np.int32(0), np.int32(1 << 30), np.int32(0)))
+        if ok:
+            pc.post(args)
+        return r
+
+
+class _YPick:
+    def __init__(s_, s, f):
+        s_.s, s_.f = s, f
+
+    def __call__(s_, grid, block, args, **kw):
+        r = s_.f(grid, block, args, **kw)
+        s_.s.fn.get_raw("s7_ycmp")((1,), (1,), (args[1],))
         return r
 
 
@@ -363,7 +442,7 @@ def p_bind(s):
     if getattr(s, "s7b", None) is None or s.s7b.numel() < cap:
         s.s7b = torch.full((cap,), 0x7f800000, device=s.x.device, dtype=torch.int32)
     if getattr(s, "s7v", None) is None:
-        s.s7v = torch.zeros(4, device=s.x.device, dtype=torch.int64)
+        s.s7v = torch.zeros(8, device=s.x.device, dtype=torch.int64)
     m = s.mod
     cp.ndarray((1,), dtype=cp.uint64, memptr=m.get_global("S7B"))[0] = int(s.s7b.data_ptr())
     cp.ndarray((1,), dtype=cp.uint64, memptr=m.get_global("S7VIOL"))[0] = int(s.s7v.data_ptr())
@@ -374,9 +453,11 @@ def p_bind(s):
         s.fn = _PFn(s.fn, s)
 
 
-def p_install(out, mode, marg=1e-4):
+def p_install(out, mode, marg=1e-4, y=0, ym=4, sel=None):
     from . import fem_ao_rt as AORT
-    PP.mode, PP.marg = int(mode), float(marg)
+    PP.mode, PP.marg, PP.y, PP.ym = int(mode), float(marg), int(y), int(ym)
+    if sel:
+        PP.sel = tuple(q for q in str(sel).split(",") if q)
     PP.log = open(os.path.join(out, "s7p.jsonl"), "w")
     o_s = AORT._src
     AORT._src = lambda *a, **kw: _p_src(o_s(*a, **kw))
@@ -392,7 +473,7 @@ def p_install(out, mode, marg=1e-4):
                 PP.bad.add(("bind", str(e_)[:200], 0))
         return r
     cls.bind_act = bind_act
-    print(f"[절 CM72] 장벽 거르기 P 켬 (모드 {PP.mode}, 여유 {PP.marg} m)", flush=True)
+    print(f"[절 CM72] 장벽 거르기 P 켬 (모드 {PP.mode}, 여유 {PP.marg} m, 커널 {PP.sel if PP.mode else ()}) · 시작점 후보 나눠 셈 Y {PP.y} (앞 {PP.ym})", flush=True)
 
 
 def p_frame_end(s, fr):
@@ -403,11 +484,14 @@ def p_frame_end(s, fr):
         rec["patched"] = sorted(PP.patched) if fr <= 3 else None
         rec["bad"] = [list(b) for b in sorted(PP.bad)] if fr <= 3 else None
         rec["fnwrap"] = isinstance(s.fn, _PFn) if fr <= 3 else None
-    if PP.mode == 2:
+    if PP.mode == 2 or PP.y == 2:
         torch.cuda.synchronize()
         v = s.s7v.tolist()
         s.s7v.zero_()
-        rec.update(viol=v[0], far=v[1], act=v[2])
+        if PP.mode == 2:
+            rec.update(viol=v[0], far=v[1], act=v[2])
+        if PP.y == 2:
+            rec.update(ychk=v[3], ygate=v[4], yviol=v[5])
     if len(rec) > 1:
         PP.log.write(json.dumps({k: v for k, v in rec.items() if v is not None}, ensure_ascii=False) + "\n")
         PP.log.flush()
@@ -566,11 +650,11 @@ def ovf_install(out):
     ART.RTSolver.alloc = alloc
 
 
-def install(out, kp=None, nm=0, z=0, src=0, ovf=0, p=0, pm=1e-4):
+def install(out, kp=None, nm=0, z=0, src=0, ovf=0, p=0, pm=1e-4, y=0, ym=4, pk=None):
     """실행기를 runpy 로 띄우는 순간, speed6 설치 뒤 (가장 바깥) 에 부름."""
-    C.out, C.nm, C.z, C.p = out, int(nm), int(z), int(p)
+    C.out, C.nm, C.z, C.p = out, int(nm), int(z), int(p) or int(y)
     if C.p:
-        p_install(out, C.p, pm)
+        p_install(out, int(p), pm, y=int(y), ym=int(ym), sel=pk)
     if int(src):
         src_install(out)
     if int(ovf):

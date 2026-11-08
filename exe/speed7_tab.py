@@ -236,11 +236,13 @@ if ZR:
 PR = [r for r in runs if os.path.exists(os.path.join(O, r[1], "s7p.jsonl"))]
 if PR:
     print("\n## (7) 장벽 표본점 거르기 P 셈 (s7p.jsonl; 확인 판 @s7p 2 = 거르지 않고 다 센 뒤 '거르라는데 실제 d 가 문턱 밑' 인 점 = 어김)\n")
-    print("| 판 | 플래그 | 결과 | 고친 커널 | 확인 프레임 | 활성 점 셈 (커널 부름 합) | 거를 점 | 거를 몫 % | **어김** |")
-    print("|---|---|---|---|---|---|---|---|---|")
+    print("| 판 | 플래그 | 결과 | 고친 커널 | 확인 프레임 | 활성 점 셈 (커널 부름 합) | 거를 점 | 거를 몫 % | **어김** | Y 판정 수 | 앞 M 안에서 찾음 | **Y 어김** |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for st, n, s, md, x in PR:
         L = jl(n, "s7p.jsonl") or []
         pt = next((q.get("patched") for q in L if q.get("patched")), [])
         V = [q for q in L if "viol" in q]
         a_ = sum(q["act"] for q in V); f_ = sum(q["far"] for q in V); v_ = sum(q["viol"] for q in V)
-        print(f"| {n} | {x} | {res(n)} | {len(pt)} | {len(V)} | {a_} | {f_} | {fmt(100.0 * f_ / a_ if a_ else None)} | {v_} |")
+        Y = [q for q in L if "ychk" in q]
+        yc = sum(q["ychk"] for q in Y); yg = sum(q["ygate"] for q in Y); yv = sum(q["yviol"] for q in Y)
+        print(f"| {n} | {x} | {res(n)} | {len(pt)} | {len(V)} | {a_} | {f_} | {fmt(100.0 * f_ / a_ if a_ else None)} | {v_} | {yc} | {yg} | {yv} |")
