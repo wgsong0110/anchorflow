@@ -93,7 +93,7 @@ if os.environ.get("AF_E5_DG", "0") == "1":
         dcar = None
         if pv is not None and pv["hr"].shape[0] == N:
             dcar = Z().index_add_(0, q, m * pv["hr"].nan_to_num(0)) / M.clamp_min(1e-30)
-            if dq is not None and getattr(s, "e5hr", None) is not None:
+            if dq is not None and getattr(s, "e5hr", None) is not None and R_:            # R·R2 판만 (A 만이면 장치 h_p 를 안 씀)
                 lifted = has & ~(dcar > 0)
                 l0 = has & ((dl - (dcar - da0)) > 1e-5)                                  # A2: 걸음 시작 판정 자리에서 더 옮긴 점 (프레임 시작 이어 받은 값보다 큼)
                 rec["n_l0"] = int((l0 & ~lifted).sum())
