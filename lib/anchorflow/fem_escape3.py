@@ -180,41 +180,54 @@ def install(w=0, g=0, newg=False):
         def as_(*a, **kw):
             return w_apply(_oas(*a, **kw))
         AORT._src = as_
-    _ok = ART.RTSolver.k
+    from . import fem_an_rt_v0 as V0                                                   # 옛 실행기 (수박) 의 바탕 풀이기 (fem_ao_rt -> fem_det_rt -> fem_an_rt_v0.RTSolver)
 
-    def k(s, name, n, args, b=128):
-        if ST["g"] and name in G2PN and name in ST["gpatched"]:
-            args = tuple(args) + (P(s.mn),)
-        elif ST["g"] and name in ("rt_g2p_endg",):
-            raise RuntimeError("--e3g: rt_g2p_endg (generalized-α 아닌 판) 는 안 고침")
-        if ST["w"] and not getattr(s, "_e3in", False):
-            if name == "rt_reset":
-                assert "rt_bar_q" in ST["patched"], "--e3w: 장벽 커널을 못 고침 (장벽 바닥 판이 아님?)"
-                s._e3done = False
-            elif name in ST["patched"] and not getattr(s, "_e3done", True):
-                assert getattr(s, "_e3bound", None) == (id(s.mod), int(s.e3wq.data_ptr())), "--e3w: AF_WQ 가 이 모듈·버퍼에 안 묶임"
-                assert not getattr(s, "det", False), "--e3w: 결정적 판 (AF_BDET 노드 모으기 커널) 은 안 고침"
-                s._e3in = True
-                try:
-                    i32 = np.int32
-                    s.zf(s.e3wq, 12, 27)
-                    _ok(s, "e3_wq", s.N, (i32(s.N), P(s.IP), P(s.Np), P(s.fx), P(s.m), P(s.pcd), P(s.cidx), P(s.mn), i32(ST["w"])))
-                    _ok(s, "e3_wqn", s.capQc * 8 * 27, (P(s.IP),), 256)
-                finally:
-                    s._e3in = False
-                s._e3done = True
-        return _ok(s, name, n, args, b)
-    ART.RTSolver.k = k
+    def wrap_k(cls):
+        _ok = cls.k
+
+        def k(s, name, n, args, b=128):
+            if ST["g"] and name in G2PN and name in ST["gpatched"]:
+                args = tuple(args) + (P(s.mn),)
+            elif ST["g"] and name in ("rt_g2p_endg",):
+                raise RuntimeError("--e3g: rt_g2p_endg (generalized-α 아닌 판) 는 안 고침")
+            if ST["w"] and not getattr(s, "_e3in", False):
+                if name == "rt_reset":
+                    hasbar = bool(getattr(s, "bar", False)) or getattr(s, "wbar", None) is not None
+                    assert not hasbar or "rt_bar_q" in ST["patched"], "--e3w: 장벽 판인데 장벽 커널을 못 고침"
+                    if not hasbar and not ST.get("nobar_said"):
+                        ST["nobar_said"] = True
+                        print("[절 CM45] 장벽 바닥 없는 씬 -- W̄ 해당 없음 (표본점 없음, 소스 그대로)", flush=True)
+                    s._e3done = not hasbar
+                elif name in ST["patched"] and not getattr(s, "_e3done", True):
+                    assert getattr(s, "_e3bound", None) == (id(s.mod), int(s.e3wq.data_ptr())), "--e3w: AF_WQ 가 이 모듈·버퍼에 안 묶임"
+                    assert not getattr(s, "det", False), "--e3w: 결정적 판 (AF_BDET 노드 모으기 커널) 은 안 고침"
+                    s._e3in = True
+                    try:
+                        i32 = np.int32
+                        s.zf(s.e3wq, 12, 27)
+                        _ok(s, "e3_wq", s.N, (i32(s.N), P(s.IP), P(s.Np), P(s.fx), P(s.m), P(s.pcd), P(s.cidx), P(s.mn), i32(ST["w"])))
+                        _ok(s, "e3_wqn", s.capQc * 8 * 27, (P(s.IP),), 256)
+                    finally:
+                        s._e3in = False
+                    s._e3done = True
+            return _ok(s, name, n, args, b)
+        cls.k = k
+
+    def wrap_alloc(cls):
+        _oa = cls.alloc
+
+        def alloc(s, need):
+            r = _oa(s, need)
+            s.e3wq = torch.zeros(s.capQc * 8 * 27, device=s.dev, dtype=torch.float32)
+            _bind(s)
+            return r
+        cls.alloc = alloc
+    for cls in (ART.RTSolver, V0.RTSolver):
+        wrap_k(cls)
     if not ST["w"]:
         return
-    _oa = ART.RTSolver.alloc
-
-    def alloc(s, need):
-        r = _oa(s, need)
-        s.e3wq = torch.zeros(s.capQc * 8 * 27, device=s.dev, dtype=torch.float32)
-        _bind(s)
-        return r
-    ART.RTSolver.alloc = alloc
+    for cls in (ART.RTSolver, V0.RTSolver):
+        wrap_alloc(cls)
     _ob = ART.RTSolver.oct_bind
 
     def oct_bind(s):
