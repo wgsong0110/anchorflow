@@ -2,7 +2,7 @@
 공통 후보 H4 사슬로 넘김: exe/lightg4_wrap.py ('--l4') -> lightg3_wrap ('--l3') -> wolfh5_wrap ('--w5', S_구속·C) -> [mfix_wrap 자리를 한 번 exe/speed8_wrap.py 로]
 -> speed7_wrap ('--s8'·'--s7'·'--s6') -> mfix_wrap ('--mf') -> wmfloor_wrap -> hhtc2_wrap -> ...
 
-사용: python exe/wolfh6_wrap.py [--w6k 1] [--w6l 1] <lightg4_wrap 인자 ... (--l4 · --l3 · --w5 · --s8 · --s7 · --s6 · --mf ... 이 차례로)> <실행기.py> <실행기 인자...>
+사용: python exe/wolfh6_wrap.py [--w6k 1] [--w6l 1] [--w6x 1] <lightg4_wrap 인자 ... (--l4 · --l3 · --w5 · --s8 · --s7 · --s6 · --mf ... 이 차례로)> <실행기.py> <실행기 인자...>
   '--s6|--s7|--s8' 인자가 있으면 wolfh5_wrap 이 부르는 첫 mfix_wrap.py 를 speed8_wrap.py 로 바꿔 띄움 (speed7_wrap 이 끝에 mfix_wrap 을 부름; 인자는 그대로 이어짐).
   '--w6*' 가 없거나 0 이면 모듈을 안 부름 (사슬만).
 설치: 실행기를 runpy 로 띄우는 순간 (다른 감싸개가 다 설치된 뒤 = 가장 바깥).
@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 argv = sys.argv[1:]
 out = argv[argv.index("--out") + 1] if "--out" in argv else "."
 os.makedirs(out, exist_ok=True)
-C = dict(k="0", l="0")
+C = dict(k="0", l="0", x="0")
 while argv and argv[0].startswith("--w6"):
     C[argv[0][4:]] = argv[1]
     del argv[:2]
@@ -38,7 +38,7 @@ def run_path(path, *a, **kw):
     if ON and not _st["done"] and b in ("fem_an_rt_sim.py", "fem_ao_rt_sim.py"):
         _st["done"] = True
         from anchorflow import fem_wolfh6 as W6
-        W6.install(out, K=int(float(C["k"])), L=int(float(C["l"])))
+        W6.install(out, K=int(float(C["k"])), L=int(float(C["l"])), X=int(float(C["x"])))
     return _orig(path, *a, **kw)
 
 

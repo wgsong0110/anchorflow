@@ -149,6 +149,7 @@ case $STG in *k)                                                                
     case "$s $x " in M*) ;; *" @w5"*) grep -q "절 CM70\] wolfh5 켬" $O/$n/log.txt || { OK=0; log "[연기] $n CM70 줄 없음"; };; esac
     case " $x " in *" @w6"*) grep -q "절 CM77\] wolfh6 켬" $O/$n/log.txt && [ -s $O/$n/w6info.json ] || { OK=0; log "[연기] $n CM77 줄·w6info.json 없음"; };; esac
     case " $x " in *" @w6l 1"*) case $s in L|F) ;; *) grep -q "절 CM77 wolfh6\] (L) m̄ [0-9.e-]* -> 섞기 판" $O/$n/log.txt || { OK=0; log "[연기] $n (L) 섞기 판 줄 없음"; };; esac;; esac
+    case " $x " in *" @w6x 1"*) grep -q "(L') 저질량 고정 노드 자리 이웃 외삽 1" $O/$n/log.txt && $PY -c "import json,sys; sys.exit(0 if json.load(open('$O/$n/w6info.json'))['nfl'] >= 1 else 1)" || { OK=0; log "[연기] $n (L') 줄·floor_n 고침 없음"; };; esac
     case " $x " in *" @w6k 1"*) grep -q "절 CM77 wolfh6\] (K)" $O/$n/log.txt || { OK=0; log "[연기] $n (K) 줄 없음"; };; esac
     case " $x " in *" @l4 1"*) grep -q "절 CM75\] lightg4 켬" $O/$n/log.txt && grep -q "절 CM75 lightg4\] 재질" $O/$n/log.txt && [ -s $O/$n/l4info.json ] || { OK=0; log "[연기] $n CM75 줄·l4info.json 없음"; };; esac
     case " $x " in *" @l3 "*) grep -q "절 CM73\] lightg3 켬" $O/$n/log.txt && [ ! -s $O/$n/lg3_err.txt ] || { OK=0; log "[연기] $n CM73 줄 없음/lg3_err"; };; esac

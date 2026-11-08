@@ -17,6 +17,10 @@
       ω h ≫ 1 이 되는 자리. Newmark 계열에서 ω h ≫ 1 성분은 ρ∞ 로만 줄어 사다리꼴에 가까운 HHT 는 되튐을 남기고, 후퇴 오일러는 ω h ≫ 1 성분을
       1/(1 + ω h) 로 죽인다. 가벼움 l 은 ω h 가 큰 정도의 단조 대리값 (문턱 없음) 이라 '큰 ω h 노드에만 L-안정 갱신' 이 됨.
       m̄ = 0 인 씬 (레고·ficus: 저질량 문턱 없음) 은 l ≡ 0 -> 원래 커널 그대로 (설치 안 함).
+  (L') --w6x 1: 저질량 고정 노드 (m < m̄, 구속 받침 밖 k_구속 = 1) 의 걸음 고정 자리를 자기 예측 Ũ (절 CM70 C 는 구속 노드만 바꿈) 대신 이웃 26 자유 노드
+      (m ≥ m̄, 구속 아님) 의 예측 증분 (Ũ_j − U_j; 앞 걸음 해의 속도·가속도로 정해짐) 질량 가중 평균으로 외삽 (0 차): ŷ_n = y_n = U_n + Σ_j m_j (Ũ_j − U_j) / Σ_j m_j.
+      이웃 자유 노드가 없으면 그대로 Ũ. 확장 B-스플라인 (Höllig 2001, 작은 받침 기저 계수를 안쪽 계수의 외삽으로 묶음) 의 0 차판 -- 고정 노드가 몸과 따로
+      탄도로 떨어져 칸 안 가짜 변형 (절 CM70: 구속 몸 가짜 압축과 같은 꼴) 을 만드는 것을 막음. 구속 노드 (k_구속 < 1) 는 C 그대로.
 훅: 실행기 runpy 순간 (다른 감싸개 다 설치 뒤, 가장 바깥) -- (K) ghost6._k_of 감쌈, (L) ART.build_src·AORT._src 의 결과 (--ue_loc 갱신 커널 *_ufl 과 hhtc2 가
   덧붙인 *_hc) 에 섞기 판 *_ufl_l6·*_hc_l6 (같은 글자 + 마지막 인자 mn·pm·m̄) 를 덧붙이고, s.k 가 걸음 끝 갱신 (rt_ga_end_ufl·ao_stepend_ufl; 장벽 씬은 hhtc2 가
   *_hc 로 바꿈) 을 띄우기 직전 s.fn[*_ufl]·s.fn[*_hc] 를 '같은 인자 + (mn, pm, m̄) 로 *_l6 을 띄우는' 호출체로 둠 (모듈이 바뀌면 다시). --ue_loc 없는 판은 안 걸림 (연기에서 확인).
@@ -27,7 +31,7 @@ import os
 
 import numpy as np
 
-ST = dict(K=0, L=0, out=".", nsrc=0, nhl=0, kap=None, k0=None, k1=None, mbar=None, Lon=None, said=False, nlaunch=0)
+ST = dict(X=0, nfl=0, K=0, L=0, out=".", nsrc=0, nhl=0, kap=None, k0=None, k1=None, mbar=None, Lon=None, said=False, nlaunch=0)
 KERS = (("rt_ga_end_hc", True), ("rt_ga_end_ufl", True), ("ao_stepend_hc", False), ("ao_stepend_ufl", False))   # (원래 이름, 새 실행기) -> 이름 + "_l6"
 VK_LINE = "        vk[n*3+a] = v1*damp;\n"
 LOOP = "    for (int a=0;a<3;a++) {\n"
@@ -68,6 +72,53 @@ def hlify(src):
     return s[:i] + "\n".join(add) + "\n}\n"
 
 
+LX_DEV = r'''
+// ---- 절 CM77 (L'): 저질량 고정 노드 자리 = 이웃 26 자유 노드 예측 증분의 질량 가중 평균 (lib/anchorflow/fem_wolfh6.py)
+__device__ __forceinline__ float w6_nbr(const int* IP, int n, const float* U, const float* Ut, const float* mn, float mthr, const float* kb, float* ex) {
+    ex[0] = 0.f; ex[1] = 0.f; ex[2] = 0.f;
+    if (kb && kb[n] < 1.f) return 0.f;                                          // 구속 받침 노드는 절 CM70 C 그대로
+    int nb0 = IP[6], nb1 = IP[7], nb2 = IP[8];
+    int i0 = n/(nb1*nb2), j0 = (n/nb2)%nb1, k0 = n%nb2; float sw = 0.f;
+    for (int di=-1;di<=1;di++) for (int dj=-1;dj<=1;dj++) for (int dk=-1;dk<=1;dk++) {
+        if (!di && !dj && !dk) continue;
+        int i = i0+di, j = j0+dj, k = k0+dk;
+        if (i < 0 || j < 0 || k < 0 || i >= nb0 || j >= nb1 || k >= nb2) continue;
+        int q = (i*nb1 + j)*nb2 + k;
+        if (q >= IP[9]) continue;
+        float m = mn[q];
+        if (!(m >= mthr && m > 0.f) || (kb && kb[q] < 1.f)) continue;
+        sw += m; for (int a=0;a<3;a++) ex[a] += m*(Ut[q*3+a] - U[q*3+a]);
+    }
+    if (sw > 0.f) for (int a=0;a<3;a++) ex[a] /= sw;
+    return sw;
+}
+'''
+FL_KEYS = ("mt_floor_n", "ao_floor_n")
+
+
+def lxify(src):
+    """floor_n 의 저질량 고정 줄 'if (mn[n] < mthr) { ... float yy = E; ...' 를 이웃 외삽으로 (구속 노드·이웃 없음은 E 그대로)."""
+    for nm in FL_KEYS:
+        key = "__global__ void " + nm + "("
+        if key not in src or "w6_nbr(" in src[src.index(key):src.index("\n}\n", src.index(key))]:
+            continue
+        i = src.index(key)
+        j = src.index("\n}\n", i) + 3
+        k = src[i:j]
+        a0 = "if (mn[n] < mthr) {"
+        assert k.count(a0) == 1, ("wolfh6 (L'): 저질량 고정 줄", nm, k.count(a0))
+        b0 = k.index(a0) + len(a0)
+        k = k[:b0] + " float ex6_[3]; float sw6_ = w6_nbr(IP, n, U, Ut, mn, mthr, kb, ex6_);   // 절 CM77 (L')\n       " + k[b0:]
+        c0 = k.index("float yy = ", b0)
+        c1 = k.index(";", c0)
+        E = k[c0 + len("float yy = "):c1]
+        assert E.lstrip().startswith("Ut[n*3+a]"), ("wolfh6 (L'): yy 식", nm, E)
+        k = k[:c0] + "float yy = (sw6_ > 0.f) ? (U[n*3+a] + ex6_[a]) : (" + E + ")" + k[c1:]
+        src = src[:i] + LX_DEV + k + src[j:]
+        ST["nfl"] += 1
+    return src
+
+
 def P(t):
     return np.uint64(0 if t is None else t.data_ptr())
 
@@ -89,9 +140,9 @@ def _mbar(s):
     return float(getattr(s, "mthr", 0.0) or 0.0)
 
 
-def install(out, K=0, L=0):
+def install(out, K=0, L=0, X=0):
     """실행기 runpy 순간 (다른 감싸개 뒤) 에 부름."""
-    ST.update(K=int(K), L=int(L), out=out, mbar_of=_mbar)
+    ST.update(K=int(K), L=int(L), X=int(X), out=out, mbar_of=_mbar)
     from . import fem_an_rt as ART
     from . import fem_ao_rt as AORT
     if ST["K"]:
@@ -112,13 +163,17 @@ def install(out, K=0, L=0):
                 _dump()
             return s._gpk
         G6._k_of = _k_of
+    if ST["X"]:
+        o_bx, o_sx = ART.build_src, AORT._src
+        ART.build_src = lambda *a, **kw: lxify(o_bx(*a, **kw))
+        AORT._src = lambda *a, **kw: lxify(o_sx(*a, **kw))
     if ST["L"]:
         o_b, o_s = ART.build_src, AORT._src
         ART.build_src = lambda *a, **kw: hlify(o_b(*a, **kw))
         AORT._src = lambda *a, **kw: hlify(o_s(*a, **kw))
         for cls in (ART.RTSolver, AORT.AORTSolver):
             _wrap_k(cls)
-    print(f"[절 CM77] wolfh6 켬 -- (K) P1X 강성 × κ {ST['K']} · (L) 가벼운 자유 노드 HHT·후퇴 오일러 섞기 {ST['L']}", flush=True)
+    print(f"[절 CM77] wolfh6 켬 -- (K) P1X 강성 × κ {ST['K']} · (L) 가벼운 자유 노드 HHT·후퇴 오일러 섞기 {ST['L']} · (L') 저질량 고정 노드 자리 이웃 외삽 {ST['X']}", flush=True)
     import atexit
     atexit.register(_dump)
 

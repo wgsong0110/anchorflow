@@ -21,3 +21,13 @@ s1 SCKL_1 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1 --dump_F
 s1 SCKL_2 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1
 s1 SCKL_3 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1
 s1 SCKL_4 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1
+# s1 결과: SCK·SCKL 모두 4/4 메모리 발산 (풀이 덜 풀린 걸음이 f9 부터 대부분) -> (L') = '@w6x 1' 저질량 고정 노드 자리를 이웃 26 자유 노드 예측 증분 질량 가중 평균으로 (0 차 외삽, 구속 노드는 C 그대로)
+s2k kXW W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6x 1 --frames 8
+s2 SCKX_1 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6x 1 --dump_F
+s2 SCKX_2 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6x 1
+s2 SCKX_3 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6x 1
+s2 SCKX_4 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6x 1
+s2 SCKLX_1 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1 @w6x 1 --dump_F
+s2 SCKLX_2 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1 @w6x 1
+s2 SCKLX_3 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1 @w6x 1
+s2 SCKLX_4 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1 @w6x 1
