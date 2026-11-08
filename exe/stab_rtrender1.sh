@@ -72,7 +72,7 @@ run() {   # run 이름 씬 방식 갱신 카드 플래그
   log "$n rc=$rc $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-160) $(grep -ah 'CM54 rtrender1\] [pg]' $O/$n/log.txt | tail -1 | cut -c1-160) 프레임 기록 $(wc -l < $O/$n/rr.jsonl 2>/dev/null) $(grep -a 'rror' $O/$n/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
   if [ $md = v ] && [ -f $O/$n/pred.pt ]; then                                          # 영상 렌더 경로로 같은 덤프를 그려 PNG 대조
     case $s in
-    M*) $PY -u exe/lb_roll_to_h5.py --dump $O/$n/pred.pt --traj $GTM --out $O/$n/h5 > $O/$n/h5.log 2>&1
+    M*) mkdir -p $O/$n/offpng; $PY -u exe/lb_roll_to_h5.py --dump $O/$n/pred.pt --traj $GTM --out $O/$n/h5 > $O/$n/h5.log 2>&1
         (cd $W/GaussianFluent && CUDA_VISIBLE_DEVICES=$g $PY -u $CD/exe/wm_render.py --model_path $WMM --config $WCF --sim $O/$n/h5 --out $O/$n/offpng/off.mp4 < /dev/null > $O/$n/off.log 2>&1)
         PD=$O/$n/offpng/off_frames; PF="%03d";;
     *)  local SH TR CF; read -r _ _ _ SH _ TR _ CF <<< "$(rr_of $s)"

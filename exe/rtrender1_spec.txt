@@ -27,3 +27,7 @@ s2 zF1 F z 1 F @s4w 1 @s4y 1 @s4x 2
 s2 zW1 W z 1 F @s4w 1 @s4y 1 @s4x 2
 s2 zB1 B z 1 F @s4w 1 @s4y 1 @s4x 2
 s2 zM1 M3 z 1 F @s4w 1 @s4y 1 @s4x 2
+# s3 수박 다시: 영상 경로 대조 (s1 vM 은 offpng 폴더가 없어 wm_render 가 못 씀), 갱신 2 (극분해 f32 + 수렴하면 멈춤, 결과 화면 확인) 확인·단독
+s3 vM2 M3 v 1 F @s4w 1 @s4y 1 @s4x 2
+s3 vM3 M3 v 2 F @s4w 1 @s4y 1 @s4x 2
+s3 zM2 M3 z 2 F @s4w 1 @s4y 1 @s4x 2

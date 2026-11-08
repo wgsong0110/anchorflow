@@ -9,6 +9,7 @@
 갱신 방식 (--rr_fast):
   0 = 영상 렌더 코드의 torch 연산을 GPU 에서 그대로 (lb_roll_to_h5 의 F·R, lb_render 의 FC0Fᵀ·좌표 변환; 수박은 wm_render 의
       유한 거름·좌표/공분산 되돌림·convert_SH. 다만 wm_render 의 CPU SVD (U Vᵀ) 대신 GPU 극분해 (배율 뉴턴 10 회, f64) -- 같은 극 인수)
+  2 = 1 과 같되 수박 극분해를 f32 로, ‖ΔX‖_F < 1e-6 이면 멈춤 (최대 12 회)
   1 = 갱신을 커널 하나로 합침 (cupy; 위치·공분산 변환은 같은 선형 사상을 시작 때 수치로 뽑아 씀, 극분해 뉴턴 f64, SH 3 차 그대로;
       수박의 비유한 가우시안은 빼는 대신 카메라 위치에 두어 래스터라이저가 잘라냄 = 같은 화면)
 확인 (--rr_chk 프레임들): 그 프레임 렌더를 uint8 PNG 로 <out>/rrimg/<h5 번호 4 자리>.png (시간 잰 뒤, 시간 밖),
@@ -279,9 +280,26 @@ extern "C" __global__ void rr_pg(const float* __restrict__ x, const float* __res
   P[n*3+0] = p[0]; P[n*3+1] = p[1]; P[n*3+2] = p[2];
   cc[n*6+0] = Cv[0]; cc[n*6+1] = Cv[1]; cc[n*6+2] = Cv[2]; cc[n*6+3] = Cv[4]; cc[n*6+4] = Cv[5]; cc[n*6+5] = Cv[8];
 }
+template <typename T> __device__ void polar_n(const float* f, float* Rr, int maxit, T tol) {
+  T X[9]; for (int k = 0; k < 9; k++) X[k] = (T)f[k];
+  for (int it = 0; it < maxit; it++) {
+    T a = X[0], b = X[1], c = X[2], d = X[3], e = X[4], ff = X[5], g = X[6], h = X[7], i = X[8];
+    T A_ = e*i - ff*h, B_ = -(d*i - ff*g), C_ = d*h - e*g;
+    T det = a*A_ + b*B_ + c*C_;
+    T adj[9] = {A_, -(b*i - c*h), b*ff - c*e, B_, a*i - c*g, -(a*ff - c*d), C_, -(a*h - b*g), a*e - b*d};
+    T nx = 0, ni = 0, Xi[9];
+    for (int k = 0; k < 9; k++) { Xi[k] = adj[k] / det; nx += X[k]*X[k]; ni += Xi[k]*Xi[k]; }
+    T gm = sqrt(sqrt(ni) / sqrt(nx));
+    T Y[9], dd = 0;
+    for (int r = 0; r < 3; r++) for (int q = 0; q < 3; q++) Y[r*3+q] = (T)0.5 * (gm * X[r*3+q] + Xi[q*3+r] / gm);
+    for (int k = 0; k < 9; k++) { dd += (Y[k] - X[k]) * (Y[k] - X[k]); X[k] = Y[k]; }
+    if (tol > 0 && dd < tol * tol) break;
+  }
+  for (int k = 0; k < 9; k++) Rr[k] = (float)X[k];
+}
 extern "C" __global__ void rr_gf(const float* __restrict__ x, const float* __restrict__ F, const long long* __restrict__ gi,
     const float* __restrict__ C0, const float* __restrict__ Rm, const float* __restrict__ A, const float* __restrict__ b0, const float* __restrict__ L6,
-    const float* __restrict__ shs, const float* __restrict__ cp, float* __restrict__ P, float* __restrict__ cc, float* __restrict__ col, int NG) {
+    const float* __restrict__ shs, const float* __restrict__ cp, float* __restrict__ P, float* __restrict__ cc, float* __restrict__ col, int NG, int prec) {
   int n = blockIdx.x * blockDim.x + threadIdx.x; if (n >= NG) return;
   long long j = gi[n];
   float f0[9], f[9], c0[9], T[9], Cv[9];
@@ -309,21 +327,9 @@ extern "C" __global__ void rr_gf(const float* __restrict__ x, const float* __res
   #pragma unroll
   for (int r = 0; r < 3; r++) p[r] = A[r*3+0]*xx + A[r*3+1]*xy + A[r*3+2]*xz + b0[r];
   P[n*3+0] = p[0]; P[n*3+1] = p[1]; P[n*3+2] = p[2];
-  // 극분해 (배율 뉴턴 10 회, f64) -- polar_t 와 같은 식
-  double X[9]; for (int k = 0; k < 9; k++) X[k] = (double)f[k];
-  for (int it = 0; it < 10; it++) {
-    double a = X[0], b = X[1], c = X[2], d = X[3], e = X[4], ff = X[5], g = X[6], h = X[7], i = X[8];
-    double A_ = e*i - ff*h, B_ = -(d*i - ff*g), C_ = d*h - e*g;
-    double det = a*A_ + b*B_ + c*C_;
-    double adj[9] = {A_, -(b*i - c*h), b*ff - c*e, B_, a*i - c*g, -(a*ff - c*d), C_, -(a*h - b*g), a*e - b*d};
-    double nx = 0, ni = 0, Xi[9];
-    for (int k = 0; k < 9; k++) { Xi[k] = adj[k] / det; nx += X[k]*X[k]; ni += Xi[k]*Xi[k]; }
-    double gm = sqrt(sqrt(ni) / sqrt(nx));
-    double Y[9];
-    for (int r = 0; r < 3; r++) for (int cc_ = 0; cc_ < 3; cc_++) Y[r*3+cc_] = 0.5 * (gm * X[r*3+cc_] + Xi[cc_*3+r] / gm);
-    for (int k = 0; k < 9; k++) X[k] = Y[k];
-  }
-  float Rr[9]; for (int k = 0; k < 9; k++) Rr[k] = (float)X[k];
+  // 극분해 (배율 뉴턴): prec 0 = f64 10 회 고정 (polar_t 와 같은 식), 1 = f32 바뀜 ‖ΔX‖_F < 1e-6 이면 멈춤 (최대 12 회)
+  float Rr[9];
+  if (prec == 0) polar_n<double>(f, Rr, 10, 0.0); else polar_n<float>(f, Rr, 12, 1e-6f);
   float dx = p[0] - cp[0], dy = p[1] - cp[1], dz = p[2] - cp[2];
   float ux = Rr[0]*dx + Rr[1]*dy + Rr[2]*dz, uy = Rr[3]*dx + Rr[4]*dy + Rr[5]*dz, uz = Rr[6]*dx + Rr[7]*dy + Rr[8]*dz;
   float nr = sqrtf(ux*ux + uy*uy + uz*uz); ux /= nr; uy /= nr; uz /= nr;
@@ -380,7 +386,8 @@ def upd_gf1(G, s, gi, t):
         G["CP"] = {}
     if t not in G["CP"]:
         G["CP"][t] = G["CAMS"][t][0].camera_center.float().reshape(3).contiguous().cuda()
-    _launch("rr_gf", NG, (s.x, s.F, gi, G["C0"], G["Rm"], G["A"], G["b0"], G["L6"], G["SHS"], G["CP"][t], G["bufP"], G["bufC"], G["bufK"], np.int32(NG)))
+    _launch("rr_gf", NG, (s.x, s.F, gi, G["C0"], G["Rm"], G["A"], G["b0"], G["L6"], G["SHS"], G["CP"][t], G["bufP"], G["bufC"], G["bufK"], np.int32(NG),
+                                np.int32(1 if C.fast >= 2 else 0)))
     return dict(P=G["bufP"], cc=G["bufC"], shs=None, col=G["bufK"], opa=G["OPA"])
 
 
