@@ -3,6 +3,7 @@
 사용: python exe/speed3_wrap.py [감싸개 인자...] <실행기.py> <실행기 인자...>
   --tb B      후보 T 시간 예산 (ms; 프레임 GPU 시계로 반복 xf 이상을 B − m 안에서만) -- lib/anchorflow/fem_speed3.py tb_install (결과 바뀜)
   --tb_m m    예산 여유 (ms, 기본 0.5)
+  --tb_w W    1 = 반복 xf 시작 앞에서 자름 (후보 T), 2 = 반복 xf 판정 뒤에서 자름 (후보 T2: D 의 판정 잔차는 늘 잼)
   --w1 1      후보 W1: 덜 풀린 걸음의 가속도 기억 0 을 몸 전체로 (--ue_loc 국소 갱신 커널; 결과 바뀜)
   --inv M     가속 I (수박 옛 실행기, 결과 불변): ws_inv_q 에 f32 증명 빠른 길 (1), 확인 판 (2: 빠른 길 없이 증명 참 & k > 0 인 점 수를 셈)
   --x3e T     후보 X3e (옛 실행기): X3c 판정을 반복 0 시작 잔차 ‖g‖²/F² > T 로 앞당기고 걸음 시작부터만 다시 (결과 바뀜)
@@ -43,8 +44,8 @@ if os.environ.get("AF_S3_UL", "0") == "1":
     ART.split_step = split_step
 
 if "tb" in opt:
-    S3.tb_install(float(opt["tb"]), float(opt.get("tb_m", 0.5)), out)
-    print(f"[절 CM39 후보 T] 시간 예산 {opt['tb']} ms (여유 {opt.get('tb_m', 0.5)} ms)", flush=True)
+    S3.tb_install(float(opt["tb"]), float(opt.get("tb_m", 0.5)), out, int(opt.get("tb_w", 1)))
+    print(f"[절 CM39 후보 T] 시간 예산 {opt['tb']} ms (여유 {opt.get('tb_m', 0.5)} ms, 자리 {opt.get('tb_w', 1)})", flush=True)
 if "x3e" in opt:
     S3.x3e_install(float(opt["x3e"]))
     print(f"[절 CM39 후보 X3e] 반복 0 잔차 문턱 {opt['x3e']}", flush=True)

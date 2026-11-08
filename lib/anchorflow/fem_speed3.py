@@ -83,6 +83,8 @@ class ULDiag:
 #   C_it = 최근 8 프레임에서 실제로 돈 뉴턴 반복 (반복 시작 -> 다음 반복 시작 또는 뉴턴 고리 끝) 시간 최대, C_tail = 최근 8 프레임 뉴턴 고리 끝 -> 프레임 끝 시간 최대.
 #   반복 0 .. xf−1 은 늘 돎 (D 와 같음). 걸음 수 K > 1 시도 (쪼갠 걸음) 에는 안 검 (D 와 같음). 쪼개기·X3c 다시 하기도 같은 프레임 시계 (첫 시도 시작부터).
 # 결과가 GPU 속도에 따라 달라짐 (결정적 판도 시계로 자르므로 비트 대조 대상 아님).
+# where 2 (후보 T2): 반복 xf 의 시작 잔차·덜 풀림 판정 (c2_gate·en_gate, D 의 '더 돌지' 판정) 은 늘 하고, 그 뒤 (반복 xf 의 PCG·선탐색) 와 반복 > xf 만 예산으로 자름
+#   -- 예산으로 자른 걸음의 덜 풀림 판정이 D 의 반복 xf 판정 값 (그 반복 시작 잔차·보폭) 을 씀.
 TB_SRC = r"""
 extern "C" {
 __device__ unsigned long long TB_T0, TB_TP, TB_TL, TB_TE;
@@ -118,6 +120,7 @@ class TB:
     """시간 예산 (후보 T). install(B ms, m ms) 뒤 풀이기 클래스의 record·ctl 과 쪼개기 함수를 감쌈 (감싸개 exe/speed3_wrap.py)."""
     mod = None
     fn = {}
+    where = 1
     B = 16.7
     m = 0.5
     log = None
@@ -152,7 +155,7 @@ def _skip_ptr(s):
     return s._tb_skip
 
 
-def tb_install(B, m, out):
+def tb_install(B, m, out, where=1):
     import cupy as cp
     from . import fem_an_rt as ART
     from . import fem_ao_rt as AORT
@@ -161,7 +164,7 @@ def tb_install(B, m, out):
     TB.mod = cp.RawModule(code=TB_SRC)
     for nm in ("tb_t0", "tb_tick", "tb_gate", "tb_end", "tb_unmark"):                               # 캡처 밖에서 미리 적재
         TB.fn[nm] = TB.mod.get_function(nm)
-    TB.B, TB.m = float(B), float(m)
+    TB.B, TB.m, TB.where = float(B), float(m), int(where)
     Bns = np.uint64(int(round((TB.B - TB.m) * 1e6)))
     P = lambda t: np.uint64(t.data_ptr())
 
@@ -189,7 +192,7 @@ def tb_install(B, m, out):
         def ctl(s, op, it=0):
             on = getattr(s, "adapt", False) and ready(s) and getattr(s, "_tbcap", False)
             xf = _xf(s)
-            if on and op == 2 and xf > 0 and it >= xf:
+            if on and op == 2 and xf > 0 and (it >= xf if TB.where == 1 else it > xf):
                 gate(s)
             if on and op == 8:
                 TB.k("tb_unmark", (P(s.CT),))
@@ -202,7 +205,7 @@ def tb_install(B, m, out):
     o_mark = C3.mark
 
     def mark(s, kind):
-        if kind == "q":                                                                # 나눈 그래프: 반복 xf 구간 앞에서 예산을 먼저 봄 (호스트가 CT[0] 를 읽어 구간째 건너뜀)
+        if kind == ("q" if TB.where == 1 else "g"):                                    # 나눈 그래프 경계에서 예산을 먼저 봄 (호스트가 CT[0] 를 읽어 구간째 건너뜀)
             gate(s)
         o_mark(s, kind)
     C3.mark = mark
