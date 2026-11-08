@@ -7,15 +7,24 @@ s0k kcM M3 q Gp @s6o 1 @s6prof 3,6 --frames 8
 s0k klM M3 q Gp @s6o 1 @s6l 1 @s6prof 3,6 --frames 8
 s0k klL L q Gp @s6o 1 @s6l 1 --frames 8
 s0k khL1 L h Gp @tb 1000 @s6o 1 @s6l 1 --frames 8
+# s0k 의 khL1 은 P1X 가 결정적 판을 막아 (ghost3 단언: det 는 γ̄ = 0 만) 실패 -> 해시 짝은 D 바탕 (절 CM62 와 같음) 과 D + A3 + H5 + Rf (P1X 만 뺌) 로
 # s1 (1) G' + O 지금 경로 (진단 E1 켬, 절 CM62 단독과 같음) 대 가벼운 판: 벽시계 기록 단독 a · b + 프로파일 (프레임 20~25) + 가벼운 판 결과 불변 (결정적 끝 해시 짝)
-s1 hL0 L h Gp @tb 1000 @s6o 1
-s1 hL1 L h Gp @tb 1000 @s6o 1 @s6l 1
-s1 hW0 W h Gp @tb 1000 @s6o 1
-s1 hW1 W h Gp @tb 1000 @s6o 1 @s6l 1
-s1 hF0 F h Gp @tb 1000 @s6o 1
-s1 hF1 F h Gp @tb 1000 @s6o 1 @s6l 1
-s1 hB0 B h Gp @tb 1000 @s6o 1
-s1 hB1 B h Gp @tb 1000 @s6o 1 @s6l 1
+s1 hDL0 L h D @tb 1000 @tb_m 0.8 @tb_w 2 @rr 1 @s6o 1
+s1 hDL1 L h D @tb 1000 @tb_m 0.8 @tb_w 2 @rr 1 @s6o 1 @s6l 1
+s1 hHL0 L h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1
+s1 hHL1 L h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1
+s1 hDW0 W h D @tb 1000 @tb_m 0.8 @tb_w 2 @rr 1 @s6o 1
+s1 hDW1 W h D @tb 1000 @tb_m 0.8 @tb_w 2 @rr 1 @s6o 1 @s6l 1
+s1 hHW0 W h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1
+s1 hHW1 W h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1
+s1 hDF0 F h D @tb 1000 @tb_m 0.8 @tb_w 2 @rr 1 @s6o 1
+s1 hDF1 F h D @tb 1000 @tb_m 0.8 @tb_w 2 @rr 1 @s6o 1 @s6l 1
+s1 hHF0 F h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1
+s1 hHF1 F h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1
+s1 hDB0 B h D @tb 1000 @tb_m 0.8 @tb_w 2 @rr 1 @s6o 1
+s1 hDB1 B h D @tb 1000 @tb_m 0.8 @tb_w 2 @rr 1 @s6o 1 @s6l 1
+s1 hHB0 B h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1
+s1 hHB1 B h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1
 s1 pCM M3 q Gp @s6o 1 @s6prof 20,26
 s1 pLM M3 q Gp @s6o 1 @s6l 1 @s6prof 20,26
 s1 pCL L q Gp @s6o 1 @s6prof 20,26
