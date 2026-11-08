@@ -1,0 +1,17 @@
+# 절 CM68 묶음 wolfh4 판 목록: 단계 이름 씬 방식 플래그 (낱말: F·P1X·A3 = exe/stab_wolfh4.sh dfl, G' = F P1X A3 @hc 5 @rr 1 @tc 8)
+# ---- s0k 연기 (새 코드 경로 컴파일·훅 확인): G' + 진단 · G' + F-bar + 진단
+s0k kD W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w4dg 1
+s0k kFB W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w4fb 1 @w4dg 1
+# ---- s1 할 일 1 (잠김 진단: 셀 2 G' 2 · 셀 2 예산 끔 2 · 셀 1 예산 끔 2 -- 절 CM52 dT·dC1 꼴) + 할 일 2·3 (G' + F-bar 4 · 예산 끔 2, 진단 켬)
+s1 dG_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w4dg 1
+s1 dG_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w4dg 1
+s1 dT_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @tb 1000 @w4dg 1
+s1 dT_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @tb 1000 @w4dg 1
+s1 dC1_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @tb 1000 --cell 1 @w4dg 1
+s1 dC1_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @tb 1000 --cell 1 @w4dg 1
+s1 fb_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w4fb 1 @w4dg 1
+s1 fb_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w4fb 1 @w4dg 1
+s1 fb_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w4fb 1 @w4dg 1
+s1 fb_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w4fb 1 @w4dg 1
+s1 fbT_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @tb 1000 @w4fb 1 @w4dg 1
+s1 fbT_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @tb 1000 @w4fb 1 @w4dg 1
