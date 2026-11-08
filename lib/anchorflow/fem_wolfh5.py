@@ -27,6 +27,9 @@ c (--w5c 1) 정의 C (정의 변경, 구속 노드의 저질량 고정 자리): 
     (진단 s1: 구속 입자 변위 0 인데 F_zz −5e-5/프레임, 30 프레임 뒤 구속 몸 압력 150 kPa -- 정답 0.0~0.3 kPa; 방출된 입자가 이 압축을 들고 나가 마찰 (DP) 로 매달림).
     C: 가벼운 고정 노드도 같은 구속 법칙의 예측 ŷ_구속 = Ũ + (1 − k_구속)(z0 + v_목표 − Ũ) 에 고정 (풀린 노드의 h 와 같은 식; k_구속 = 1 이면 Ũ 그대로, 0 이면 걸음 시작 자리).
     문턱·클램프 없음 (k_구속 은 그 씬의 구속 정의 그대로 -- 기본 e^−x 또는 S_구속).
+g (--w5g 1) 정의 B_g (정의 변경, ghost penalty 면): P1X 는 고정 (cuboid) 구속 노드에 닿는 면을 뺌 (@g4x) -- 순차 방출 구속 노드 (k_구속 < 1) 는 고정 노드와 같은
+    구속인데 면이 남아, 걸음 변위 법선 미분 점프 벌점 (강성 + 고스트 질량) 이 구속 받침 옆 풀린 칸의 상대 운동을 막음. B_g: 걸음마다 (mt_floor_n 뒤, 프레임 면 표지 위 멱등)
+    면 36 노드 (칸 27 + 그 축 바깥 층 9) 중 k_구속 < 1 노드가 있는 면을 뺌 (절 CM63 gs·fem_ghost4 gq_fix 와 같은 배치). 문턱 없음 (k_구속 < 1 = 구속 노드 정의 그대로, mt_akb 와 같은 판정).
 """
 import atexit
 import json
@@ -34,7 +37,7 @@ import os
 
 import numpy as np
 
-ST = dict(dg=0, s=0, c=0, out=".", marks=[], sol=None, said=False, info={})
+ST = dict(dg=0, s=0, c=0, g=0, out=".", marks=[], sol=None, said=False, info={})
 NB, NH, PF, QF = 9, 2, 14, 10
 CAPR = 4096
 EDGES = [-6, -3, 0, 3, 6, 11, 21, 40]
@@ -219,6 +222,28 @@ __global__ void w5s_kb(const int* IP, const float* num, const float* nom, const 
     kb[n] = (nom[n] > 0.f && den[n] > 0.f) ? num[n]/den[n] : 1.f;
 }
 // 구속 노드 걸음 끝 가속도: 연속판 a ← k a (mt_akb 의 k < 1 -> 0 과 k ∈ {0,1} 에서 같음)
+// B_g: 면 36 노드 중 k_구속 < 1 노드가 있으면 면 표지 비트를 지움 (절 CM63 gq_w2stk 와 같은 배치)
+__global__ void w5_gfx(const int* IP, const int* cb, const float* kb, unsigned char* fm, int* cnt) {
+    int c = blockIdx.x*blockDim.x + threadIdx.x;
+    if (IP[13] || c >= IP[11]) return;
+    int m = fm[c];
+    if (!m) return;
+    int nb1 = IP[7], nb2 = IP[8]; int s1 = nb2, s0 = nb1*nb2;
+    int base = (cb[c*3]*nb1 + cb[c*3+1])*nb2 + cb[c*3+2];
+    int cf = 0;
+    for (int o=0;o<27;o++) if (kb[base + (o/9)*s0 + ((o/3)%3)*s1 + (o%3)] < 1.f) { cf = 1; break; }
+    int m2 = m, nr = 0;
+    for (int a=0;a<3;a++) {
+        if (!(m & (1 << a))) continue;
+        int f = cf;
+        for (int i=0;i<3 && !f;i++) for (int j=0;j<3 && !f;j++) {
+            int id = (a == 0) ? (base + 3*s0 + i*s1 + j) : ((a == 1) ? (base + i*s0 + 3*s1 + j) : (base + i*s0 + j*s1 + 3));
+            if (kb[id] < 1.f) f = 1;
+        }
+        if (f) { m2 &= ~(1 << a); nr++; }
+    }
+    if (m2 != m) { fm[c] = (unsigned char)m2; atomicAdd(&cnt[0], nr); }
+}
 __global__ void w5s_akb(const int* IP, const float* kb, float* ak) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= IP[9]) return;
@@ -279,6 +304,7 @@ def _alloc(s_):
         s_._w5D = torch.zeros(CAPR * NB * NH * PF, device=dev, dtype=torch.float64)
         s_._w5Q = torch.zeros(CAPR * NB * NH * QF, device=dev, dtype=torch.float64)
         s_._w5meta = torch.zeros(CAPR * 4, device=dev, dtype=torch.float32)
+        s_._w5gc = torch.zeros(2, device=dev, dtype=torch.int32)
 
 
 def _gtbox(s_):
@@ -313,10 +339,10 @@ def _bindfe(s_):
     ART.cp.ndarray((1,), dtype=ART.cp.int32, memptr=mod.get_global("W5_CF"))[0] = 1 if (ST["c"] and _rel(s_)) else 0
 
 
-def install(dg=0, s=0, out=".", rel=None, c=0):
+def install(dg=0, s=0, out=".", rel=None, c=0, g=0):
     from . import fem_an_rt as ART
     from . import fem_mat_rt as MRT
-    ST.update(dg=int(dg), s=int(s), c=int(c), out=out, rel=rel or {}, dxg=float((rel or {}).get("dxg", 0.01)))
+    ST.update(dg=int(dg), s=int(s), c=int(c), g=int(g), out=out, rel=rel or {}, dxg=float((rel or {}).get("dxg", 0.01)))
     _ob = ART.build_src
     ART.build_src = lambda *a, **kw: patch_src(_ob(*a, **kw))
     i32, f32 = np.int32, np.float32
@@ -351,6 +377,8 @@ def install(dg=0, s=0, out=".", rel=None, c=0):
             if ST["s"] and on_rel and name == "mt_akb":
                 return _k(s_, "w5s_akb", nn, (args[0], args[1], args[2]), 256)
             r = _k(s_, name, nn, args, b)
+            if ST["g"] and on_rel and name == "mt_floor_n" and getattr(s_, "g3fm", None) is not None:   # B_g: 구속 노드 면 빼기 (걸음마다, k_구속 계산 뒤)
+                _k(s_, "w5_gfx", int(s_.capQc), (args[0], P(s_.cb), P(s_.kb), P(s_.g3fm), P(s_._w5gc)), 128)
             if ST["dg"] and name == "ao_elem_s":
                 _k(s_, "w5_copy_d", int(s_.capN) * 3, (P(s_.IP), P(s_.f), P(s_._w5ft)), 256)
             if name == "ao_pbc_acc" and ST["s"] and on_rel:                                     # 프레임마다: 정답 격자 노드 질량·구속 질량 표본
@@ -407,16 +435,18 @@ def install(dg=0, s=0, out=".", rel=None, c=0):
             print(f"[절 CM70] S_구속 정답 격자 상자 {s_._w5g['G']} 노드 {s_._w5g['ng']} 표본 {s_._w5g['KS']}", flush=True)
         return r
     ART.RTSolver.step = step
-    print(f"[절 CM70] wolfh5 켬: 진단 {ST['dg']} · S_구속 {ST['s']} · C {ST['c']} · 방출 {ST['rel']}", flush=True)
+    print(f"[절 CM70] wolfh5 켬: 진단 {ST['dg']} · S_구속 {ST['s']} · C {ST['c']} · B_g {ST['g']} · 방출 {ST['rel']}", flush=True)
 
     def _fin():
-        info = dict(dg=ST["dg"], s=ST["s"], c=ST["c"], rel=ST["rel"], **ST["info"])
+        info = dict(dg=ST["dg"], s=ST["s"], c=ST["c"], g=ST["g"], rel=ST["rel"], **ST["info"])
         sol = ST.get("sol")
         if sol is not None:
             try:
                 import torch
                 torch.cuda.synchronize()
                 info["rel_scene"] = _rel(sol)
+                if ST["g"] and getattr(sol, "_w5gc", None) is not None:
+                    info["g_removed_faces_total"] = int(sol._w5gc[0].item())
                 if ST["s"] and getattr(sol, "has_pbc", False):
                     kb = sol.kb[:int(sol.IP[9].item())]
                     info.update(kb_lt1=int((kb < 1).sum()), kb_lt05=int((kb < 0.5).sum()), kb_min=float(kb.min()) if kb.numel() else None)

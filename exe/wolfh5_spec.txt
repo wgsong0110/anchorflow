@@ -24,3 +24,14 @@ s2 cSC_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5dg 1 --dump_F
 s2 cSC_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5dg 1
 s2 cSC_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5dg 1
 s2 cSC_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5dg 1
+# ---- s3 기전 대조 (진단, 후보 아님): ghost penalty 끔 '@g4 0' (커널은 돌고 더하는 값 0) -- G'' · S_구속 + C 위, 각 2 판; 후보 B_g (구속 노드 면 빼기) -- S_구속 + C + B_g 4 판 · C + B_g 2 판
+s3 xD0_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @g4 0 @w5dg 1
+s3 xD0_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @g4 0 @w5dg 1
+s3 xSC0_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @g4 0 @w5s 1 @w5c 1 @w5dg 1
+s3 xSC0_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @g4 0 @w5s 1 @w5c 1 @w5dg 1
+s3 bSCG_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5g 1 @w5dg 1 --dump_F
+s3 bSCG_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5g 1 @w5dg 1
+s3 bSCG_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5g 1 @w5dg 1
+s3 bSCG_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5g 1 @w5dg 1
+s3 bCG_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5c 1 @w5g 1 @w5dg 1
+s3 bCG_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5c 1 @w5g 1 @w5dg 1
