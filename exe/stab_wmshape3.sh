@@ -71,4 +71,7 @@ if [ $STG = s0 ]; then                                                          
   log "[연기] OK=$OK"; [ $OK = 1 ] || { echo "연기 실패 $(date '+%F %T')" > $O/wmshape3.FAIL; rclone copy $O $RO -q --include wmshape3.FAIL; exit 1; }
 fi
 [ $STG = s0 ] || { $PY exe/wmshape3_tab.py $O $JP > $O/wmshape3_table.md 2> $O/wmshape3_table.err; rclone copy $O $RO -q --include "wmshape3_table.*" --include wmshape3_curves.json; }
+if [ $STG = s2 ]; then                                                                      # 절 CM44 (2) 층별 첫 접촉 진단 (CPU, 읽기만)
+  $PY exe/wmshape3_prof.py $O $JP $WMD/wm.pt BW4_1,V2_1,V2N_1,V3_2,QR,QB5,QB2 > $O/wmshape3_prof.md 2> $O/wmshape3_prof.err; rclone copy $O $RO -q --include "wmshape3_prof.*"
+fi
 log "단계 끝 $STG"

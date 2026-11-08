@@ -30,3 +30,15 @@ s1 zBW4 M3 z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_ke
 s1 zV1 M3 z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2 --ws3_win 1
 s1 zV2 M3 z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2 --ws3_win 1 --ws3_lj 1
 s1 zV3 M3 z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2
+# s2 (s1 뒤): V1·V3 (소성 미룸) 은 시험 F 가 쌓여 에너지 생성·발산 (V1 2/4·V3 3/4 발산), V2 (덜 풀림 판정 손상 변수 고정) 는 끝 손상 2.8~9.9 % 흩어짐·에너지 생성 2/4;
+#   VN (εN 판정) 은 εN 에 닿는 걸음이 0 이라 소성 확정이 한 번도 없음 (손상 0, 시험 F 누적).
+#   V2N = BW4 + 충격 창 뒤 εN 판정 손상 변수 고정 (--ws3 1 --ws3_win 1 --ws3_lj 1; 늦은 걸음은 εN 에 안 닿으므로 창 뒤 logJp 확정 없음, F 는 RM 투영)
+#   (2) 첫 접촉 진단 (10 프레임): QR = BW4 + --no_rm (RM 끔, 탄성만) · QB5·QB2 = BW4 + 장벽 두께 d̂ x 0.5 · x 2 (--bar_dhmul) -- 층별 진단 exe/wmshape3_prof.py
+s2 V2N_1 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 1 --ws3_win 1 --ws3_lj 1
+s2 V2N_2 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 1 --ws3_win 1 --ws3_lj 1
+s2 V2N_3 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 1 --ws3_win 1 --ws3_lj 1
+s2 V2N_4 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 1 --ws3_win 1 --ws3_lj 1
+s2 QR M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --no_rm --frames 10
+s2 QB5 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --bar_dhmul 0.5 --frames 10
+s2 QB2 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --bar_dhmul 2 --frames 10
+s2 zV2N M3 z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 1 --ws3_win 1 --ws3_lj 1
