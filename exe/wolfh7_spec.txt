@@ -1,0 +1,33 @@
+# 절 CM79 묶음 wolfh7 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_wolfh7.sh; 낱말은 stab 의 dfl 이 펼침)
+# H5n = H4 + 결과 불변 가속 C·Y '@s9c 1 @s9y 1' (절 CM76) = Gpp + O·B '@s6o 1 @s6b 1' + A '@s7nm 1 @s7z 1 @s7p 1' + W '@s8w 1' + C·Y + Rw '@s6rw 1' + X3g '@s8g 1e6' + 가벼움 벌점 × κ (+ 새 실행기 --cap_mul 4)
+# H5nR = H5 − Rw (예산은 Rf = 프레임 GPU 시계 + 렌더, 절 CM56) · H5nX = H5 − X3g · H5nRX = H5 − Rw − X3g (결과 불변 속도 판만 남음) · Gk = 절 CM75 판 (G'' + 가벼움 벌점 × κ, 속도 판 없음, --cap_mul 없음)
+# SC = 절 CM70 S_구속 + C '@w5s 1 @w5c 1'. Y7 = '@w7y 1' P1X 강성 × 면 항복 가중 (1 − η̄_a)(1 − η̄_b) (lib/anchorflow/fem_wolfh7.py).
+# s0k 연기 (8 프레임): wolf H5 · wolf H5 + SC + Y7 · bread H5 + Y7 (aq_commit 경로 컴파일)
+s0k kH5W W nd H5n --frames 8
+s0k kYW W nd H5n @w5s 1 @w5c 1 @w7y 1 --frames 8
+s0k kYB B nd H5n @w7y 1 --frames 8
+# s1 wolf 4 판씩: (1) 이탈 원인 가르기 H5 · H5 − Rw · H5 − X3g · H5 − Rw − X3g · 절 CM75 판, (2) H5 + SC + Y7
+s1 H5_1 W nd H5n
+s1 H5_2 W nd H5n
+s1 H5_3 W nd H5n
+s1 H5_4 W nd H5n
+s1 R_1 W nd H5nR
+s1 R_2 W nd H5nR
+s1 R_3 W nd H5nR
+s1 R_4 W nd H5nR
+s1 X_1 W nd H5nX
+s1 X_2 W nd H5nX
+s1 X_3 W nd H5nX
+s1 X_4 W nd H5nX
+s1 RX_1 W nd H5nRX
+s1 RX_2 W nd H5nRX
+s1 RX_3 W nd H5nRX
+s1 RX_4 W nd H5nRX
+s1 Gk_1 W nd Gk
+s1 Gk_2 W nd Gk
+s1 Gk_3 W nd Gk
+s1 Gk_4 W nd Gk
+s1 Y7_1 W nd H5n @w5s 1 @w5c 1 @w7y 1
+s1 Y7_2 W nd H5n @w5s 1 @w5c 1 @w7y 1
+s1 Y7_3 W nd H5n @w5s 1 @w5c 1 @w7y 1
+s1 Y7_4 W nd H5n @w5s 1 @w5c 1 @w7y 1
