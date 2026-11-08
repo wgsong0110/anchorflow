@@ -10,6 +10,8 @@ s0k kERA M3 g E @e3w 1 @e5r 1 @e5a 1 --frames 14
 s0k kFRA M3 g V2NF @e3w 1 @e5r 1 @e5a 1 --frames 14
 s0k kL L nd E @e3w 1 @e5r 1 @e5a 1 --frames 8
 s0k kWo W nd E @e3w 1 @e5r 1 @e5a 1 --frames 8
+# s0k2 연기 다시 (V2NF; D5 를 프레임 끝 한 번으로 고친 뒤 -- s0k kFRA 는 첫 접촉 다시 풀기 프레임에서 D5 가 두 번 돌아 기준 확인이 틀림, 장치 값은 그 뒤 프레임 3e-7)
+s0k2 kFRA2 M3 g V2NF @e3w 1 @e5r 1 @e5a 1 --frames 14
 # s1 수박: E+W̄ 대조 4 · +R 8 · +R+A 8 · +A 8, V2NF+W̄ 대조 4 · +R 8 · +R+A 8 (진단 D1·D2·D5), 단독 시간 각 a · b
 s1 mW_1 M3 g E @e3w 1
 s1 mW_2 M3 g E @e3w 1

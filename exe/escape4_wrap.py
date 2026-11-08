@@ -86,7 +86,7 @@ if os.environ.get("AF_E5_DG", "0") == "1":
         bx = s.bx.reshape(-1, 4)[:nq].double()
         dref_dev = (bx[:, :3] @ nr) / bx[:, 3].clamp_min(1e-30) - pn                     # 장치 표본점 기준 높이 (옮긴 뒤)
         bact = s.bact[:nq].long() if getattr(s, "bact", None) is not None else torch.ones(nq, device=x.device, dtype=torch.long)
-        rec = dict(f=fi + 1, nq=int(has.sum()), K=int(getattr(s, "K", 1)))
+        rec = dict(f=fi + 1, nq=int(has.sum()), K=int(getattr(s, "K", 1)), ncall=int(D.get("ncall", 1)))
         rec["ref_dev_err"] = float(((da0 + dl) - dref_dev).abs()[has].max()) if bool(has.any()) else None
         # 파이썬으로 다시 잰 이어 받은 시작 기준 (앞 프레임 끝 h_p 질량 평균) -- R 이 없는 판에서도 '이었다면' 값
         pv = D["prev"]
@@ -127,7 +127,7 @@ if os.environ.get("AF_E5_DG", "0") == "1":
         rec["cat"] = cats
         # 끝 어긋남 직접 (K 1, 장벽이 본 끝 = x̄_ref + Σ W̄ (U0 + thinv (y − U0)), U0 = 0)
         wq = getattr(s, "e3wq", None)
-        if wq is not None and int(getattr(s, "K", 1)) == 1 and getattr(s, "ga_c", None) is not None:
+        if wq is not None and int(getattr(s, "K", 1)) == 1 and getattr(s, "ga_c", None) is not None and int(D.get("ncall", 1)) == 1:   # 여러 번 부른 프레임 (첫 접촉 다시 풀기) 은 y 가 마지막 시도 것이라 뺌
             th = 1.0 / (1.0 - float(s.ga_c["af"]))
             cb = s.cb.reshape(-1, 3).long()
             qi = torch.arange(nq, device=x.device)
@@ -161,26 +161,37 @@ if os.environ.get("AF_E5_DG", "0") == "1":
         LOG.write(json.dumps(rec) + "\n")
         LOG.flush()
 
-    def outer(fn):
+    def outer(fn):                                                                     # 프레임 첫 맨바깥 호출에서 시작 위치 (첫 접촉 다시 풀기·X3c 는 같은 프레임을 여러 번 부름)
         def w(s, t, h, *a, **kw):
+            fi = int(round(t / h))
             if D["dep"] == 0:
-                D["x0"] = s.x[:int(getattr(s, "N", s.x.shape[0]))].float().clone()
+                if D.get("fi") != fi:
+                    D["fi"], D["ncall"] = fi, 0
+                    D["x0"] = s.x[:int(getattr(s, "N", s.x.shape[0]))].float().clone()
+                D["ncall"] += 1
             D["dep"] += 1
             try:
-                res = fn(s, t, h, *a, **kw)
+                return fn(s, t, h, *a, **kw)
             finally:
                 D["dep"] -= 1
-            if D["dep"] == 0:
-                try:
-                    post(s, int(round(t / h)))
-                except Exception:
-                    import traceback
-                    with open(os.path.join(out, "e5_err.txt"), "a") as f_:
-                        f_.write(traceback.format_exc()[-2000:] + "\n")
-            return res
         return w
     AORT.split_step = outer(AORT.split_step)
     WRX.split_col = outer(WRX.split_col)
+    from anchorflow import fem_an_rt_v0 as V0
+    _oc = V0.RTSolver.counts
+
+    def counts(s):                                                                     # 프레임 끝 (모든 시도·되돌림 뒤, 실행기가 프레임마다 한 번 부름)
+        r = _oc(s)
+        if D.get("x0") is not None and D.get("fi") is not None and D.get("done") != D["fi"]:
+            D["done"] = D["fi"]
+            try:
+                post(s, D["fi"])
+            except Exception:
+                import traceback
+                with open(os.path.join(out, "e5_err.txt"), "a") as f_:
+                    f_.write(traceback.format_exc()[-2000:] + "\n")
+        return r
+    V0.RTSolver.counts = counts
     print("[절 CM49 진단 D5] 걸음 시작 바닥 밑 표본점 가르기 (이어짐·끝 어긋남·다시 모음) · 끝 어긋남 직접 · δ -> e5.jsonl (결과 불변)", flush=True)
 
 sys.argv = [os.path.join(HERE, "escape3_wrap.py")] + argv
