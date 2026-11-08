@@ -43,3 +43,81 @@ s1 mW6_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 6
 s1 mW6_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 6
 s1 mW0_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0
 s1 mW0_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0
+# s2k 연기: 면 정의 4 (두 칸 모두 두꺼운 칸과 기저 공유 = 3x3x3 열림의 3x3x3 팽창) · 5 (한쪽 이상 두꺼운 칸) 검사 (면 집합 커널 = torch, 값·훅) -- 다섯 씬
+# s2 최종 후보 둘 (γ̄ 1e-1, 질량 켬, 구속 노드 면 빼기): A = @g4t 4 @g4x 1, B = @g4t 5 @g4x 1. 수박 8 · 레고 8 · ficus·wolf·bread 4, 단독 a · b.
+s2k kM4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g4fd 4,8 --frames 10
+s2k kL4 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g4fd 1,5 --frames 8
+s2k kW4 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g4fd 1,5 --frames 8
+s2k kB4 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g4fd 1,5 --frames 8
+s2k kF4 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g4fd 1,5 --frames 8
+s2k kM5 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1 @g4fd 4,8 --frames 10
+s2k kL5 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1 @g4fd 1,5 --frames 8
+s2k kW5 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1 @g4fd 1,5 --frames 8
+s2k kB5 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1 @g4fd 1,5 --frames 8
+s2k kF5 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1 @g4fd 1,5 --frames 8
+s2 mA_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 mA_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 mA_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 mA_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 mA_5 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 mA_6 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 mA_7 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 mA_8 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rL_A_1 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rL_A_2 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rL_A_3 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rL_A_4 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rL_A_5 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rL_A_6 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rL_A_7 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rL_A_8 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rF_A_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rF_A_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rF_A_3 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rF_A_4 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rW_A_1 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rW_A_2 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rW_A_3 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rW_A_4 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rB_A_1 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rB_A_2 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rB_A_3 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 rB_A_4 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 zmA M3 z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 zlA L z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 zfA F z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 zwA W z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 zbA B z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1
+s2 mB_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 mB_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 mB_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 mB_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 mB_5 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 mB_6 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 mB_7 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 mB_8 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rL_B_1 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rL_B_2 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rL_B_3 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rL_B_4 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rL_B_5 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rL_B_6 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rL_B_7 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rL_B_8 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rF_B_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rF_B_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rF_B_3 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rF_B_4 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rW_B_1 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rW_B_2 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rW_B_3 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rW_B_4 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rB_B_1 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rB_B_2 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rB_B_3 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 rB_B_4 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 zmB M3 z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 zlB L z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 zfB F z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 zwB W z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1
+s2 zbB B z E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 5 @g4x 1

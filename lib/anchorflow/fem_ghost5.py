@@ -138,7 +138,7 @@ __global__ void gq_thk(const int* IP, const int* cb, const int* cidx, const unsi
     int n0 = IP[6]-2, n1 = IP[7]-2, n2 = IP[8]-2;
     int x = cb[c*3], y = cb[c*3+1], z = cb[c*3+2];
     if (thin == 0 || thin == 3) k = 1;
-    else if (thin == 1) {
+    else if (thin == 1 || thin == 4 || thin == 5) {                     // 절 CM55: 방식 4·5 도 3x3x3 두꺼운 칸 (비트 0) 에서 시작
         for (int dx=-1;dx<=1 && !k;dx++) for (int dy=-1;dy<=1 && !k;dy++) for (int dz=-1;dz<=1 && !k;dz++) {
             int X = x+dx, Y = y+dy, Z = z+dz;
             if (X < 0 || Y < 0 || Z < 0 || X >= n0 || Y >= n1 || Z >= n2) continue;
@@ -174,6 +174,23 @@ __global__ void gq_thk2(const int* IP, const int* cb, const int* cidx, unsigned 
     thk[c] = (unsigned char)((thk[c] & 2) | k);
     if (k && cnt) atomicAdd(&cnt[3], 1);
 }
+// 절 CM55 방식 4: 비트 2 = 닫힌 27 이웃에 두꺼운 칸 (비트 0) 이 있음 (= 두꺼운 칸과 이차 B-스플라인 기저 (노드) 를 공유하는 칸; 3x3x3 열림의 3x3x3 팽창)
+__global__ void gq_dil(const int* IP, const int* cb, const int* cidx, unsigned char* thk) {
+#ifdef AF_ADAPT
+    if (AF_SKIP) return;
+#endif
+    int c = blockIdx.x*blockDim.x + threadIdx.x;
+    if (IP[13] || c >= IP[11]) return;
+    int n0 = IP[6]-2, n1 = IP[7]-2, n2 = IP[8]-2;
+    int x = cb[c*3], y = cb[c*3+1], z = cb[c*3+2], k = 0;
+    for (int dx=-1;dx<=1 && !k;dx++) for (int dy=-1;dy<=1 && !k;dy++) for (int dz=-1;dz<=1 && !k;dz++) {
+        int X = x+dx, Y = y+dy, Z = z+dz;
+        if (X < 0 || Y < 0 || Z < 0 || X >= n0 || Y >= n1 || Z >= n2) continue;
+        int c2 = cidx[(X*n1 + Y)*n2 + Z];
+        if (c2 >= 0 && (thk[c2] & 1)) k = 1;
+    }
+    if (k) thk[c] |= 4;                                                        // 비트 0 은 다른 스레드가 읽으므로 비트 2 만 더함 (읽는 비트와 겹치지 않음)
+}
 // 벌점 면: 절 CM47 면 (축 이웃 두 칸 활성, 하나 이상 경계 칸) 중 thin 3 = 한쪽 내부 칸·한쪽 경계 칸 (cut 다름), 그 밖 = 두 칸 모두 두꺼움 (비트 0)
 __global__ void gq_face(const int* IP, const int* cb, const int* cidx, const unsigned char* cut, const unsigned char* thk, unsigned char* fm, int thin, int* cnt) {
 #ifdef AF_ADAPT
@@ -189,7 +206,8 @@ __global__ void gq_face(const int* IP, const int* cb, const int* cidx, const uns
         int c2 = cidx[(x[0]*n[1] + x[1])*n[2] + x[2]];
         if (c2 < 0 || !(cut[c] || cut[c2])) continue;
         na++;
-        if ((thin == 3) ? (cut[c] != cut[c2]) : ((thk[c] & 1) && (thk[c2] & 1))) { m |= (1 << a); nk++; }
+        bool on = (thin == 3) ? (cut[c] != cut[c2]) : ((thin == 4) ? ((thk[c] & 4) && (thk[c2] & 4)) : ((thin == 5) ? ((thk[c] & 1) || (thk[c2] & 1)) : ((thk[c] & 1) && (thk[c2] & 1))));
+        if (on) { m |= (1 << a); nk++; }   // 절 CM55 방식 4 = 두 칸 모두 두꺼운 칸과 기저 공유, 5 = 한쪽 이상 두꺼운 칸
     }
     fm[c] = (unsigned char)m;
     if (cnt) { if (nk) atomicAdd(&cnt[1], nk); if (na) atomicAdd(&cnt[2], na); }
@@ -555,6 +573,8 @@ def build_mask(s, _ok, thin, fm, cnt):
     _ok(s, "gq_thk", cq, (P(s.IP), P(s.cb), P(s.cidx), P(s.g3cut), P(s.g3thk), np.int32(thin), P(cnt)), 128)
     if thin == 2:
         _ok(s, "gq_thk2", cq, (P(s.IP), P(s.cb), P(s.cidx), P(s.g3thk), P(cnt)), 128)
+    if thin == 4:
+        _ok(s, "gq_dil", cq, (P(s.IP), P(s.cb), P(s.cidx), P(s.g3thk)), 128)
     _ok(s, "gq_face", cq, (P(s.IP), P(s.cb), P(s.cidx), P(s.g3cut), P(s.g3thk), P(fm), np.int32(thin), P(cnt)), 128)
 
 
@@ -605,6 +625,8 @@ def install():
             _go(s, _ok, "gq_thk", cq, (P(s.IP), P(s.cb), P(s.cidx), P(s.g3cut), P(s.g3thk), np.int32(THIN), P(s.gpcnt)), 128)
             if THIN == 2:
                 _go(s, _ok, "gq_thk2", cq, (P(s.IP), P(s.cb), P(s.cidx), P(s.g3thk), P(s.gpcnt)), 128)
+            if THIN == 4:
+                _go(s, _ok, "gq_dil", cq, (P(s.IP), P(s.cb), P(s.cidx), P(s.g3thk)), 128)
             _go(s, _ok, "gq_face", cq, (P(s.IP), P(s.cb), P(s.cidx), P(s.g3cut), P(s.g3thk), P(s.g3fm), np.int32(THIN), P(s.gpcnt)), 128)
             s._g5C, s._g5A = args[2], args[6]                                                   # 절 CM55: 칸 누적 C (부피·질량 합) · 격자 A
             _go(s, _ok, "gq5_cell", cq, (P(s.IP), args[2], args[6], P(s.g5phi), P(s.g5rho)), 128)
@@ -682,6 +704,7 @@ def ref_struct3(s, thin):
     if not thin:
         return R
     IP = R["IP"]
+    dil = None
     nb = IP[6:9]
     n = [nb[0] - 2, nb[1] - 2, nb[2] - 2]
     cidx = s.cidx.reshape(-1)[:n[0] * n[1] * n[2]].long().view(*n)
@@ -690,8 +713,10 @@ def ref_struct3(s, thin):
     cutg = act & (torch.nn.functional.max_pool3d(pad, 3, stride=1)[0, 0] > 0)
     inner = (act & ~cutg).double()
     mp = torch.nn.functional.max_pool3d
-    if thin == 1:
+    if thin in (1, 4, 5):
         thkg = act & (mp(torch.nn.functional.pad(inner[None, None], (1, 1, 1, 1, 1, 1), value=0.0), 3, stride=1)[0, 0] > 0)
+        if thin == 4:                                                                           # 절 CM55: 두꺼운 칸의 3x3x3 팽창 (활성 칸만)
+            dil = act & (mp(torch.nn.functional.pad(thkg.double()[None, None], (1, 1, 1, 1, 1, 1), value=0.0), 3, stride=1)[0, 0] > 0)
     elif thin == 2:
         pad2 = torch.nn.functional.pad((~act).double()[None, None], (2, 2, 2, 2, 2, 2), value=1.0)
         in2 = (act & ~(mp(pad2, 5, stride=1)[0, 0] > 0)).double()
@@ -704,6 +729,10 @@ def ref_struct3(s, thin):
     x2[torch.arange(fc.numel(), device=s.dev), fa] += 1
     if thin == 3:
         keep = cutg[cb[fc, 0], cb[fc, 1], cb[fc, 2]] != cutg[x2[:, 0], x2[:, 1], x2[:, 2]]
+    elif thin == 4:
+        keep = dil[cb[fc, 0], cb[fc, 1], cb[fc, 2]] & dil[x2[:, 0], x2[:, 1], x2[:, 2]]
+    elif thin == 5:
+        keep = thkg[cb[fc, 0], cb[fc, 1], cb[fc, 2]] | thkg[x2[:, 0], x2[:, 1], x2[:, 2]]
     else:
         keep = thkg[cb[fc, 0], cb[fc, 1], cb[fc, 2]] & thkg[x2[:, 0], x2[:, 1], x2[:, 2]]
     R2 = dict(R)

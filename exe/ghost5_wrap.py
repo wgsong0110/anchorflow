@@ -54,7 +54,7 @@ if "g4" in CAND:
         alt = {}
         s._gpin = True
         try:
-            for t_ in (0, 1, 2, 3):                                                             # 네 방식 모두의 두꺼움·면 표지 (같은 칸 상태), 끝에 실행 방식으로 되돌림
+            for t_ in (0, 1, 2, 3, 4, 5):                                                             # 네 방식 모두의 두꺼움·면 표지 (같은 칸 상태), 끝에 실행 방식으로 되돌림
                 fmt = torch.zeros_like(s.g3fm)
                 G3.build_mask(s, _ok, t_, fmt, None)
                 torch.cuda.synchronize()
