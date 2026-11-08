@@ -135,11 +135,14 @@ def install(a):
     o_alloc = AORT.AORTSolver.alloc
 
     def alloc(s, need):
-        nt0 = s.nt
-        if CFG["fc"]:
+        nt0 = getattr(s, "nt", None)
+        if CFG["fc"] and nt0 is not None:
             s.nt = max(nt0, CFG["fc"][0])                                              # 후보 (b): 반복별 버퍼는 큰 상한으로
-        o_alloc(s, need)
-        s.nt = nt0
+        try:
+            o_alloc(s, need)
+        finally:
+            if nt0 is not None:
+                s.nt = nt0
         s.w2_graphs = {}                                                               # 다시 할당 뒤 후보 (b) 그래프도 무효
         if not hasattr(s, "w2b"):
             s.w2b = torch.zeros(NB, device=s.dev, dtype=torch.float32)
