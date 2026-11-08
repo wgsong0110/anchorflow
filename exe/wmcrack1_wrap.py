@@ -9,6 +9,7 @@
              v_n = 바닥 법선 속도, Δx = 노드 간격 (|A[:,0]|), d̂ = 장벽 두께 (0.5 x 정답 격자 dx, 실행기 WBAR 와 같은 식).
              -- '한 걸음에 접촉 입자가 노드 한 칸 넘게 움직이지 않음' (실행기 --adaptK 1 과 같은 CFL 1 정의를 접촉 입자에만). 새 조절 값·클램프 없음.
              접촉이 없는 프레임은 K_req = 0 -> 기존 쪼개기 그대로 (K 1 부터). 무너짐 다시 하기 (--wrx_col) 는 K0 부터 2^--ksplit 까지.
+  --wc1k 2   같은 식, C 를 '새로 닿는 입자' (프레임 시작에 장벽 띠 밖 d_p > d̂ 이고 이 프레임 안에 띠에 들어감) 로만 -- 충돌 사건만 시간으로 풂 (이미 닿아 있는 입자의 떨림 제외).
   환경 AF_WC1_LOG=0 이면 wc1.jsonl 안 씀 (기본 씀; 프레임마다 K_req·K0·C 크기, 결과 불변).
 """
 import json
@@ -91,6 +92,7 @@ if int(float(CAND.get("wc1k", 0))):
     else:
         NR = None; PN = 0.0; DH = 0.0
     WLOG = os.environ.get("AF_WC1_LOG", "1") == "1"
+    KMODE = int(float(CAND.get("wc1k", 1)))
     ST = dict(fi=0)
 
     def k_req(s, h):
@@ -103,6 +105,8 @@ if int(float(CAND.get("wc1k", 0))):
         vn = v @ n
         ok = torch.isfinite(d) & torch.isfinite(vn)
         C = ok & (vn < 0) & (d + vn * h <= DH)
+        if KMODE == 2:                                                                   # --wc1k 2: 새로 닿는 입자만 (프레임 시작에 장벽 띠 밖 d > d̂)
+            C = C & (d > DH)
         nC = int(C.sum())
         if nC == 0:
             return 0.0, 0

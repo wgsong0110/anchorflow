@@ -105,22 +105,22 @@ print("# 절 CM59 첫 접촉 소성·손상 경로 -- 층별 (f3 바닥 위 높�
 print(__doc__.split("\n", 1)[1].strip() + "\n")
 print(f"재질 상수: μ {MU:.3f} · λ {LAM:.3f} · κ {KAP:.3f} Pa · ξ {XI} · β {BETA} · 처음 logJp −0.04 → p0 {p0_of(np.array([-0.04]))[0]:.1f} Pa, 인장 꼭짓점 Je_t {np.sqrt(1 + 2 * BETA * p0_of(np.array([-0.04]))[0] / KAP):.4f}\n")
 for t in TS[1:]:
-    nms = [k for k in R if t in R[k][0]]
+    nms = [k for k in R if t in R[k]]
     if not nms:
         continue
-    print(f"## f{t} (증분 기준 f{R[nms[0]][0][t]['prev']})\n")
+    print(f"## f{t} (증분 기준 f{R[nms[0]][t]['prev']})\n")
     print("### (가) 층 높이 비 · Δ logJp · 다져짐 · 손상\n")
     print("| 층 cm | " + " | ".join(nms) + " |")
     print("|---|" + "---|" * len(nms))
     for k in range(len(EDG) - 1):
-        print(f"| {100 * EDG[k]:.0f}~{100 * EDG[k + 1]:.0f} | " + " | ".join(cell(R[n][0][t]["rows"][k], ("hr", "dl", "cp", "dm")) for n in nms) + " |")
-    print("| 몸 전체 | " + " | ".join(cell(R[n][0][t]["all"], ("hr", "dl", "cp", "dm")) for n in nms) + " |")
+        print(f"| {100 * EDG[k]:.0f}~{100 * EDG[k + 1]:.0f} | " + " | ".join(cell(R[n][t]["rows"][k], ("hr", "dl", "cp", "dm")) for n in nms) + " |")
+    print("| 몸 전체 | " + " | ".join(cell(R[n][t]["all"], ("hr", "dl", "cp", "dm")) for n in nms) + " |")
     print("\n### (나) 탄성 J · J·Jp · 응집력 p0 Pa · p/p0 · 압축 소성 % · 인장 연화 % · 인장 꼭짓점 상태 %\n")
     print("| 층 cm | " + " | ".join(nms) + " |")
     print("|---|" + "---|" * len(nms))
     for k in range(len(EDG) - 1):
-        print(f"| {100 * EDG[k]:.0f}~{100 * EDG[k + 1]:.0f} | " + " | ".join(cell(R[n][0][t]["rows"][k], ("J", "JJp", "p0", "pp0", "cpl", "tsf", "tv")) for n in nms) + " |")
-    print("| 몸 전체 | " + " | ".join(cell(R[n][0][t]["all"], ("J", "JJp", "p0", "pp0", "cpl", "tsf", "tv")) for n in nms) + " |")
+        print(f"| {100 * EDG[k]:.0f}~{100 * EDG[k + 1]:.0f} | " + " | ".join(cell(R[n][t]["rows"][k], ("J", "JJp", "p0", "pp0", "cpl", "tsf", "tv")) for n in nms) + " |")
+    print("| 몸 전체 | " + " | ".join(cell(R[n][t]["all"], ("J", "JJp", "p0", "pp0", "cpl", "tsf", "tv")) for n in nms) + " |")
     print()
 
 # 입자별: 정답 손상 집합 · 우리 손상 집합
@@ -152,4 +152,4 @@ for t in (5, 6, 8, 10):
         PJ.setdefault(n, {})[t] = r
         print(f"| f{t} | {n} | {r['ng']} · {r['no']} | {r['iou']:.3f} | {r['o_l']:+.3f} · {r['o_J']:.3f} · {r['o_pp']:+.2f} · {r['o_cp']:.0%} · {r['o_dm']:.0%} | "
               f"{r['g_l']:+.3f} · {r['g_J']:.3f} · {r['g_dm']:.0%} | {r['h_o']:.1f} ({r['h_g']:.1f}) |")
-json.dump(dict(layers={k: {str(t): v for t, v in P[0].items()} for k, P in R.items()}, particles=PJ), open(os.path.join(O, "wmcrack1_prof.json"), "w"))
+json.dump(dict(layers={k: {str(t): v for t, v in P.items()} for k, P in R.items()}, particles=PJ), open(os.path.join(O, "wmcrack1_prof.json"), "w"))

@@ -22,3 +22,48 @@ s1 V2_1 M3 r P1X @wc1k 1 --ksplit 4 --ws3 2 --ws3_lj 1
 s1 V2_2 M3 r P1X @wc1k 1 --ksplit 4 --ws3 2 --ws3_lj 1
 s1 V2F_1 M3 r P1X @wc1k 1 --ksplit 4 --ws3 2 --ws3_lj 1 --ws3_pf 1
 s1 V2F_2 M3 r P1X @wc1k 1 --ksplit 4 --ws3 2 --ws3_lj 1 --ws3_pf 1
+# s2 후보 8 판씩 (+ 단독 시간 z a·b): dP = P1X 대조 (s1 dP_1·2 와 합쳐 8), C = 접촉 CFL (--wc1k 1, 상한 16), N = 새로 닿는 입자만 (--wc1k 2; s1 C 는 접촉 뒤 프레임 40 % 가 떨리는 입자로 K 2~4),
+#   NP = N + 입자 logJp 증분 보간 (--wsh_pl 1, 절 CM40: 손상 변수가 안 바뀐 가우스 점은 입자 logJp 그대로 -> 보간 교체·다시 모으기 번짐 (절 CM44 (b)) 없음),
+#   NV = NP + 덜 풀린 걸음 (절 CM24 판정) 은 손상 변수 확정 안 함 (--ws3 2 --ws3_lj 1; 절 CM44 (a) 커밋 RM 쌓임), NS = N + GF 씨 영역 β 3e9 (--seedb, 절 CM28 (a); 미리보기 2 판)
+s2 dP_3 M3 r P1X
+s2 dP_4 M3 r P1X
+s2 dP_5 M3 r P1X
+s2 dP_6 M3 r P1X
+s2 dP_7 M3 r P1X
+s2 dP_8 M3 r P1X
+s2 C_3 M3 r P1X @wc1k 1 --ksplit 4
+s2 C_4 M3 r P1X @wc1k 1 --ksplit 4
+s2 C_5 M3 r P1X @wc1k 1 --ksplit 4
+s2 C_6 M3 r P1X @wc1k 1 --ksplit 4
+s2 C_7 M3 r P1X @wc1k 1 --ksplit 4
+s2 C_8 M3 r P1X @wc1k 1 --ksplit 4
+s2 N_1 M3 r P1X @wc1k 2 --ksplit 4
+s2 N_2 M3 r P1X @wc1k 2 --ksplit 4
+s2 N_3 M3 r P1X @wc1k 2 --ksplit 4
+s2 N_4 M3 r P1X @wc1k 2 --ksplit 4
+s2 N_5 M3 r P1X @wc1k 2 --ksplit 4
+s2 N_6 M3 r P1X @wc1k 2 --ksplit 4
+s2 N_7 M3 r P1X @wc1k 2 --ksplit 4
+s2 N_8 M3 r P1X @wc1k 2 --ksplit 4
+s2 NP_1 M3 r P1X @wc1k 2 --ksplit 4 --wsh_pl 1
+s2 NP_2 M3 r P1X @wc1k 2 --ksplit 4 --wsh_pl 1
+s2 NP_3 M3 r P1X @wc1k 2 --ksplit 4 --wsh_pl 1
+s2 NP_4 M3 r P1X @wc1k 2 --ksplit 4 --wsh_pl 1
+s2 NP_5 M3 r P1X @wc1k 2 --ksplit 4 --wsh_pl 1
+s2 NP_6 M3 r P1X @wc1k 2 --ksplit 4 --wsh_pl 1
+s2 NP_7 M3 r P1X @wc1k 2 --ksplit 4 --wsh_pl 1
+s2 NP_8 M3 r P1X @wc1k 2 --ksplit 4 --wsh_pl 1
+s2 NV_1 M3 r P1X @wc1k 2 --ksplit 4 --wsh_pl 1 --ws3 2 --ws3_lj 1
+s2 NV_2 M3 r P1X @wc1k 2 --ksplit 4 --wsh_pl 1 --ws3 2 --ws3_lj 1
+s2 NV_3 M3 r P1X @wc1k 2 --ksplit 4 --wsh_pl 1 --ws3 2 --ws3_lj 1
+s2 NV_4 M3 r P1X @wc1k 2 --ksplit 4 --wsh_pl 1 --ws3 2 --ws3_lj 1
+s2 NV_5 M3 r P1X @wc1k 2 --ksplit 4 --wsh_pl 1 --ws3 2 --ws3_lj 1
+s2 NV_6 M3 r P1X @wc1k 2 --ksplit 4 --wsh_pl 1 --ws3 2 --ws3_lj 1
+s2 NV_7 M3 r P1X @wc1k 2 --ksplit 4 --wsh_pl 1 --ws3 2 --ws3_lj 1
+s2 NV_8 M3 r P1X @wc1k 2 --ksplit 4 --wsh_pl 1 --ws3 2 --ws3_lj 1
+s2 NS_1 M3 r P1X @wc1k 2 --ksplit 4 SEEDB
+s2 NS_2 M3 r P1X @wc1k 2 --ksplit 4 SEEDB
+s2 zdP M3 z P1X
+s2 zN M3 z P1X @wc1k 2 --ksplit 4
+s2 zNP M3 z P1X @wc1k 2 --ksplit 4 --wsh_pl 1
+s2 zNV M3 z P1X @wc1k 2 --ksplit 4 --wsh_pl 1 --ws3 2 --ws3_lj 1

@@ -18,6 +18,7 @@ JP=/dev/shm/dkta/ag_data/gt_jp; mkdir -p $JP
 mkdir -p $O/gt; [ -s $O/gt/gt_wmshape.json ] || rclone copyto r2:storage/result/anchorflow/lbours/wmshape/gt/gt_wmshape.json $O/gt/gt_wmshape.json -q
 [ -s $O/gt/gt_wmshape2.json ] || rclone copyto r2:storage/result/anchorflow/lbours/wmshape2/gt/gt_wmshape2.json $O/gt/gt_wmshape2.json -q
 GH5=/home/dkta/work/wm2/gf/simulation_ply
+[ -s $WMD/wm_seed.npz ] || rclone copyto r2:storage/result/anchorflow/lbours/wmfrac/wm_seed.npz $WMD/wm_seed.npz -q   # 절 CM28 (a) 씨 영역 (GF 러너 판정, 입자 순번)
 SVF=3,4,5,6,8,10,15,20,30,50,100
 BA0="--cell 1 --mg_levels 4 --mg_nc 4 --ls_n 10 --descent --mg_wreuse --mg_lreuse --mv2 --lsfast --fk --gq_oct 0.1 --mgbar 2 --ga_y0ut --hspec --ncomp --ga hht --rho 0.8"
 FBB="--floor vel --fl_bar --fl_bst 1 --y0eb"
@@ -36,7 +37,7 @@ base_of() { case $1 in
   M3) echo "${WMB/--cell 1.5/--cell 3}";;
 esac; }
 nw() { case " $1 " in *" --newton "*) echo "$1" | sed 's/.*--newton \([0-9]*\).*/\1/';; *) echo "";; esac; }
-dfl() { local s=$1 x=" $2 "; x="${x// P1XK / EK $P1 }"; x="${x// P1X / E $P1 }"; x="${x// V2NF / $V2NF }"; x="${x// V2N / $V2N }"; case $s in M*) x="${x// EK / DK @tb 16.7 @tb_m 0.8 @tb_w 2 @inv 1 }"; x="${x// E / D @tb 16.7 @tb_m 0.8 @tb_w 2 @inv 1 }";; *) x="${x// EK / DK @tb 16.7 @tb_m 0.8 @tb_w 2 }"; x="${x// E / D @tb 16.7 @tb_m 0.8 @tb_w 2 }";; esac; x="${x// DK / $DFLK }"; x="${x// D / $DFL }"; case $s in M*) x="$x --sp2 31";; esac; echo "$x"; }
+dfl() { local s=$1 x=" $2 "; x="${x// P1XK / EK $P1 }"; x="${x// P1X / E $P1 }"; x="${x// V2NF / $V2NF }"; x="${x// V2N / $V2N }"; x="${x// SEEDB / --seedb $WMD/wm_seed.npz }"; case $s in M*) x="${x// EK / DK @tb 16.7 @tb_m 0.8 @tb_w 2 @inv 1 }"; x="${x// E / D @tb 16.7 @tb_m 0.8 @tb_w 2 @inv 1 }";; *) x="${x// EK / DK @tb 16.7 @tb_m 0.8 @tb_w 2 }"; x="${x// E / D @tb 16.7 @tb_m 0.8 @tb_w 2 }";; esac; x="${x// DK / $DFLK }"; x="${x// D / $DFL }"; case $s in M*) x="$x --sp2 31";; esac; echo "$x"; }
 dg_of() { local s=$1 md=$2 x
   case $s in L) x="--det --hgt --fhash --pdiag --qjd --bar_cnt";; W) x="--det --hgt --fhash --bar_cnt";; F) x="--det --pdiag --qjd --fhash --dump";; B) x="--det --pdiag --qjd --fhash";; M*) x="";; esac
   case $s in M*) case $md in r) x="--erec --wsh_rec 30 --wsh_sv $SVF";; b|g|z) x="--erec";; p) x="--erec --prof 1";; esac; echo "$x"; return;; esac
