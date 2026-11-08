@@ -1,0 +1,46 @@
+# 절 CM46 묶음 wmshape4 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_wmshape4.sh). 수박 M3 = 셀 3 옛 실행기 (절 CM44 바탕 그대로).
+# 낱말 V2N = 절 CM44 V2N 플래그 (BW4 + --ws3 1 --ws3_win 1 --ws3_lj 1), V2NF = V2N + --ws3_pf 1 (stab_wmshape4.sh 가 펼침).
+# '@' 인자 = 감싸개 (exe/wmshape4_wrap.py -> escape3_wrap.py -> escape2_wrap.py): @w4t 1 후보 T · @w4dg 프레임 진단 D4 · @e3w 1 장벽 표본점 W̄ (절 CM45, 원래 G2P 기저).
+# 방식 r = --erec + --wsh_rec 30 --wsh_sv + --ws2 1 + 진단 D2 (AF_E2_DG=1: 바닥 밑 입자·이탈, 결과 불변) · z = 단독 시간 (--erec 만, 카드 하나에 차례로 a·b)
+# 조정자 11-08: G (--e2g) 는 절 CM45 에서 공통 기각 (wolf 4/6 발산·ficus 주기 1.75) -> 결론 판은 G 대신 W̄ (V2NF+W̄·V2N+W̄).
+# s0 연기 (12 프레임)
+s0 kFW M3 r V2NF @e3w 1 --frames 12
+s0 kFWT M3 r V2NF @w4t 1 @w4dg 4 @e3w 1 --frames 12
+s0 kD M3 r V2N @w4dg 3,4,5 --frames 12
+# s1: (1) V2NF 발산 원인 다시 (D2 켬) · V2NF+W̄ · V2N+W̄ (비결정 6 판씩) · (2) 첫 접촉 진단 D4 (V2N 2 판, 6 프레임; 1 판은 W̄)
+s1 V2NF_1 M3 r V2NF
+s1 V2NF_2 M3 r V2NF
+s1 V2NF_3 M3 r V2NF
+s1 V2NF_4 M3 r V2NF
+s1 V2NFW_1 M3 r V2NF @e3w 1
+s1 V2NFW_2 M3 r V2NF @e3w 1
+s1 V2NFW_3 M3 r V2NF @e3w 1
+s1 V2NFW_4 M3 r V2NF @e3w 1
+s1 V2NFW_5 M3 r V2NF @e3w 1
+s1 V2NFW_6 M3 r V2NF @e3w 1
+s1 V2NW_1 M3 r V2N @e3w 1
+s1 V2NW_2 M3 r V2N @e3w 1
+s1 V2NW_3 M3 r V2N @e3w 1
+s1 V2NW_4 M3 r V2N @e3w 1
+s1 V2NW_5 M3 r V2N @e3w 1
+s1 V2NW_6 M3 r V2N @e3w 1
+s1 dV2N_1 M3 r V2N @w4dg 3,4,5 --frames 6
+s1 dV2N_2 M3 r V2N @w4dg 3,4,5 --frames 6
+s1 dV2NW_1 M3 r V2N @w4dg 3,4,5 @e3w 1 --frames 6
+s1 zV2NFW M3 z V2NF @e3w 1
+s1 zV2NW M3 z V2N @e3w 1
+# s2: 후보 T (첫 접촉 X2 도달 몫) 를 V2NF+W̄·V2N+W̄ 위에 + 진단 판
+s2 V2NFWT_1 M3 r V2NF @w4t 1 @e3w 1
+s2 V2NFWT_2 M3 r V2NF @w4t 1 @e3w 1
+s2 V2NFWT_3 M3 r V2NF @w4t 1 @e3w 1
+s2 V2NFWT_4 M3 r V2NF @w4t 1 @e3w 1
+s2 V2NFWT_5 M3 r V2NF @w4t 1 @e3w 1
+s2 V2NFWT_6 M3 r V2NF @w4t 1 @e3w 1
+s2 V2NWT_1 M3 r V2N @w4t 1 @e3w 1
+s2 V2NWT_2 M3 r V2N @w4t 1 @e3w 1
+s2 V2NWT_3 M3 r V2N @w4t 1 @e3w 1
+s2 V2NWT_4 M3 r V2N @w4t 1 @e3w 1
+s2 dV2NWT_1 M3 r V2N @w4t 1 @w4dg 3,4,5 @e3w 1 --frames 6
+s2 dV2NWT_2 M3 r V2N @w4t 1 @w4dg 3,4,5 @e3w 1 --frames 6
+s2 zV2NFWT M3 z V2NF @w4t 1 @e3w 1
+s2 zV2NWT M3 z V2N @w4t 1 @e3w 1
