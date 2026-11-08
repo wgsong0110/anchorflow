@@ -168,6 +168,7 @@ ap.add_argument("--ws2_fcn", type=int, default=1, help="절 CM41 (b): 첫 접촉
 ap.add_argument("--ws3", type=int, default=0, help="절 CM44 후보 (lib/anchorflow/fem_wmshape3.py): 수렴 안 한 걸음은 커밋에서 소성 상태 확정 안 함 -- 1 = 허용치 εN 판정, 2 = 절 CM24 덜 풀린 걸음 판정 (0 = 끔, 모듈 안 부름)")
 ap.add_argument("--ws3_lj", type=int, default=0, help="절 CM44: 1 = 미룸 대신 RM 투영은 하고 손상 변수 (ys·logJp·al) 만 걸음 시작 값 유지")
 ap.add_argument("--ws3_win", type=int, default=0, help="절 CM44: 1 = 절 CM41 충격 창 (--ws2_win) 끝난 다음 프레임부터만")
+ap.add_argument("--ws3_ep", type=int, default=0, help="절 CM44 (2) 후보: 1 = 충격 창 끝까지 뉴턴 힘 탄성 (prm[15]) + 커밋 RM 만 (탄성 예측 -> 소성 보정), 창 뒤 그대로 (--ws2_win 위)")
 a = ap.parse_args()
 if a.wrx:                                                                       # 절 CM38 후보 (소스 바꾸기는 모듈 만들기 전에)
     from anchorflow import fem_wmrx as WRX
@@ -184,8 +185,8 @@ if a.ws2 or a.ws2_eps > 0 or a.ws2_yc > 0 or a.ws2_fc or a.ws2_win:             
     from anchorflow import fem_wmshape2 as WS2
     WS2.install(a)
 WS3 = None
-if a.ws3:                                                                        # 절 CM44 (소스·bind 감싸기, 끄면 안 부름)
-    assert not a.ws3_win or a.ws2_win, "--ws3_win 은 --ws2_win 위"
+if a.ws3 or a.ws3_ep:                                                            # 절 CM44 (소스·bind 감싸기, 끄면 안 부름)
+    assert not (a.ws3_win or a.ws3_ep) or a.ws2_win, "--ws3_win·--ws3_ep 는 --ws2_win 위"
     from anchorflow import fem_wmshape3 as WS3
     WS3.install(a)
 if a.adaptK > 0:

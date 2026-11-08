@@ -10,6 +10,8 @@
       뉴턴 안 힘 (aq_elem) 은 지금처럼 매 반복 시험 F 를 RM 한 응력 -- 힘 경로 그대로.
   --ws3_lj 1 손상 변수 고정: RM 은 그대로 해서 F_q 는 항복면 위로 투영 (응력 경로 그대로), 상태 (ys, logJp, al) 만 걸음 시작 값 유지.
   --ws3_win 1: 절 CM41 충격 창 (--ws2_win) 이 끝난 프레임 (fem_wmshape2.ST["sw"]) 다음부터만 켬 (그 전은 지금 그대로).
+(2) 첫 접촉 후보 --ws3_ep 1 (--ws2_win 위): 충격 창이 끝날 때까지 (f1 ~ 창 끝 프레임) 뉴턴 안 힘·접선은 탄성 (prm[15] = 1, aq_elem 의 RM 끔) 이고
+  커밋 RM 만 함 (탄성 예측 -> 걸음 끝 소성 보정, 등분 --rm_sub 그대로) -- 창 끝 다음 프레임부터 prm[15] = 0 (지금 그대로). 커밋 RM 사본 (w2_rms_c) 만 prm[15] 문턱을 1.5 로.
 진단 (결과 불변): 프레임마다 커밋한 걸음 · 미룬 (또는 고정한) 걸음 수 (AF_W3CNT, 다시 하기 시도 포함) -> fem.jsonl ws3.
 """
 import numpy as np
@@ -38,7 +40,15 @@ def _rep(s, o, n, cnt=1):
     return s.replace(o, n)
 
 
-def src_apply(r):
+EP_OLD = "bool ch = (prm[15] > 0.5f) ? false : pl_rm(mat, se, prm, ys, lj, al, dt);"
+EP_NEW = "bool ch = (prm[15] > 1.5f) ? false : pl_rm(mat, se, prm, ys, lj, al, dt);   // 절 CM44 --ws3_ep: 커밋 RM 은 prm[15] = 1 (힘만 탄성) 에도 함"
+
+
+def src_apply(r, ep=0):
+    if ep:
+        i = r.index("__device__ bool w2_rms_c(")
+        j = r.index("\n}\n", i) + 3
+        r = r[:i] + _rep(r[i:j], EP_OLD, EP_NEW) + r[j:]
     assert "__global__ void rt_ctl(" in r and "__global__ void uf_end(" in r, "절 CM44 는 허용치 판 (--tolN) + 덜 풀림 판정 (--uf_res) 위"
     r = r.replace("extern \"C\" {", "extern \"C\" {" + DECL, 1)
     r = _rep(r, CTL_OP1_OLD, CTL_OP1_NEW)
@@ -53,22 +63,22 @@ def src_apply(r):
     return r[:k] + body + r[e:]
 
 
-CFG = dict(mode=0, lj=0, win=0)
+CFG = dict(mode=0, lj=0, win=0, ep=0)
 ST = dict(S=None, on=False, at=None)
 
 
 def install(a):
     from . import fem_ao_rt as AORT
     from . import fem_wmfrac as WF
-    CFG.update(mode=int(a.ws3), lj=int(a.ws3_lj), win=int(a.ws3_win))
-    assert CFG["mode"] in (1, 2)
+    CFG.update(mode=int(a.ws3), lj=int(a.ws3_lj), win=int(a.ws3_win), ep=int(a.ws3_ep))
+    assert CFG["mode"] in (0, 1, 2) and (CFG["mode"] or CFG["ep"])
     if getattr(AORT, "_ws3", False):
         return
     AORT._ws3 = True
     o_apply = WF.apply
 
     def apply(r, wf):
-        return src_apply(o_apply(r, wf))
+        return src_apply(o_apply(r, wf), CFG["ep"])
     WF.apply = apply
     o_bind = AORT.AORTSolver.bind_act
 
@@ -87,13 +97,15 @@ def _set(s):
     if getattr(s, "mod", None) is None:
         return
     on = ST["on"] or not CFG["win"]
-    _g(s, "AF_W3MODE")[0] = (CFG["mode"] | (4 if CFG["lj"] else 0)) if on else 0
+    _g(s, "AF_W3MODE")[0] = (CFG["mode"] | (4 if CFG["lj"] else 0)) if (on and CFG["mode"]) else 0
 
 
 def setup(S):
     assert S.ufj and S.adapt, "절 CM44 는 --tolN 허용치 + --uf_res 판정 위"
     ST["S"] = S
     _set(S)
+    if CFG["ep"]:
+        S.prm[15] = 1.0                                                                # 절 CM44 --ws3_ep: 충격 창 끝까지 뉴턴 힘은 탄성
 
 
 def frame(fi):
@@ -103,8 +115,12 @@ def frame(fi):
     v = [int(q) for q in c.get()]
     c[:] = 0
     o = dict(on=bool(ST["on"] or not CFG["win"]), ok=v[0], defer=v[1], ufl=[int(q) for q in S.ufl[:S.K].cpu()])
+    from . import fem_wmshape2 as WS2
+    if CFG["ep"] and float(S.prm[15]) > 0.5 and WS2.ST.get("sw") is not None:
+        S.prm[15] = 0.0
+        o["ep_end"] = fi + 2
+        print(f"[절 CM44] 충격 창 끝 (f{WS2.ST['sw']}) -> f{fi + 2} 부터 뉴턴 힘 RM 다시 켬", flush=True)
     if CFG["win"] and not ST["on"]:
-        from . import fem_wmshape2 as WS2
         if WS2.ST.get("sw") is not None:
             ST["on"], ST["at"] = True, fi + 2
             _set(S)

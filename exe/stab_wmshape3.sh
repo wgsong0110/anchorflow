@@ -53,6 +53,8 @@ wait
 log "판정 판 끝 $STG"
 if echo "$SPEC" | awk '$4=="z"' | grep -q .; then
   ZG=$(claim_wait $$); log "단독 시간 카드 $ZG"
+  W0=$(date +%s); while [ "$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -c .)" != 0 ] && [ $(( $(date +%s) - W0 )) -lt 1200 ]; do sleep 20; done   # 단독: 노드 계산 프로세스 0 까지 (최대 20 분)
+  log "단독 시간 앞 기다림 $(( $(date +%s) - W0 )) 초, 계산 프로세스 $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -c .)"
   for r in a b; do
     while read -r st n s md x; do
       [ "$md" = z ] || continue; run ${n}_$r $s z $ZG "$x"
@@ -71,7 +73,7 @@ if [ $STG = s0 ]; then                                                          
   log "[연기] OK=$OK"; [ $OK = 1 ] || { echo "연기 실패 $(date '+%F %T')" > $O/wmshape3.FAIL; rclone copy $O $RO -q --include wmshape3.FAIL; exit 1; }
 fi
 [ $STG = s0 ] || { $PY exe/wmshape3_tab.py $O $JP > $O/wmshape3_table.md 2> $O/wmshape3_table.err; rclone copy $O $RO -q --include "wmshape3_table.*" --include wmshape3_curves.json; }
-if [ $STG = s2 ]; then                                                                      # 절 CM44 (2) 층별 첫 접촉 진단 (CPU, 읽기만)
-  $PY exe/wmshape3_prof.py $O $JP $WMD/wm.pt BW4_1,V2_1,V2N_1,V3_2,QR,QB5,QB2 > $O/wmshape3_prof.md 2> $O/wmshape3_prof.err; rclone copy $O $RO -q --include "wmshape3_prof.*"
+if [ $STG = s2 ] || [ $STG = s3 ]; then                                                                      # 절 CM44 (2) 층별 첫 접촉 진단 (CPU, 읽기만)
+  $PY exe/wmshape3_prof.py $O $JP $WMD/wm.pt BW4_1,V2_1,V2N_1,V3_2,QR,QB5,QB2,BE_1,V2NE_1 > $O/wmshape3_prof.md 2> $O/wmshape3_prof.err; rclone copy $O $RO -q --include "wmshape3_prof.*"
 fi
 log "단계 끝 $STG"
