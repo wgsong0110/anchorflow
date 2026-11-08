@@ -1,0 +1,40 @@
+# 절 CM42 묶음 escape1 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_escape1.sh)
+# E = 공통 후보 D + 시간 예산 T2 (@tb 16.7 @tb_m 0.8 @tb_w 2), 수박 M3 은 + 가속 I (@inv 1) + --sp2 31 (셀 3). 수박 바탕 (WMB) 에는 --gq_mass 가 원래 있음 (절 CM9 이후 모든 수박 판 켬).
+# s0k 연기 (8·6 프레임): 새 실행기에 --gq_mass 와 E 가 같이 컴파일·실행되는지 (레고·ficus 는 --gq_chk 로 질량·운동량 합 확인)
+s0k kL L n E --gq_mass --gq_chk --frames 8
+s0k kW W nd E --gq_mass --frames 8
+s0k kF F n E --gq_mass --gq_chk --frames 8
+s0k kB B n E --gq_mass --frames 8
+s0k kM M3 b E --gq_mass --frames 6
+# s1 E + --gq_mass: wolf 비결정 10 (덤프 -> bbox), 수박 비결정 6, 레고 비결정 6, ficus·bread 회귀 2 씩, 다섯 씬 단독 시간 a·b
+s1 eW_1 W nd E --gq_mass
+s1 eW_2 W nd E --gq_mass
+s1 eW_3 W nd E --gq_mass
+s1 eW_4 W nd E --gq_mass
+s1 eW_5 W nd E --gq_mass
+s1 eW_6 W nd E --gq_mass
+s1 eW_7 W nd E --gq_mass
+s1 eW_8 W nd E --gq_mass
+s1 eW_9 W nd E --gq_mass
+s1 eW_10 W nd E --gq_mass
+s1 eM_1 M3 b E --gq_mass
+s1 eM_2 M3 b E --gq_mass
+s1 eM_3 M3 b E --gq_mass
+s1 eM_4 M3 b E --gq_mass
+s1 eM_5 M3 b E --gq_mass
+s1 eM_6 M3 b E --gq_mass
+s1 eL_1 L n E --gq_mass
+s1 eL_2 L n E --gq_mass
+s1 eL_3 L n E --gq_mass
+s1 eL_4 L n E --gq_mass
+s1 eL_5 L n E --gq_mass
+s1 eL_6 L n E --gq_mass
+s1 eF_1 F nd E --gq_mass
+s1 eF_2 F nd E --gq_mass
+s1 eB_1 B nd E --gq_mass
+s1 eB_2 B nd E --gq_mass
+s1 zL L z E --gq_mass
+s1 zW W z E --gq_mass
+s1 zF F z E --gq_mass
+s1 zB B z E --gq_mass
+s1 zM M3 z E --gq_mass
