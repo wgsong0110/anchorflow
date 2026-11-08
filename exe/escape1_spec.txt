@@ -38,3 +38,60 @@ s1 zW W z E --gq_mass
 s1 zF F z E --gq_mass
 s1 zB B z E --gq_mass
 s1 zM M3 z E --gq_mass
+# s2k 연기: 후보 M1 (감싸개 --e1mf κ, 새 실행기 rt_meff 하한) 컴파일·실행
+s2k kM1L L n E --gq_mass @e1mf 0.1 --frames 8
+s2k kM1W W nd E @e1mf 0.1 --frames 8
+# s2 (s1 에서 wolf 이탈이 --gq_mass 로 더 커짐 -> 진단 + 다음 후보 M1): 진단 gW = D + --gq_mass (예산 없음; 예산과 --gq_mass 몫 가르기),
+#    M1 = 뉴턴 풀이 노드 관성 질량 하한 max(m_n, κ M / (8 n_c)), κ 0.1 (= --gq_oct): E + --gq_mass + M1 (mG) · E + M1 (mE)
+s2 gW_1 W nd D --gq_mass
+s2 gW_2 W nd D --gq_mass
+s2 gW_3 W nd D --gq_mass
+s2 gW_4 W nd D --gq_mass
+s2 mGW_1 W nd E --gq_mass @e1mf 0.1
+s2 mGW_2 W nd E --gq_mass @e1mf 0.1
+s2 mGW_3 W nd E --gq_mass @e1mf 0.1
+s2 mGW_4 W nd E --gq_mass @e1mf 0.1
+s2 mGW_5 W nd E --gq_mass @e1mf 0.1
+s2 mGW_6 W nd E --gq_mass @e1mf 0.1
+s2 mGW_7 W nd E --gq_mass @e1mf 0.1
+s2 mGW_8 W nd E --gq_mass @e1mf 0.1
+s2 mGW_9 W nd E --gq_mass @e1mf 0.1
+s2 mGW_10 W nd E --gq_mass @e1mf 0.1
+s2 mEW_1 W nd E @e1mf 0.1
+s2 mEW_2 W nd E @e1mf 0.1
+s2 mEW_3 W nd E @e1mf 0.1
+s2 mEW_4 W nd E @e1mf 0.1
+s2 mEW_5 W nd E @e1mf 0.1
+s2 mEW_6 W nd E @e1mf 0.1
+s2 mEW_7 W nd E @e1mf 0.1
+s2 mEW_8 W nd E @e1mf 0.1
+s2 mEW_9 W nd E @e1mf 0.1
+s2 mEW_10 W nd E @e1mf 0.1
+s2 mGL_1 L n E --gq_mass @e1mf 0.1
+s2 mGL_2 L n E --gq_mass @e1mf 0.1
+s2 mGL_3 L n E --gq_mass @e1mf 0.1
+s2 mGL_4 L n E --gq_mass @e1mf 0.1
+s2 mGL_5 L n E --gq_mass @e1mf 0.1
+s2 mGL_6 L n E --gq_mass @e1mf 0.1
+s2 mEL_1 L n E @e1mf 0.1
+s2 mEL_2 L n E @e1mf 0.1
+s2 mEL_3 L n E @e1mf 0.1
+s2 mEL_4 L n E @e1mf 0.1
+s2 mEL_5 L n E @e1mf 0.1
+s2 mEL_6 L n E @e1mf 0.1
+s2 mGF_1 F nd E --gq_mass @e1mf 0.1
+s2 mEF_1 F nd E @e1mf 0.1
+s2 mGB_1 B nd E --gq_mass @e1mf 0.1
+s2 mEB_1 B nd E @e1mf 0.1
+s2 mGF_2 F nd E --gq_mass @e1mf 0.1
+s2 mEF_2 F nd E @e1mf 0.1
+s2 mGB_2 B nd E --gq_mass @e1mf 0.1
+s2 mEB_2 B nd E @e1mf 0.1
+s2 zmGL L z E --gq_mass @e1mf 0.1
+s2 zmEL L z E @e1mf 0.1
+s2 zmGW W z E --gq_mass @e1mf 0.1
+s2 zmEW W z E @e1mf 0.1
+s2 zmGF F z E --gq_mass @e1mf 0.1
+s2 zmEF F z E @e1mf 0.1
+s2 zmGB B z E --gq_mass @e1mf 0.1
+s2 zmEB B z E @e1mf 0.1

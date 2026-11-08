@@ -4,6 +4,7 @@ E = D + 시간 예산 T2 (감싸개 `--tb 16.7 --tb_m 0.8 --tb_w 2`), 수박 M3 
 --gq_mass: 레고·wolf·ficus·bread (새 실행기 exe/fem_an_rt_sim.py) 는 이 묶음에서 켬; 수박 (옛 실행기 exe/fem_ao_rt_sim.py) 바탕 명령에는 절 CM9 이후 원래 --gq_mass 가 들어 있음 (절 CM37~CM41 의 수박 판도 모두 켬) -> 수박 E + --gq_mass = E.
 오차 = 끝난 프레임 평균 %, 시간 = 첫 2 프레임 뺀 재생 GPU ms (쪼갠·다시 한 프레임은 모든 시도 합), 60 fps 문턱 16.7 ms.
 질량 비 = 노드 m_n / 그 프레임 m_n > 0 중앙값 (e1.jsonl, 전 프레임 최소). 이탈 = 몸 상자 (0.1~99.9 백분위) 4 칸 밖 입자 (프레임마다 e1.jsonl; wolf 는 덤프 bbox.txt 도 -- exe/speed1_bbox.py, 5 프레임마다 + 끝).
+M1 (s2) = 감싸개 `--e1mf κ` (새 실행기만): 뉴턴 풀이 노드 관성 질량 meff = max(m_n, κ M / (8 n_c)) (m_n > 0, M 입자 질량 합, n_c 찬 칸 수; κ 0.1 = --gq_oct), 운동량·속도 그대로. gW = D + --gq_mass (예산 없음, 진단).
 수박 손상 = 마지막 유한 프레임 logJp > 0 몫 (정답 6.51 %), 생긴 E = 전 구간 최대 (운동 + 중력 위치 + SNH 탄성) − 처음 7.13 J; 메모리 = 노드 상자 커짐으로 메모리 넘침 (발산).
 """
 import collections

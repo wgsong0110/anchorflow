@@ -7,6 +7,7 @@
     새 이탈 입자 (이 프레임에 처음 4 칸 밖): 수, 그 입자 B-스플라인 27 노드 (프레임 시작 칸, 가중 > 1e-3) 의 질량 비 최소의 중앙·최소·< 1e-4 몫,
       둘레 노드 속도 최대의 중앙, 입자 속도 중앙; 그 프레임 걸음별 판정 (덜 풀림 표시·‖g‖²/F²; 보폭은 fem.jsonl uf.smin)
   진단 실패는 풀이에 영향 없음 (<out>/e1_err.txt 에 기록).
+  --e1mf κ  후보 M1 (새 실행기만, 결과 바뀜): 뉴턴 풀이 노드 관성 질량 하한 max(m_n, κ M / (8 n_c)) -- 아래 정의
 """
 import json
 import os
@@ -19,6 +20,44 @@ sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 argv = sys.argv[1:]
 out = argv[argv.index("--out") + 1] if "--out" in argv else "."
 os.makedirs(out, exist_ok=True)
+MF = 0.0
+if "--e1mf" in argv:                                                                   # 절 CM42 후보 M1 (감싸개 인자, 실행기 앞에만)
+    i_ = argv.index("--e1mf")
+    MF = float(argv[i_ + 1])
+    del argv[i_:i_ + 2]
+
+if MF > 0:
+    # 절 CM42 후보 M1 (정의 변경, 새 실행기만): 뉴턴 풀이의 노드 관성 질량 (meff -- 기울기·헤시안 곱·선탐색 에너지·MG 대각·판정 잔차가 쓰는 값) 에 하한
+    #   m'_n = max(m_n, κ M / (8 n_c))   (m_n > 0 노드만; κ = 이 값, M = 입자 질량 합, n_c = 이 프레임 찬 칸 수 IP[11])
+    #   = 점유 가중 판 가우스 점 질량 하한 m_q ≥ κ m_c / 8 (--gq_oct κ, 절 CM9) 의 평균 칸 m̄_c = M / n_c 값. 노드 질량·운동량 (mn·mv, 속도 v = mv / mn, G2P) 은 그대로.
+    #   이웃 노드를 쓰지 않음 (노드별). rt_meff 한 줄 뒤에 덧붙임 -- 0 이면 끈 판과 같은 기계어 (이 인자가 없으면 소스 그대로).
+    import cupy as cp
+    from anchorflow import fem_an_rt as ART
+    _OLD = "    meff[n] = (cs > 0.f) ? fmaxf(m, cs*(B[n*9] + B[n*9+4] + B[n*9+8])*(1.f/3.f)) : m;\n"
+    _ob = ART.build_src
+
+    def _bs(*a, **kw):
+        r = _ob(*a, **kw)
+        assert r.count(_OLD) == 1, "rt_meff 글자 못 찾음"
+        r = r.replace(_OLD, _OLD + "    if (m > 0.f && IP[11] > 0) meff[n] = fmaxf(meff[n], E1_KM / (8.f * (float)IP[11]));   // 절 CM42 후보 M1\n")
+        return r.replace('extern "C" {', 'extern "C" {\n__device__ float E1_KM;', 1)
+    ART.build_src = _bs
+    _os = ART.split_step
+    _mfd = [0]
+
+    def _mf_split(s, t, h, *a, **kw):
+        if _mfd[0] == 0:
+            KM = float(MF * float(s.m[:s.N].double().sum()))
+            cp.ndarray((1,), dtype=cp.float32, memptr=s.mod.get_global("E1_KM"))[0] = KM
+            if not hasattr(s, "_e1km"):
+                s._e1km = KM
+                print(f"[절 CM42 후보 M1] 관성 질량 하한 κ {MF} x 질량 합 {KM / MF:.4g} kg / (8 x 찬 칸 수)", flush=True)
+        _mfd[0] += 1
+        try:
+            return _os(s, t, h, *a, **kw)
+        finally:
+            _mfd[0] -= 1
+    ART.split_step = _mf_split
 
 if os.environ.get("AF_E1_DG", "0") == "1":
     import torch
@@ -44,9 +83,15 @@ if os.environ.get("AF_E1_DG", "0") == "1":
         rh = r[has]
         sp = s.vk.reshape(-1, 3)[:nn].float().norm(dim=-1)
         fast = has & (sp > 3.0)
+        if getattr(s, "_e1km", None) and int(IP[11]) > 0:                                # 후보 M1 하한 / 중앙값, 하한에 걸린 노드 수
+            mf_ = s._e1km / (8.0 * int(IP[11]))
+            rec0 = dict(mf_ratio=mf_ / med, n_mf=int((has & (mn < mf_)).sum()))
+        else:
+            rec0 = {}
         rec = dict(f=fi + 1, nn=nn, nact=int(has.sum()), rmin=float(rh.min()) if rh.numel() else None,
                    n2=int((rh < 1e-2).sum()), n4=int((rh < 1e-4).sum()), n6=int((rh < 1e-6).sum()),
                    nfast=int(fast.sum()), fast_rmed=float(r[fast].median()) if bool(fast.any()) else None, fast_rmin=float(r[fast].min()) if bool(fast.any()) else None)
+        rec.update(rec0)
         N = int(getattr(s, "N", s.x.shape[0]))
         x = s.x[:N].float()
         ok = torch.isfinite(x).all(-1)
