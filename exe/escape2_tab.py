@@ -202,6 +202,49 @@ for stg in stages:
             print(f"| {n} | {SCN.get(sc, sc)} | `{fl.strip()}` | {res(n + '_a')} · {res(n + '_b')} | {fmt(err(n + '_a'))} · {fmt(err(n + '_b'))} | {tm(ra)} | {tm(rb)} | {ok} | {nN(ra)} | {scene_metric(n + '_a', sc, ra) if ra else '-'} |")
         print()
 
+
+# ---- 절 CM43 진단 D2 요약 (방식 g 판; e2.jsonl)
+def e2s(n):
+    L = jl(n, "e2.jsonl") or []
+    F = [q for q in L if "esc" not in q]
+    E = [q for q in L if "esc" in q]
+    if not F:
+        return None
+    kick = []
+    for e in E:
+        for fr in e["frames"]:
+            if fr.get("v1") is not None and fr.get("v0") is not None and fr["v1"] - fr["v0"] > 1.0 and "vn_end_max_sol" in fr:
+                kick.append(fr)
+    seen, kk = set(), []
+    for fr in kick:                                                                      # 같은 프레임은 한 번
+        if fr["f"] not in seen:
+            seen.add(fr["f"]); kk.append(fr)
+    zb = [q for q in F if "nbelow" in q]
+    return dict(nk=len(kk), vsol=max((q["vn_end_max_sol"] for q in kk), default=None), vpin=max((q["vn_end_max_pin"] for q in kk), default=None),
+                share=sorted(q["vpin_share"] for q in kk)[len(kk) // 2] if kk else None, mnmin=sorted(q["mn_min_med"] for q in kk)[len(kk) // 2] if kk else None,
+                lj=sorted(q["lj1_max"] for q in kk)[len(kk) // 2] if kk else None, J=sorted(q["J1_med"] for q in kk)[len(kk) // 2] if kk else None,
+                ulm=sorted(q.get("ulm_w", 0) for q in kk)[len(kk) // 2] if kk else None,
+                below=max((q["nfar_below"] for q in zb), default=None) if zb else None, zmin=min((q["zmin"] for q in zb), default=None) if zb else None,
+                nn=max(q["nn"] for q in F))
+
+
+rows = [s_ for s_ in spec if s_[3] == "g" and not s_[0].endswith("k")]
+out = []
+for st, n, sc, md, fl in rows:
+    e = e2s(n)
+    if not e:
+        continue
+    out.append(f"| {st} | {n} | `{fl.strip()}` | {res(n)} | {e['nk']} | {fmt(e['vsol'], 1)} · {fmt(e['vpin'], 1)} | {fmt(e['share'])} | {eg(e['mnmin'])} | {fmt(e['J'])} · {fmt(e['lj'])} | {fmt(e['ulm'])} | "
+               f"{'-' if e['below'] is None else e['below']} · {fmt(e['zmin'])} | {e['nn'] / 1e3:.0f} k |")
+if out:
+    print("## 진단 D2: 튐 프레임 (이탈 입자의 앞 5 프레임 중 입자 속도가 한 프레임에 1 m/s 넘게 는 프레임, 판마다 프레임 단위) · 바닥 뚫음\n")
+    print("튐 노드 = 그 입자 27 노드 (가중 > 1e-3) 중 걸음 끝 속도 최대. 풀린 = 고정 (m_n < mthr, 관성 예측에 묶임) 아닌 노드. 고정 몫 = 입자 속도 Σ w v_n 중 고정 노드 몫 (중앙). "
+          "J·logJp = 튐 걸음 끝 입자 (중앙). 후퇴 오일러 무게 = 27 노드 가중 중 ulm 노드 몫 (중앙). 바닥 뚫음 = 이탈 입자 중 바닥 (z 0.02) 아래 한 칸 넘는 입자 최대 수 · 전 입자 z 최소 (h1 부터 기록).\n")
+    print("| 단계 | 판 | 플래그 | 결과 | 튐 프레임 수 | 튐 노드 끝 속도 최대 m/s: 풀린 · 고정 | 고정 몫 | 27 노드 최소 질량 비 (중앙) | 입자 J · logJp 최대 (중앙) | 후퇴 오일러 무게 | 바닥 뚫음 수 · z 최소 m | 노드 상자 최대 |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    print("\n".join(out))
+    print()
+
 print("## 후보·씬별 묶음 (비결정 판; 발산 = 메모리 넘침 포함)\n")
 print("| 단계 | 씬 | 플래그 | 판 수 | 발산 | 오차 % 평균 [범위] | 이탈 판 (> 20 개) · 최대 수 · 거리 m | 최소 질량 비 | 노드 상자 최대 | 씬 지표 범위 | 최악 ms (동시) |")
 print("|---|---|---|---|---|---|---|---|---|---|---|")
