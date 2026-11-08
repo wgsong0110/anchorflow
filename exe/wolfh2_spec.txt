@@ -50,3 +50,6 @@ s2 dEG_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 ~--y0eb @w2gs 1 @w2n 1 --fl_pt --fl_bst
 # ---- s3: 최선 판 dE (G' ~--y0eb) 이탈 표본 2 판 더 + 영상 렌더 (exe/wolfh2_pre_s3.sh: gC_1 · dE_2)
 s3 dE_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 ~--y0eb
 s3 dE_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 ~--y0eb
+# (s3 렌더는 덤프에 F 가 없어 (--dump_F 없음) 실패 -> s4 에 영상용 판 다시, s5 = 렌더만 (exe/wolfh2_pre_s5.sh, 판 목록 없음))
+s4 vC_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 --dump_F
+s4 vE_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 ~--y0eb --dump_F
