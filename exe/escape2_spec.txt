@@ -8,3 +8,25 @@ d1 dM_1 M3 g E
 d1 dM_2 M3 g E
 d1 dM_3 M3 g E
 d1 dM_4 M3 g E
+# c0k 연기: 후보 M1o (@e2mf κ, 옛 실행기 풀이 관성 질량 하한 max(m_n, κ M/(8 n_c)), κ 0.1 = 다른 씬 공통 --gq_oct) 와 M1o + 고정 없앰 (--mlow 0)
+c0k kM1 M3 g E @e2mf 0.1 --frames 14
+c0k kM1u M3 g E @e2mf 0.1 --mlow 0 --frames 14
+# c1 수박 비결정 6 판씩: M1o · M1o + --mlow 0 · 대조 --mlow 0 만 (고정 없앰, 하한 없음)
+c1 mM_1 M3 g E @e2mf 0.1
+c1 mM_2 M3 g E @e2mf 0.1
+c1 mM_3 M3 g E @e2mf 0.1
+c1 mM_4 M3 g E @e2mf 0.1
+c1 mM_5 M3 g E @e2mf 0.1
+c1 mM_6 M3 g E @e2mf 0.1
+c1 uM_1 M3 g E @e2mf 0.1 --mlow 0
+c1 uM_2 M3 g E @e2mf 0.1 --mlow 0
+c1 uM_3 M3 g E @e2mf 0.1 --mlow 0
+c1 uM_4 M3 g E @e2mf 0.1 --mlow 0
+c1 uM_5 M3 g E @e2mf 0.1 --mlow 0
+c1 uM_6 M3 g E @e2mf 0.1 --mlow 0
+c1 lM_1 M3 g E --mlow 0
+c1 lM_2 M3 g E --mlow 0
+c1 lM_3 M3 g E --mlow 0
+c1 lM_4 M3 g E --mlow 0
+c1 dM_5 M3 g E
+c1 dM_6 M3 g E
