@@ -1,0 +1,47 @@
+# 절 CM76 묶음 speed9 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_speed9.sh). H3 = Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s8g 1e6 (+ 새 실행기 --cap_mul 4) (절 CM74 공통 후보).
+# 결과 불변 가속 A = @s9c 1 (걸음 시작 장벽 에너지 압축) @s9y 1 (노드별 시작점 조기 끝) @s9e 1 (W̄ 워프 모으기); 확인 판 = @s9c 2 @s9y 2 @s9e 1 @s8w 2; 진단 @s9dg 1
+# 결과 바뀌는 후보: R = @s9r 1 (X3c 다시 하기를 첫 시도 끝 상태에서 이어 하기), P = @s9p 0.9 (PCG 멈춤 기준 EW choice 2)
+s0k kA2 M3 r H3 @s9dg 1 @s9c 2 @s9y 2 @s9e 1 @s8w 2 --frames 20
+s0k kA1 M3 r H3 @s9c 1 @s9y 1 @s9e 1 --frames 20
+s0k kR M3 r H3 @s9c 1 @s9y 1 @s9e 1 @s9r 1 --frames 20
+s0k kP M3 r H3 @s9c 1 @s9y 1 @s9e 1 @s9p 0.9 @s9dg 1 --frames 20
+s1 vA_1 M3 r H3 @s9dg 1 @s9c 2 @s9y 2 @s9e 1 @s8w 2
+s1 vA_2 M3 r H3 @s9dg 1 @s9c 2 @s9y 2 @s9e 1 @s8w 2
+s1 vA_3 M3 r H3 @s9dg 1 @s9c 2 @s9y 2 @s9e 1 @s8w 2
+s1 vA_4 M3 r H3 @s9dg 1 @s9c 2 @s9y 2 @s9e 1 @s8w 2
+s1 gH_1 M3 g H3
+s1 gH_2 M3 g H3
+s1 gH_3 M3 g H3
+s1 gH_4 M3 g H3
+s1 gH_5 M3 g H3
+s1 gH_6 M3 g H3
+s1 gH_7 M3 g H3
+s1 gH_8 M3 g H3
+s1 gA_1 M3 g H3 @s9c 1 @s9y 1 @s9e 1
+s1 gA_2 M3 g H3 @s9c 1 @s9y 1 @s9e 1
+s1 gA_3 M3 g H3 @s9c 1 @s9y 1 @s9e 1
+s1 gA_4 M3 g H3 @s9c 1 @s9y 1 @s9e 1
+s1 gA_5 M3 g H3 @s9c 1 @s9y 1 @s9e 1
+s1 gA_6 M3 g H3 @s9c 1 @s9y 1 @s9e 1
+s1 gA_7 M3 g H3 @s9c 1 @s9y 1 @s9e 1
+s1 gA_8 M3 g H3 @s9c 1 @s9y 1 @s9e 1
+s1 gR_1 M3 g H3 @s9c 1 @s9y 1 @s9e 1 @s9r 1
+s1 gR_2 M3 g H3 @s9c 1 @s9y 1 @s9e 1 @s9r 1
+s1 gR_3 M3 g H3 @s9c 1 @s9y 1 @s9e 1 @s9r 1
+s1 gR_4 M3 g H3 @s9c 1 @s9y 1 @s9e 1 @s9r 1
+s1 gR_5 M3 g H3 @s9c 1 @s9y 1 @s9e 1 @s9r 1
+s1 gR_6 M3 g H3 @s9c 1 @s9y 1 @s9e 1 @s9r 1
+s1 gR_7 M3 g H3 @s9c 1 @s9y 1 @s9e 1 @s9r 1
+s1 gR_8 M3 g H3 @s9c 1 @s9y 1 @s9e 1 @s9r 1
+s1 gP_1 M3 g H3 @s9c 1 @s9y 1 @s9e 1 @s9p 0.9
+s1 gP_2 M3 g H3 @s9c 1 @s9y 1 @s9e 1 @s9p 0.9
+s1 gP_3 M3 g H3 @s9c 1 @s9y 1 @s9e 1 @s9p 0.9
+s1 gP_4 M3 g H3 @s9c 1 @s9y 1 @s9e 1 @s9p 0.9
+s1 gP_5 M3 g H3 @s9c 1 @s9y 1 @s9e 1 @s9p 0.9
+s1 gP_6 M3 g H3 @s9c 1 @s9y 1 @s9e 1 @s9p 0.9
+s1 gP_7 M3 g H3 @s9c 1 @s9y 1 @s9e 1 @s9p 0.9
+s1 gP_8 M3 g H3 @s9c 1 @s9y 1 @s9e 1 @s9p 0.9
+s1 pD M3 q H3 @s9dg 1 @s7kp 3,100
+s1 pE M3 q H3 @s9dg 1 @s7kp 3,100
+s1 pA M3 q H3 @s9c 1 @s9y 1 @s9e 1 @s9dg 1 @s7kp 3,100
+s1 pP M3 q H3 @s9c 1 @s9y 1 @s9e 1 @s9p 0.9 @s9dg 1 @s7kp 3,100
