@@ -95,3 +95,13 @@ s2 zmGF F z E --gq_mass @e1mf 0.1
 s2 zmEF F z E @e1mf 0.1
 s2 zmGB B z E --gq_mass @e1mf 0.1
 s2 zmEB B z E @e1mf 0.1
+# s3 대조 (s2 에서 E + M1 (--gq_mass 없이) 도 wolf 7/10 발산 -> 같은 커밋·세션의 E 바탕과 훅 무간섭 확인): cW = E (절 CM39 T2 와 같은 명령, 훅 켬),
+#    hW = D 결정적 훅 켬 · 끔 (@nodg) -- 끝 해시를 절 CM37~39 의 D 결정적 4874cab9e7 과 대조
+s3 cW_1 W nd E
+s3 cW_2 W nd E
+s3 cW_3 W nd E
+s3 cW_4 W nd E
+s3 cW_5 W nd E
+s3 cW_6 W nd E
+s3 hW_on W d D
+s3 hW_off W d D @nodg 1

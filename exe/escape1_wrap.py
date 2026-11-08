@@ -21,6 +21,9 @@ argv = sys.argv[1:]
 out = argv[argv.index("--out") + 1] if "--out" in argv else "."
 os.makedirs(out, exist_ok=True)
 MF = 0.0
+if "--nodg" in argv:                                                                   # 진단 훅 끔 표시 (환경 AF_E1_DG 로 이미 꺼짐) -- 인자만 뺌
+    i_ = argv.index("--nodg")
+    del argv[i_:i_ + 2]
 if "--e1mf" in argv:                                                                   # 절 CM42 후보 M1 (감싸개 인자, 실행기 앞에만)
     i_ = argv.index("--e1mf")
     MF = float(argv[i_ + 1])

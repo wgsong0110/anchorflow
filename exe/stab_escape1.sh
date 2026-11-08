@@ -55,7 +55,7 @@ run() {   # run 이름 씬 방식 카드 플래그
   b="$(base_of $s)"; [ -n "$(nw "$x")" ] && b="${b/--newton 2/--newton $(nw "$x")}" && x="$(echo "$x" | sed 's/--newton [0-9]*//g')"
   c="$b $(dg_of $s $md) $x"
   [ $md = u ] && pre="AF_S3_UL=1"
-  case $md in z|p) ;; *) pre="$pre AF_E1_DG=1";; esac                                   # 절 CM42 진단 (결과 불변; 단독 시간 판은 끔)
+  case $md in z|p) ;; *) case " $5 " in *" @nodg "*) ;; *) pre="$pre AF_E1_DG=1";; esac;; esac   # @nodg 1 = 진단 훅 끔 (훅 무간섭 대조)                                   # 절 CM42 진단 (결과 불변; 단독 시간 판은 끔)
   c="exe/escape1_wrap.py $wo $c"
   [ $md = p ] && case $s in M*) c="exe/speed1_prof.py $c";; esac
   rm -rf $O/$n; mkdir -p $O/$n; echo "$pre $PY -u $c --out $O/$n" > $O/$n/cmd.txt
