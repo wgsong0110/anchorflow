@@ -754,6 +754,11 @@ def install(out, o=0, lean=0, prof=None, b=0, r=0, rw=0):
         S5.ov_install()
     if C.r:
         r_install()
+    if C.rw:                                                                               # cupy int64 채우기 커널을 미리 적재 (첫 Rw 쓰기 프레임에 컴파일 ~15 ms 가 끼지 않게; 풀이와 무관한 빈 배열)
+        import cupy as cp
+        z_ = cp.zeros(1, dtype=cp.int64)
+        z_[0] = 1
+        cp.cuda.get_current_stream().synchronize()
     _counters()
     frame_install(out)
     print(f"[절 CM65] speed6 켬 겹치기 {C.o} 가벼운 판 {C.lean} 백업 한 번 {C.b} 렌더 밖으로 {C.r} 벽시계 렌더 몫 {C.rw} 프로파일 {C.prof} 시뮬 스트림 {torch.cuda.current_stream()}", flush=True)

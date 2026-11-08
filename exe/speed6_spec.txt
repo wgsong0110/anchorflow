@@ -119,3 +119,17 @@ s4 gF_5 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
 s4 gF_6 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
 s4 gF_7 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
 s4 gF_8 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+# s5 최종 후보 다시 (s4 는 첫 Rw 쓰기 프레임 (f5) 에 cupy int64 채우기 커널 컴파일 ~15 ms 가 낌 -> 설치 때 미리 적재): 다섯 씬 단독 a · b + 수박 비결정 8 판
+s5 zGM M3 z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s5 zGL L z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s5 zGW W z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s5 zGF F z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s5 zGB B z Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s5 gG_1 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s5 gG_2 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s5 gG_3 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s5 gG_4 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s5 gG_5 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s5 gG_6 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s5 gG_7 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
+s5 gG_8 M3 g Gp @s6o 1 @s6l 1 @s6b 1 @s6rw 1
