@@ -30,3 +30,14 @@ c1 lM_3 M3 g E --mlow 0
 c1 lM_4 M3 g E --mlow 0
 c1 dM_5 M3 g E
 c1 dM_6 M3 g E
+# g0k 연기: 후보 G (@e2g 1, G2P 노드 질량 가중 보간 -- 입자 속도·변위·가속도 = Σ w m_n (·) / Σ w m_n)
+g0k kG M3 g E @e2g 1 --frames 14
+# g1 수박 비결정: G 8 판 (진단 D2)
+g1 gM_1 M3 g E @e2g 1
+g1 gM_2 M3 g E @e2g 1
+g1 gM_3 M3 g E @e2g 1
+g1 gM_4 M3 g E @e2g 1
+g1 gM_5 M3 g E @e2g 1
+g1 gM_6 M3 g E @e2g 1
+g1 gM_7 M3 g E @e2g 1
+g1 gM_8 M3 g E @e2g 1
