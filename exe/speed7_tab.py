@@ -123,6 +123,31 @@ for st, n, s, md, x in spec:
         runs.append((st, n, s, md, x))
 
 print("# 절 CM72 speed7 표\n")
+# ---- (0) 최종 요약 (s6: 씬마다 H · H + 가속 같은 카드 나란히 a·b) ----
+def _row0(n):
+    F = frames(n)
+    if not F:
+        return None
+    tot = [q.get("a", float("nan")) + q.get("b", 0.0) + q.get("c", 0.0) if "b" in q else None for q in F]
+    W = [q.get("W") for q in F]
+    return dict(tot=stat(tot), W=stat(W), Wmed=stt.median([w for w in W if w is not None]) if any(w is not None for w in W) else None,
+                T=mean([q.get("T") for q in F]), WT=mean([q["W"] - q["T"] for q in F if q.get("W") is not None and q.get("T") is not None]), err=err(n), load=load(n), res=res(n))
+
+
+S6R = [(st, n, s, md, x) for st, n, s, md, x in spec if st == "s6" and md == "z"]
+if S6R:
+    print("## (0) 최종 요약 -- 다섯 씬 렌더 포함 벽시계 단독 (s6, 같은 카드에 H · H + 가속 나란히, a · b; 평균 / 최악 / > 16.7 프레임 수, 프레임 3~; ms)\n")
+    print("| 씬 | 판 | GPU 합 a+b+c | **벽시계 W** | W 중앙 | 예산 시계 T 평균 | W − T 평균 | 오차 % | 결과 | 부하 |")
+    print("|---|---|---|---|---|---|---|---|---|---|")
+    for st, n, s, md, x in S6R:
+        for r in ("a", "b"):
+            q = _row0(f"{n}_{r}")
+            if q is None:
+                print(f"| {SCN.get(s, s)} | {n}_{r} | - | - | - | - | - | - | {res(n + '_' + r)} | - |")
+                continue
+            print(f"| {SCN.get(s, s)} | {n}_{r} ({'H' if n.startswith('xH') else 'H + 가속'}) | {q['tot']} | **{q['W']}** | {fmt(q['Wmed'])} | {fmt(q['T'])} | {fmt(q['WT'])} | {fmt(q['err'])} | {q['res']} | {q['load']} |")
+    print()
+
 print("## (1) 렌더 포함 프레임 시간: GPU 합 a+b+c 대 벽시계 W (평균 / 최악 / > 16.7 프레임 수, 프레임 3~; ms)\n")
 print("| 단계 | 판 | 씬 | 플래그 | 결과 | 오차 % | **GPU 합 a+b+c** | **벽시계 W** | 시뮬 스트림 간격 Ws | 시뮬 a 평균 | 예산 시계 T 평균 | W − T 평균 | Rw 몫 평균 | per (GPU 시각) 평균 | 호스트 안 host 평균 | 프레임 사이 gap 평균 | 지연 lat 평균 | 래스터 GPU craw | 시작 늦음 lag 평균 | 그래프 재생 ng | 동기화 nsync | 백업 재사용 | 부하 |")
 print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
