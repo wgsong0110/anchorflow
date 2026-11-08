@@ -114,9 +114,11 @@ def lxify(src):
         E = k[c0 + len("float yy = "):c1]
         assert E.lstrip().startswith("Ut[n*3+a]"), ("wolfh6 (L'): yy 식", nm, E)
         k = k[:c0] + "float yy = (sw6_ > 0.f) ? (U[n*3+a] + ex6_[a]) : (" + E + ")" + k[c1:]
-        dev = "" if "float w6_nbr(" in src else LX_DEV                                     # 같은 모듈에 floor_n 둘 (재질 판 = mt_ + ao_) -- 장치 함수는 한 번만
-        src = src[:i] + dev + k + src[j:]
+        src = src[:i] + k + src[j:]
         ST["nfl"] += 1
+    if "w6_nbr(IP" in src and "float w6_nbr(" not in src:                                       # 장치 함수는 모듈 첫머리에 한 번 (재질 판 모듈엔 floor_n 이 둘 -- mt_·ao_, 순서 무관)
+        assert src.count('extern "C" {') >= 1
+        src = src.replace('extern "C" {', 'extern "C" {\n' + LX_DEV, 1)
     return src
 
 
