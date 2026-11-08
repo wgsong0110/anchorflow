@@ -53,3 +53,6 @@ s3 zXM M3 z G @s4e 1e6 @s5o 1
 s4 zOmW W z G @s5o 1 @tb_m 1.6
 s4 zOmL L z G @s5o 1 @tb_m 1.6
 s4 zOmM M3 z G @s5o 1 @tb_m 1.6
+# s5 X3e4 후보 단독 다시 (s3 의 zXM 은 다른 카드에서 비결정 판 16 개가 돌던 중이라 노드 부하 큼) + X3e4 + 여유 1.6
+s5 zXM2 M3 z G @s4e 1e6 @s5o 1
+s5 zXmM M3 z G @s4e 1e6 @s5o 1 @tb_m 1.6
