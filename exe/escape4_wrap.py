@@ -140,6 +140,15 @@ if os.environ.get("AF_E5_DG", "0") == "1":
             rec.update(bar_end_max=float((dbar - dend).abs()[A1].max()) if bool(A1.any()) else None,
                        bar_pos_act_le0=int((A1 & (dbar > 0) & ~(dend > 0)).sum()), act_end_le0=int((A1 & ~(dend > 0)).sum()))
         rec.update(nbelow=int((ok & (hp1 < 0)).sum()), zmin=float(hp1[ok].min()) if bool(ok.any()) else None, inact=int((has & (bact == 0)).sum()))
+        bz = -hp1[ok & (hp1 < 0)]
+        if bz.numel():
+            qs = torch.quantile(bz[:: max(1, bz.numel() // 100000)].double(), torch.tensor([0.5, 0.9, 0.99], device=bz.device, dtype=torch.float64))
+            rec["below_q"] = [round(float(v), 5) for v in qs]                           # 바닥 밑 입자 깊이 중앙 · 90 · 99 백분위 m
+        if dq is not None and bool(has.any()):
+            nearf = has & (da0 < 0.05)                                                  # 바닥 5 cm 안 표본점의 δ 분포 (진단 집계 범위만)
+            if bool(nearf.any()):
+                qs = torch.quantile(dl[nearf], torch.tensor([0.01, 0.5, 0.99], device=dl.device, dtype=torch.float64))
+                rec["dnear_q"] = [round(float(v), 5) for v in qs]
         # 고정 노드 (pm 2 = m_n < mthr, 관성 예측에 묶임) 몫: 비활성 표본점 (W̄ 무게) · 깊은 입자 (바닥 밑 한 칸 넘음, 입자 B-스플라인 무게)
         pmv = getattr(s, "pm", None)
         if pmv is not None:
