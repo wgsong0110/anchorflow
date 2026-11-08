@@ -1,0 +1,32 @@
+# 절 CM44 묶음 wmshape3 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_wmshape3.sh). 수박 M3 = 셀 3 옛 실행기 (절 CM40·CM41 바탕 그대로).
+# BW4 = 절 CM41 최선 판 = 공통 후보 D + --rm_sub 16 + 첫 접촉 뉴턴 20 + 에너지 조건 (--ws2_fc 20,20 --ws2_fcn 2) + 충격 창 4 (--ws2_win 4)
+# 방식: r = --erec + 진단 --wsh_rec 30 --wsh_sv + --ws2 1 (결과 불변) · z = 단독 시간 (--erec 만, 카드 하나에 차례로 a·b)
+# 후보 (lib/anchorflow/fem_wmshape3.py; 수렴 안 한 걸음 = 절 CM24 덜 풀린 걸음 판정 --ws3 2, 또는 허용치 εN --ws3 1):
+#   V1 = BW4 + 충격 창 뒤 수렴 안 한 걸음 소성 미룸 · V2 = BW4 + 충격 창 뒤 수렴 안 한 걸음 손상 변수 고정 (RM 투영은 함) · V3 = BW4 + 모든 걸음 소성 미룸 · VN = BW4 + εN 판정 미룸 (모든 걸음)
+# s0 연기 (12 프레임: 창 f4~f7 뒤 켜짐 확인)
+s0 p_v1 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2 --ws3_win 1 --frames 12
+s0 p_v2 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2 --ws3_win 1 --ws3_lj 1 --frames 12
+s0 p_vn M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 1 --frames 12
+# s1 판정 (비결정 4 번; VN 은 2 번) + 단독 시간
+s1 BW4_1 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4
+s1 BW4_2 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4
+s1 BW4_3 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4
+s1 BW4_4 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4
+s1 V1_1 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2 --ws3_win 1
+s1 V1_2 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2 --ws3_win 1
+s1 V1_3 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2 --ws3_win 1
+s1 V1_4 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2 --ws3_win 1
+s1 V2_1 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2 --ws3_win 1 --ws3_lj 1
+s1 V2_2 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2 --ws3_win 1 --ws3_lj 1
+s1 V2_3 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2 --ws3_win 1 --ws3_lj 1
+s1 V2_4 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2 --ws3_win 1 --ws3_lj 1
+s1 V3_1 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2
+s1 V3_2 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2
+s1 V3_3 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2
+s1 V3_4 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2
+s1 VN_1 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 1
+s1 VN_2 M3 r --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 1
+s1 zBW4 M3 z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4
+s1 zV1 M3 z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2 --ws3_win 1
+s1 zV2 M3 z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2 --ws3_win 1 --ws3_lj 1
+s1 zV3 M3 z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 --rm_sub 16 --ws2_fc 20,20 --ws2_fcn 2 --ws2_win 4 --ws3 2

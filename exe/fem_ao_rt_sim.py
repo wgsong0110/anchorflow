@@ -165,6 +165,9 @@ ap.add_argument("--ws2_fc", default="", help="절 CM41 후보 (b): 'N,C' 첫 접
 ap.add_argument("--ws2_fch", type=float, default=0.02, help="절 CM41 (b): 첫 접촉 = 프레임 끝 입자 최저 높이 < 이 값 (m) 이 처음인 프레임")
 ap.add_argument("--ws2_fctol", type=float, default=0.01, help="절 CM41 (b): 받는 조건 E 끝 <= E 시작 + 이 값 (J)")
 ap.add_argument("--ws2_fcn", type=int, default=1, help="절 CM41 (b): 첫 접촉부터 이 프레임 수")
+ap.add_argument("--ws3", type=int, default=0, help="절 CM44 후보 (lib/anchorflow/fem_wmshape3.py): 수렴 안 한 걸음은 커밋에서 소성 상태 확정 안 함 -- 1 = 허용치 εN 판정, 2 = 절 CM24 덜 풀린 걸음 판정 (0 = 끔, 모듈 안 부름)")
+ap.add_argument("--ws3_lj", type=int, default=0, help="절 CM44: 1 = 미룸 대신 RM 투영은 하고 손상 변수 (ys·logJp·al) 만 걸음 시작 값 유지")
+ap.add_argument("--ws3_win", type=int, default=0, help="절 CM44: 1 = 절 CM41 충격 창 (--ws2_win) 끝난 다음 프레임부터만")
 a = ap.parse_args()
 if a.wrx:                                                                       # 절 CM38 후보 (소스 바꾸기는 모듈 만들기 전에)
     from anchorflow import fem_wmrx as WRX
@@ -180,6 +183,11 @@ if a.ws2 or a.ws2_eps > 0 or a.ws2_yc > 0 or a.ws2_fc or a.ws2_win:             
     assert a.rm_sub > 0 and (not a.ws2_fc or (a.wrx and a.wrx_col)), "절 CM41 은 --rm_sub 위 (후보 b 는 --wrx_col 위)"
     from anchorflow import fem_wmshape2 as WS2
     WS2.install(a)
+WS3 = None
+if a.ws3:                                                                        # 절 CM44 (소스·bind 감싸기, 끄면 안 부름)
+    assert not a.ws3_win or a.ws2_win, "--ws3_win 은 --ws2_win 위"
+    from anchorflow import fem_wmshape3 as WS3
+    WS3.install(a)
 if a.adaptK > 0:
     a.K = 8                                                                       # 버퍼·첫 캡처는 상한으로, 프레임마다 다시 정함
 dev = "cuda"
@@ -489,6 +497,8 @@ if a.wrd:                                                                       
 WSH = None
 if WS2 is not None:                                                                   # 절 CM41
     WS2.setup(S, mu, lam, cfg["g"], FL)
+if WS3 is not None:                                                                   # 절 CM44
+    WS3.setup(S)
 if a.wsh_rec:                                                                         # 절 CM40 진단 (읽기만)
     from anchorflow import fem_wmshape as WSHM
     WSH = WSHM.Rec(S, a.out, mu, lam, float(PRD["xi"]), d["x"][0], a.wsh_rec, a.wsh_sv)
@@ -670,6 +680,8 @@ for fi in range(L):
         c["wsh"] = WSH.frame(fi)
     if WS2 is not None:                                                               # 절 CM41 진단 (읽기만)
         c["ws2"] = WS2.frame(fi)
+    if WS3 is not None:                                                               # 절 CM44 (읽기 + 창 뒤 켜기)
+        c["ws3"] = WS3.frame(fi)
     if a.diag:
         c["diag"] = S.diag()
     if "it" in c:
