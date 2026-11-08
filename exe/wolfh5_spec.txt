@@ -40,3 +40,10 @@ s4 kSC0_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5gk0 1 @w5s 1 @w5c 1 @w5dg 1
 s4 kSC0_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5gk0 1 @w5s 1 @w5c 1 @w5dg 1
 s4 mSC0_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @g4m 0 @w5s 1 @w5c 1 @w5dg 1
 s4 mSC0_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @g4m 0 @w5s 1 @w5c 1 @w5dg 1
+# ---- s5 S_구속 + C 위 F-bar (절 CM68, 칸 압력 진동 지움) 4 판 · + ghost 강성 0 (진단) 2 판
+s5 fSC_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5fb 1 @w5s 1 @w5c 1 @w5dg 1 --dump_F
+s5 fSC_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5fb 1 @w5s 1 @w5c 1 @w5dg 1
+s5 fSC_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5fb 1 @w5s 1 @w5c 1 @w5dg 1
+s5 fSC_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5fb 1 @w5s 1 @w5c 1 @w5dg 1
+s5 fkSC_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5fb 1 @w5gk0 1 @w5s 1 @w5c 1 @w5dg 1
+s5 fkSC_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5fb 1 @w5gk0 1 @w5s 1 @w5c 1 @w5dg 1

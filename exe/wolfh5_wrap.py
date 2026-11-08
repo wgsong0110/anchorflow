@@ -6,6 +6,7 @@
   --w5c 1   C: 구속 받침 안 저질량 고정 노드를 구속 예측에 (Ũ 대신)
   --w5g 1   B_g: ghost penalty 면 중 순차 방출 구속 노드 (k_구속 < 1) 에 닿는 면 빼기
   --w5gk0 1 진단: ghost penalty 강성 0 (고스트 질량 그대로)
+  --w5fb 1  절 CM68 F-bar 를 같이 설치 (lib/anchorflow/fem_wolfh4.py fb)
   --w5s 1   S_구속: 순차 방출 구속 노드 몫을 정답 dx 격자 받침에서 (정답 노드 k_g -> 입자 κ_p -> 우리 노드 질량 가중)
 인자가 하나도 없으면 모듈을 안 부름 (mfix_wrap 그대로). 방출 매개 (축·끝 위치·반폭·앞면 속도·정답 dx) 는 --data 의 cfg 에서.
 """
@@ -51,6 +52,9 @@ _st = dict(done=False)
 def run_path(path, *a, **kw):
     if ON and not _st["done"] and os.path.basename(path) in ("fem_an_rt_sim.py",):
         _st["done"] = True
+        if CAND.get("fb", 0):                                                   # 절 CM68 F-bar (칸 평균 증분 체적) 를 같이 (모래 경로만)
+            from anchorflow import fem_wolfh4 as W4
+            W4.install(fb=1, dg=0, out=out)
         from anchorflow import fem_wolfh5 as W5
         W5.install(dg=CAND.get("dg", 0), s=CAND.get("s", 0), c=CAND.get("c", 0), g=CAND.get("g", 0), gk0=CAND.get("gk0", 0), out=out, rel=rel_of(argv[argv.index("--data") + 1]))
     return _orig(path, *a, **kw)
