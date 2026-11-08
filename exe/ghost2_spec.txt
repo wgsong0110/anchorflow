@@ -67,3 +67,57 @@ s1 m0_1 M3 g E @e3w 1 @g2 1
 s1 m0_2 M3 g E @e3w 1 @g2 1
 s1 m0_3 M3 g E @e3w 1 @g2 1
 s1 m0_4 M3 g E @e3w 1 @g2 1
+# s2 (1) 검사 다시 (ref_struct 고침): 커널·훅·유한차분·면 집합 (wolf 는 예산 끔 -- 끝까지 가게) + 결정적 해시 (W̄ 는 결정적 판 없음 -> E 대 E + ghost(g 0))
+s2 cW W nd E @e3w 1 @tb 1000 @g2 1e-4 @g2fd 1,5,13,20,30,40 @g2fs 1
+s2 cW1 W nd E @e3w 1 @g2 1e-1 @g2fd 5,20,40 @g2fs 1
+s2 cM M3 g E @e3w 1 @g2 1e-4 @g2fd 1,4,5,8,20,50 @g2fs 1
+s2 cM1 M3 g E @e3w 1 @g2 1e-1 @g2fd 4,5,8,50 @g2fs 1
+s2 cL L nd E @e3w 1 @g2 1e-4 @g2fd 1,20,60 @g2fs 1
+s2 cF F nd E @e3w 1 @g2 1e-4 @g2fd 1,60 @g2fs 1
+s2 cB B nd E @e3w 1 @g2 1e-4 @g2fd 1,150 @g2fs 1
+s2 dW_E W d E @tb 1000
+s2 dW_E2 W d E @tb 1000
+s2 dW_0 W d E @tb 1000 @g2 0
+s2 dL_E L d E @tb 1000
+s2 dL_0 L d E @tb 1000 @g2 0
+s2 dF_E F d E @tb 1000
+s2 dF_0 F d E @tb 1000 @g2 0
+# s3 (2) 수박 표본 늘림: 대조 4 판 + g 1e-1 4 판 + g 1e-2 4 판
+s3 mW_5 M3 g E @e3w 1
+s3 mW_6 M3 g E @e3w 1
+s3 mW_7 M3 g E @e3w 1
+s3 mW_8 M3 g E @e3w 1
+s3 m1_5 M3 g E @e3w 1 @g2 1e-1
+s3 m1_6 M3 g E @e3w 1 @g2 1e-1
+s3 m1_7 M3 g E @e3w 1 @g2 1e-1
+s3 m1_8 M3 g E @e3w 1 @g2 1e-1
+s3 m2_5 M3 g E @e3w 1 @g2 1e-2
+s3 m2_6 M3 g E @e3w 1 @g2 1e-2
+s3 m2_7 M3 g E @e3w 1 @g2 1e-2
+s3 m2_8 M3 g E @e3w 1 @g2 1e-2
+# s4 (3) 다른 씬 회귀 g 1e-1 (수박 튐 노드 속도·이탈이 준 g): E 대 E + W̄ + ghost(g 1e-1), 단독 시간 a · b
+s4 rL_E1 L nd E
+s4 rL_E2 L nd E
+s4 rL_g1 L nd E @e3w 1 @g2 1e-1
+s4 rL_g2 L nd E @e3w 1 @g2 1e-1
+s4 rL_g3 L nd E @e3w 1 @g2 1e-1
+s4 rF_E1 F nd E
+s4 rF_g1 F nd E @e3w 1 @g2 1e-1
+s4 rF_g2 F nd E @e3w 1 @g2 1e-1
+s4 rB_E1 B nd E
+s4 rB_g1 B nd E @e3w 1 @g2 1e-1
+s4 rB_g2 B nd E @e3w 1 @g2 1e-1
+s4 rW_E1 W nd E
+s4 rW_E2 W nd E
+s4 rW_g1 W nd E @e3w 1 @g2 1e-1
+s4 rW_g2 W nd E @e3w 1 @g2 1e-1
+s4 rW_g3 W nd E @e3w 1 @g2 1e-1
+s4 rW_g4 W nd E @e3w 1 @g2 1e-1
+s4 zL_E L z E
+s4 zL_g L z E @e3w 1 @g2 1e-1
+s4 zF_E F z E
+s4 zF_g F z E @e3w 1 @g2 1e-1
+s4 zB_E B z E
+s4 zB_g B z E @e3w 1 @g2 1e-1
+s4 zW_E W z E
+s4 zW_g W z E @e3w 1 @g2 1e-1

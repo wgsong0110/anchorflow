@@ -162,7 +162,7 @@ for stg in stages:
             e = e1s(n)
             mr = f"{eg(e['rmin'])} · {e['n4']} · {e['n6']}" if e else "-"
             es = f"{e['nfar']} · {e['dmax']:.3f} · {('f%d' % e['f0']) if e['f0'] else '-'}" if e else "-"
-            print(f"| {n} | {SCN.get(sc, sc)} | `{fl.strip()}` | {res(n)} | {fmt(err(n))} | {scene_metric(n, sc, r)} | {mr} | {es} | {max(x.get('nn', 0) for x in r) / 1e3:.0f} k | {tm(r)} | {nN(r)} |")
+            print(f"| {n} | {SCN.get(sc, sc)} | `{fl.strip()}` | {res(n)} | {fmt(err(n))} | {scene_metric(n, sc, r)} | {mr} | {es} | {max((x.get('nn', 0) for x in r), default=0) / 1e3:.0f} k | {tm(r)} | {nN(r)} |")
         print()
         # 이탈 시작 진단: 새 이탈 입자가 생긴 프레임 (판마다 처음 3 개)
         dl = []

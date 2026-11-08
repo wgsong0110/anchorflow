@@ -113,7 +113,13 @@ def install():
         k = f32(s._gpk)
         nf = 3 * int(s.capQc)
         G = (P(s.IP), P(s.cb), P(s.gpcnt), P(s.gpfl), k)
+        DT = bool(getattr(s, "det", False))                                                  # 결정적 판 (g = 0 대조만): blocksum_add 가 AO_PART 칸 부분합으로 바뀌어 벌점 커널의 0 부분합이 그 칸을 덮음 -> 에너지·선탐색·Φ 벌점 커널은 안 부름 (g = 0 이라 더하는 값도 0)
         if name in ELEM:
+            if DT:
+                args = list(args)
+                if name == "rt_elem":
+                    args[8] = np.int32(int(args[8]) & ~4)
+                args = tuple(args)
             if name == "rt_elem":
                 mode = int(args[8]); y, E, f_, B = args[5], args[9], args[10], args[13]
                 _go(s, _ok, "gp_force", nf, G + (y, f_ if mode & 1 else P(None), B if mode & 8 else P(None), E if mode & 4 else P(None)), 128)
@@ -126,6 +132,8 @@ def install():
             _go(s, _ok, "gp_mv", nf, G + (args[6], args[7]), 128)
         elif name == "rt_bd":
             _go(s, _ok, "gp_force", nf, G[:4] + (k, P(s.y), P(None), args[6], P(None)), 128)
+        elif name in ("rt_elem_lsN", "en_phi_q") and DT:
+            return
         elif name == "rt_elem_lsN":
             assert len(args) >= 19, "ghost: rt_elem_lsN (i0·gate 없는 옛 판) 은 안 고침"
             yh, eta, dl, sk, pm, n0, n1, n2, SC, NC, i0, gate = args[5], args[6], args[7], args[8], args[9], args[10], args[11], args[12], args[15], args[16], args[17], args[18]
@@ -158,9 +166,9 @@ def ref_struct(s):
     n = [nb[0] - 2, nb[1] - 2, nb[2] - 2]
     nc = IP[11]
     dev = s.dev
-    cidx = s.cidx[:n[0] * n[1] * n[2]].long().view(*n)
+    cidx = s.cidx.reshape(-1)[:n[0] * n[1] * n[2]].long().view(*n)
     act = cidx >= 0
-    cb = s.cb[:nc * 3].long().view(nc, 3)
+    cb = s.cb.reshape(-1)[:nc * 3].long().view(nc, 3)
     pad = torch.nn.functional.pad((~act).double()[None, None], (1, 1, 1, 1, 1, 1), value=1.0)
     mx = torch.nn.functional.max_pool3d(pad, 3, stride=1)[0, 0]
     cutg = act & (mx > 0)
