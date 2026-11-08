@@ -1,0 +1,26 @@
+# 절 CM59 묶음 wmcrack1 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_wmcrack1.sh)
+# P1X = 공통 후보 F + 벌점 P1X (절 CM53 '@g4 1e-1 @g4t 1 @g4x 1'), 수박 M3 = 셀 3 + --sp2 31 + @inv 1 + --gq_mass. P1XK = P1X 에서 쪼개기·X3c 만 뺌 (--K 고정 진단).
+# 방식 r = 수박 기록 판 (--erec --wsh_rec 30 --wsh_sv 3,4,5,6,8,10,15,20,30,50,100 + 탄성 F 특이값 + 진단 D1·D2·D5; 결과 불변). @tb 1000 = 시간 예산 T2 사실상 끔 (진단).
+# s0k 연기 (8 프레임): 기록 훅·접촉 CFL·--ws3 (--rm_sub 없이)·--K 16 고정·갈래 기록 컴파일 확인
+s0k kP M3 r P1X --frames 8
+s0k kC M3 r P1X @wc1k 1 --ksplit 4 --frames 8
+s0k kV M3 r P1X @wc1k 1 --ksplit 4 --ws3 1 --ws3_lj 1 --ws3_pf 1 --frames 8
+s0k kK M3 r P1XK --K 16 @tb 1000 --frames 6
+s0k kR M3 r P1X --rm_sub 1 --ws2 1 --frames 6
+# s1 (1) 진단: P1X 그대로 2 판 · 갈래 기록 (--rm_sub 1 = n 1 등분, 절 CM41 'D 식') · 첫 접촉을 시간으로 푼 판 (--K 8·16·32 고정, 예산 끔; K 16 은 예산 켬도)
+s1 dP_1 M3 r P1X
+s1 dP_2 M3 r P1X
+s1 dR_1 M3 r P1X --rm_sub 1 --ws2 1
+s1 dK8_1 M3 r P1XK --K 8 @tb 1000
+s1 dK16_1 M3 r P1XK --K 16 @tb 1000
+s1 dK32_1 M3 r P1XK --K 32 @tb 1000
+s1 dK16t_1 M3 r P1XK --K 16
+s1 dK16w_1 M3 r P1XK --K 16 @tb 1000 --rm_sub 1 --ws2 1
+# s1 (2) 후보 미리보기 (각 2 판): C = 접촉 CFL (첫 시도 K = 접촉 입자 한 걸음 이동 ≤ 노드 한 칸, 상한 2^--ksplit), V = C + 수렴 (εN) 걸음만 손상 변수 확정, VF = V + 확정 안 한 프레임 입자 logJp 유지
+s1 C8_1 M3 r P1X @wc1k 1
+s1 C_1 M3 r P1X @wc1k 1 --ksplit 4
+s1 C_2 M3 r P1X @wc1k 1 --ksplit 4
+s1 V_1 M3 r P1X @wc1k 1 --ksplit 4 --ws3 1 --ws3_lj 1
+s1 V_2 M3 r P1X @wc1k 1 --ksplit 4 --ws3 1 --ws3_lj 1
+s1 VF_1 M3 r P1X @wc1k 1 --ksplit 4 --ws3 1 --ws3_lj 1 --ws3_pf 1
+s1 VF_2 M3 r P1X @wc1k 1 --ksplit 4 --ws3 1 --ws3_lj 1 --ws3_pf 1
