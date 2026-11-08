@@ -1,0 +1,79 @@
+# 절 CM69 묶음 lightg 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_lightg.sh; 낱말 F·P1X·A3 는 stab 의 dfl 이 펼침)
+# 바탕 G'' = G' + 절 CM67 (2) = 'F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1'. '@lg γ̄_L' = 노드 가벼움 연속 가중 벌점 (면 가중 1[P1X] + (γ̄_L/γ̄) max_{면 36 노드} m̄/(m+m̄)), '@lgdg 1' 진단 lg.jsonl, '@lgfd L' 유한차분 검사 (결과 불변).
+# s0k 연기 (8 프레임): 컴파일·훅·검사 (수박 두 γ̄_L, wolf·bread 검사, 레고·ficus m̄ 0 = 아무것도 안 함 확인)
+s0k k01 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1 @lgfd 3,7 @wfm -1 @wfd6 1 --frames 8
+s0k k1 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @lgfd 3,7 @wfm -1 @wfd6 1 --frames 8
+s0k kW W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @lgfd 3,7 --frames 8
+s0k kB B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @lgfd 3,7 --frames 8
+s0k kL L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 --frames 8
+s0k kF F nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 --frames 8
+# s1 (할 일 2): 수박 G'' + 가벼움 가중 γ̄_L 1e-1 · 1 각 16 판 (진단 D1·D2·D5·D6·lg) + 단독 렌더 포함 a · b
+s1 m01_1 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m01_2 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m01_3 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m01_4 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m01_5 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m01_6 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m01_7 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m01_8 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m01_9 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m01_10 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m01_11 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m01_12 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m01_13 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m01_14 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m01_15 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m01_16 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m1_1 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m1_2 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m1_3 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m1_4 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m1_5 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m1_6 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m1_7 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m1_8 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m1_9 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m1_10 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m1_11 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m1_12 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m1_13 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m1_14 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m1_15 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @wfm -1 @wfd6 1
+s1 m1_16 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1 @wfm -1 @wfd6 1
+s1 z01M3 M3 z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1
+s1 z1M3 M3 z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1
+# s2 (할 일 3): 다른 씬 회귀 -- 레고 8 · ficus 4 (m̄ 0: 정의상 G'' 와 같은 경로, γ̄_L 1 하나로 확인) · wolf·bread 각 4 판 × γ̄_L 둘 + 단독 렌더 포함 a · b
+s2 l1_1 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 l1_2 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 l1_3 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 l1_4 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 l1_5 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 l1_6 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 l1_7 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 l1_8 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 f1_1 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 f1_2 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 f1_3 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 f1_4 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 w01_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1
+s2 w01_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1
+s2 w01_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1
+s2 w01_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1
+s2 b01_1 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1
+s2 b01_2 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1
+s2 b01_3 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1
+s2 b01_4 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1 @lgdg 1
+s2 w1_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 w1_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 w1_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 w1_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 b1_1 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 b1_2 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 b1_3 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 b1_4 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1 @lgdg 1
+s2 z1L L z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1
+s2 z1F F z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1
+s2 z01W W z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1
+s2 z01B B z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1e-1
+s2 z1W W z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1
+s2 z1B B z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @lg 1
