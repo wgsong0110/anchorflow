@@ -121,3 +121,6 @@ s2 zLG2 L z E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
 s2 zWG2 W z E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
 s2 zFG2 F z E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
 s2 zBG2 B z E @e3w 1 @e5r 2 @e5a 2 @g3 3e-2
+# s3: ficus 주기 비 가르기 (γ̄ 1e-1) -- 질량 끔 (강성 + 빼기) · 빼기 끔 (강성 + 질량, 절 CM47 면)
+s3 rF_K_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1 @g3m 0
+s3 rF_NT_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g3 1e-1 @g3t 0
