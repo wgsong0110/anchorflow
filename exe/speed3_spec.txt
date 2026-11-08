@@ -261,3 +261,64 @@ s5 fzM_T2XI M3 z D @tb 16.7 @tb_m 0.8 @tb_w 2 @x3e 1e6 @inv 1
 s5 fzM_T2XID1 M3 z D @tb 16.7 @tb_m 0.8 @tb_w 2 @x3e 1e6 @inv 1 --ue_dil 1
 s5 fzL_T1 L z D @tb 16.7 @tb_m 0.8
 s5 fzW_T1 W z D @tb 16.7 @tb_m 0.8
+# s6 (이름 앞 g): 후보 W3 (경계 띠 속도 섞기, @w3 1) -- 이탈 확인 wolf·수박 둘 다 (조정자: 수박 D 도 10 판 중 4 판 이탈 발산)
+s6 gW_W3_1 W nd D @w3 1
+s6 gW_T2W3_1 W nd D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gW_W3_2 W nd D @w3 1
+s6 gW_T2W3_2 W nd D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gW_W3_3 W nd D @w3 1
+s6 gW_T2W3_3 W nd D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gW_W3_4 W nd D @w3 1
+s6 gW_T2W3_4 W nd D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gW_W3_5 W nd D @w3 1
+s6 gW_T2W3_5 W nd D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gW_W3_6 W nd D @w3 1
+s6 gW_T2W3_6 W nd D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gW_W3_7 W nd D @w3 1
+s6 gW_T2W3_7 W nd D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gW_W3_8 W nd D @w3 1
+s6 gW_T2W3_8 W nd D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gL_T2W3_1 L n D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gL_T2W3_2 L n D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gL_T2W3_3 L n D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gL_T2W3_4 L n D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gL_T2W3_5 L n D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gL_T2W3_6 L n D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gL_W3_1 L n D @w3 1
+s6 gL_W3_2 L n D @w3 1
+s6 gL_W3_3 L n D @w3 1
+s6 hL_W3 L d D @w3 1
+s6 hW_W3 W d D @w3 1
+s6 gF_T2W3_1 F nd D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gF_T2W3_2 F nd D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gB_T2W3_1 B nd D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gM_IW3_1 M3 b D @inv 1 @w3 1
+s6 gM_IW3_2 M3 b D @inv 1 @w3 1
+s6 gM_IW3_3 M3 b D @inv 1 @w3 1
+s6 gM_IW3_4 M3 b D @inv 1 @w3 1
+s6 gM_IW3_5 M3 b D @inv 1 @w3 1
+s6 gM_IW3_6 M3 b D @inv 1 @w3 1
+s6 gM_IW3_7 M3 b D @inv 1 @w3 1
+s6 gM_IW3_8 M3 b D @inv 1 @w3 1
+s6 gM_IW3_9 M3 b D @inv 1 @w3 1
+s6 gM_IW3_10 M3 b D @inv 1 @w3 1
+s6 gM_I_5 M3 b D @inv 1
+s6 gM_I_6 M3 b D @inv 1
+s6 gM_I_7 M3 b D @inv 1
+s6 gM_I_8 M3 b D @inv 1
+s6 gM_I_9 M3 b D @inv 1
+s6 gM_I_10 M3 b D @inv 1
+s6 gM_T2XIW3_1 M3 b D @tb 16.7 @tb_m 0.8 @tb_w 2 @x3e 1e6 @inv 1 @w3 1
+s6 gM_T2XIW3_2 M3 b D @tb 16.7 @tb_m 0.8 @tb_w 2 @x3e 1e6 @inv 1 @w3 1
+s6 gM_T2XIW3_3 M3 b D @tb 16.7 @tb_m 0.8 @tb_w 2 @x3e 1e6 @inv 1 @w3 1
+s6 gM_T2XIW3_4 M3 b D @tb 16.7 @tb_m 0.8 @tb_w 2 @x3e 1e6 @inv 1 @w3 1
+s6 gM_T2XIW3_5 M3 b D @tb 16.7 @tb_m 0.8 @tb_w 2 @x3e 1e6 @inv 1 @w3 1
+s6 gM_T2XIW3_6 M3 b D @tb 16.7 @tb_m 0.8 @tb_w 2 @x3e 1e6 @inv 1 @w3 1
+s6 gzL_T2W3 L z D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gzW_T2W3 W z D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gzF_T2W3 F z D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gzB_T2W3 B z D @tb 16.7 @tb_m 0.8 @tb_w 2 @w3 1
+s6 gzM_T2XIW3 M3 z D @tb 16.7 @tb_m 0.8 @tb_w 2 @x3e 1e6 @inv 1 @w3 1
+s6 gzM_IW3 M3 z D @inv 1 @w3 1
+s6k kL_W3 L n D @w3 1 --frames 6
+s6k kM_W3 M3 b D @inv 1 @w3 1 --frames 6

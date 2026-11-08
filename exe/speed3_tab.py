@@ -102,7 +102,7 @@ def scene_metric(n, sc, r):
         return f"f50 {fmt(com(r, 49), 1)} mm, {far}, 상자 {max(x.get('nn', 0) for x in r) / 1e3:.0f} k"
     if sc == "F":
         p = os.path.join(O, n, "period.txt")
-        return ("주기 " + " ".join(open(p).read().split()[-6:])) if os.path.exists(p) else "-"
+        return (open(p).read().strip().split("\n")[-1].split(":", 1)[-1].strip()) if os.path.exists(p) else "-"
     if sc.startswith("M"):
         Ev = [Ef(q) for q in r if Ef(q) is not None and math.isfinite(Ef(q))]
         vz = [q["en"]["vz"] for q in r if q["t"] >= 5 and q.get("en") and q["en"].get("vz") is not None and math.isfinite(q["en"]["vz"])]
@@ -184,3 +184,54 @@ for stg in stages:
                         d.pop("E_step_m_med_by_frame", None)
                         print(f"- {n} ({res(n)}, {scene_metric(n, 'W', rd(n) or [{}]) if rd(n) else '-'}): `{json.dumps(d, ensure_ascii=False)[:1500]}`")
         print()
+
+# ---- 후보별 묶음 (같은 단계·씬·플래그의 비결정 판; 이름 끝 _숫자 뺌)
+print("## 후보별 묶음 (비결정 판; 발산 = 메모리 넘침 포함)\n")
+print("| 단계 | 씬 | 플래그 | 판 수 | 발산 | 오차 % 평균 [범위] | 씬 지표 범위 | 최악 ms (동시) |")
+print("|---|---|---|---|---|---|---|---|")
+G = collections.OrderedDict()
+for st, n, sc, md, fl in spec:
+    if md in ("z", "p", "d", "u") or st.endswith("k"):
+        continue
+    G.setdefault((st, sc, fl.strip()), []).append(n)
+for (st, sc, fl), ns in G.items():
+    rs = [(n, rd(n)) for n in ns if rd(n) is not None]
+    if not rs:
+        continue
+    div = sum(1 for n, _ in rs if res(n).startswith("발산"))
+    E_ = [err(n) for n, _ in rs if err(n) is not None and not res(n).startswith("발산")]
+    mx = [max(q for _, q in msl(r)) for _, r in rs if msl(r)]
+    met = "-"
+    if sc == "W":
+        f50 = [com(r, 49) for _, r in rs if com(r, 49) is not None]
+        far, dm, box = [], [], []
+        for n, r in rs:
+            p = os.path.join(O, n, "bbox.txt")
+            if os.path.exists(p):
+                for l in open(p):
+                    if "pred.pt" in l:
+                        try:
+                            d_ = json.loads(l.split(" ", 1)[1]); far.append(max(z["nfar"] for z in d_.values())); dm.append(max(z["dmax"] for z in d_.values()))
+                        except Exception:
+                            pass
+            box.append(max(x.get("nn", 0) for x in r))
+        met = (f"f50 {min(f50):.0f}~{max(f50):.0f} mm, " if f50 else "") + (f"이탈 판 {sum(1 for q in far if q > 20)}/{len(far)} (최대 {max(far)} 개·{max(dm):.2f} m), " if far else "") + f"상자 최대 {max(box) / 1e3:.0f} k"
+    elif sc.startswith("M"):
+        lj = [lj_last(r) for _, r in rs]
+        lj = [100 * q for q in lj if q is not None]
+        Ev = []
+        for _, r in rs:
+            e_ = [Ef(q) for q in r if Ef(q) is not None and math.isfinite(Ef(q))]
+            if e_:
+                Ev.append(max(e_) - E0)
+        met = (f"손상 {min(lj):.1f}~{max(lj):.1f} % (중앙 {sorted(lj)[len(lj) // 2]:.1f}), " if lj else "") + (f"생긴 E {min(Ev):.1f}~{max(Ev):.1f} J" if Ev else "")
+    elif sc == "F":
+        ps = []
+        for n, _ in rs:
+            p = os.path.join(O, n, "period.txt")
+            if os.path.exists(p):
+                t_ = open(p).read().strip().split("\n")[-1]
+                ps.append(t_.split(":", 1)[1].strip() if ":" in t_ else t_)
+        met = "; ".join(sorted(set(ps))) or "-"
+    print(f"| {st} | {sc} | `{fl}` | {len(rs)} | {div} | " + (f"{sum(E_) / len(E_):.2f} [{min(E_):.2f}~{max(E_):.2f}]" if E_ else "-") + f" | {met} | {max(mx):.1f} |" if mx else " | - |")
+print()

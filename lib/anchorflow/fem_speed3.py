@@ -462,3 +462,89 @@ def inv_counts(s):
     o = [int(a[0]), int(b[0])]
     a[0] = 0; b[0] = 0
     return o
+
+
+# ======================= (후보 W3) --ue_loc 경계 띠 속도 섞기 (결과 바뀜, 정의 변경) =======================
+# 진단 (s1 uW1·uW5 + s4 다시 분석): 이탈이 시작하는 프레임 (f47) 에서 처음 떨어지는 입자는 모두 S 경계에 걸친 입자 (B-스플라인 27 노드에 S 와 S 밖이 섞임;
+#   몸 전체에선 25 %) 이고, 그 입자 둘레 노드 속도 퍼짐 중앙 1.4~2.8 m/s (몸 99 백분위 0.22~0.26), 둘레 노드 속도 최대 중앙 11.7~13.3 m/s (몸 99 백분위 1.8~3.1)
+#   -- 덜 풀린 걸음의 S (후퇴 오일러 v = (y − U)/h) 와 S 밖 (HHT v = α (y − z0)) 사이 노드 속도 불연속.
+# 정의: 덜 풀린 걸음에서 노드 후퇴 오일러 무게 w = max(1[n∈S], B(B(1_S))) (B = 27 이웃 평균, 두 번 -- S 밖 두 칸에 걸쳐 1 → 0 으로 줄어듦),
+#   v = w v_BE + (1 − w) v_HHT, U = w y + (1 − w) U_HHT, 가속도 기억 a = (1 − w) a_HHT. S 안 (w = 1) 은 지금과 같고, 덜 풀리지 않은 걸음은 그대로 HHT.
+W3_SRC = r"""
+extern "C" {
+__global__ void s3_box(const int* IP, const int* mi, const float* mf, float* out) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    int n1 = IP[7], n2 = IP[8], n0 = IP[6];
+    int i = n/(n1*n2), j = (n/n2) % n1, k = n % n2;
+    float s = 0.f;
+    for (int a=-1;a<=1;a++) for (int b=-1;b<=1;b++) for (int c=-1;c<=1;c++) {
+        int ii = i+a, jj = j+b, kk = k+c;
+        if (ii < 0 || jj < 0 || kk < 0 || ii >= n0 || jj >= n1 || kk >= n2) continue;
+        int m = (ii*n1 + jj)*n2 + kk;
+        s += mi ? (mi[m] != 0 ? 1.f : 0.f) : mf[m];
+    }
+    out[n] = s*(1.f/27.f);
+}
+}
+"""
+W3_UL = "    uf_ = uf_ && ulm[n];"
+
+
+def w3ify(src):
+    out = src
+    for nm, fxc in (("rt_ga_end_ufl", "!fx_"), ("ao_stepend_ufl", "true")):
+        key = "__global__ void " + nm + "("
+        if key not in out:
+            continue
+        i = out.index(key)
+        j = out.index("\n}\n", i) + 3
+        k = out[i:j]
+        assert k.count(W3_UL) == 1, nm
+        k = k.replace(W3_UL, "    int ufa_ = uf_; float w3_ = ufa_ ? fmaxf(ulm[n] != 0 ? 1.f : 0.f, S3_UW[n]) : 0.f; uf_ = 0;   // 절 CM39 W3: 경계 띠 섞기 무게", 1)
+        a0 = k.index("        if (uf_) a1 = 0.f;")
+        a1 = k.index("\n", a0) + 1
+        k = k[:a1] + ("        if (w3_ > 0.f && um != 2 && " + fxc + ") { float vb_ = (y[n*3+a] - u)/dt; v1 = w3_*vb_ + (1.f - w3_)*v1; U[n*3+a] = w3_*y[n*3+a] + (1.f - w3_)*U[n*3+a]; }\n"
+                      "        a1 *= (1.f - w3_);                                                     // 절 CM39 W3\n") + k[a1:]
+        out = out[:i] + k + out[j:]
+    return out.replace('extern "C" {', 'extern "C" {\n__device__ float* S3_UW;', 1)
+
+
+class W3:
+    mod = None
+    fn = None
+
+
+def w3_install():
+    import cupy as cp
+    from . import fem_an_rt as ART
+    from . import fem_ao_rt as AORT
+    from . import fem_rt_cuda as RTC
+    W3.mod = cp.RawModule(code=W3_SRC)
+    W3.fn = W3.mod.get_function("s3_box")
+    o_b = ART.build_src
+    ART.build_src = lambda *a, **kw: w3ify(o_b(*a, **kw))
+    o_s = AORT._src
+    AORT._src = lambda *a, **kw: w3ify(o_s(*a, **kw))
+
+    def pre(s):
+        n = int(s.capN)
+        if getattr(s, "_w3a", None) is None or s._w3a.numel() < n:
+            assert not torch.cuda.is_current_stream_capturing(), "W3 버퍼는 데움 record 에서"
+            s._w3a = torch.zeros(n, device=s.dev, dtype=torch.float32); s._w3b = torch.zeros(n, device=s.dev, dtype=torch.float32)
+            cp.ndarray((1,), dtype=cp.uint64, memptr=s.mod.get_global("S3_UW"))[0] = int(s._w3b.data_ptr())
+        P = lambda t: np.uint64(0 if t is None else t.data_ptr())
+        g = ((n + 255) // 256,)
+        with RTC._Stream():
+            W3.fn(g, (256,), (P(s.IP), P(s.ulm), P(None), P(s._w3a)))
+            W3.fn(g, (256,), (P(s.IP), P(None), P(s._w3a), P(s._w3b)))
+    for cls, nm in ((ART.RTSolver, "rt_ga_end_ufl"), (AORT.AORTSolver, "ao_stepend_ufl")):
+        def wrap(cls=cls, nm=nm):
+            ok = cls.k
+
+            def k(s, name, n, args, b=128):
+                if name == nm:
+                    pre(s)
+                return ok(s, name, n, args, b)
+            cls.k = k
+        wrap()

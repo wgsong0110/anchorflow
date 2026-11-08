@@ -6,6 +6,7 @@
   --tb_w W    1 = 반복 xf 시작 앞에서 자름 (후보 T), 2 = 반복 xf 판정 뒤에서 자름 (후보 T2: D 의 판정 잔차는 늘 잼)
   --w1 1      후보 W1: 덜 풀린 걸음의 가속도 기억 0 을 몸 전체로 (--ue_loc 국소 갱신 커널; 결과 바뀜)
   --inv M     가속 I (수박 옛 실행기, 결과 불변): ws_inv_q 에 f32 증명 빠른 길 (1), 확인 판 (2: 빠른 길 없이 증명 참 & k > 0 인 점 수를 셈)
+  --w3 1      후보 W3: 덜 풀린 걸음 후퇴 오일러 무게를 S 밖 두 칸에 걸쳐 1 → 0 으로 섞음 (경계 속도 불연속 없앰; 결과 바뀜)
   --x3e T     후보 X3e (옛 실행기): X3c 판정을 반복 0 시작 잔차 ‖g‖²/F² > T 로 앞당기고 걸음 시작부터만 다시 (결과 바뀜)
   환경 AF_S3_UL=1  wolf 입자 이탈 진단 (fem_speed3.ULDiag, 결과 불변; 새 실행기 --ksplit 판만 -- split_step 뒤 호스트 읽기)
 """
@@ -52,6 +53,9 @@ if "x3e" in opt:
 if opt.get("inv", "0") != "0":
     S3.inv_install(int(opt["inv"]))
     print(f"[절 CM39 가속 I] ws_inv_q f32 증명 판 {opt['inv']}", flush=True)
+if opt.get("w3", "0") != "0":
+    S3.w3_install()
+    print("[절 CM39 후보 W3] --ue_loc 경계 띠 속도 섞기", flush=True)
 if opt.get("w1", "0") != "0":
     S3.w1_install()
     print("[절 CM39 후보 W1] 덜 풀린 걸음 가속도 기억 0 몸 전체", flush=True)
