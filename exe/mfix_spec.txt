@@ -59,3 +59,28 @@ s1 m12_16 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf1 1 @mf2 1 @wfm -1 @wfd6 1
 s1 z1M3 M3 z F P1X A3 @hc 5 @rr 1 @tc 8 @mf1 1
 s1 z2M3 M3 z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
 s1 z12M3 M3 z F P1X A3 @hc 5 @rr 1 @tc 8 @mf1 1 @mf2 1
+# s2 (할 일 4): 부분 통과 후보 G' + (2) 다른 씬 회귀 -- 레고 8 · wolf·ficus·bread 각 4 판 + 단독 렌더 포함 a · b (레고·ficus 는 mthr 0, bread 는 장벽 없음이라 (2) 가 아무것도 안 함 -- 확인용)
+s2 l2_1 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 l2_2 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 l2_3 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 l2_4 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 l2_5 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 l2_6 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 l2_7 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 l2_8 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 w2_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 w2_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 w2_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 w2_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 f2_1 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 f2_2 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 f2_3 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 f2_4 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 b2_1 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 b2_2 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 b2_3 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 b2_4 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 z2L L z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 z2F F z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 z2W W z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
+s2 z2B B z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1
