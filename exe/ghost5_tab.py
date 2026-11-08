@@ -359,7 +359,7 @@ for st, n, sc, md, fl in spec:
         qe, qM = q.get("q_e"), q.get("q_M")
         qg = q.get("q_g") or {}
         cells = []
-        for m_ in ("0", "1", "2", "3", "4"):
+        for m_ in ("0", "1", "2", "3", "4", "5", "6"):
             d = qg.get(m_) or {}
             a = d.get("all")
             cells.append(f"{(a / qe) if (a is not None and qe) else float('nan'):.3g} ({(d.get('low', 0) / qe) if qe else float('nan'):.3g} / {(d.get('high', 0) / qe) if qe else float('nan'):.3g}) w̄ {fmt(d.get('w_mean'), 2)}")
@@ -367,7 +367,7 @@ for st, n, sc, md, fl in spec:
         out.append(f"| {n} | {SCN.get(sc, sc)} | {q['f']} | {qe if qe is not None else float('nan'):.3g} · {qM if qM is not None else float('nan'):.3g} | {nf.get('all')} ({nf.get('low')} / {nf.get('high')}) | " + " | ".join(cells) + " |")
 if out:
     print("## 절 CM55 헤시안 몫 -- 걸음 끝 y 방향 (q_g / q_e, 괄호 = 칸 밀도 < ρ̄ 면 / ≥ ρ̄ 면; 실행 면 표지에 가중 방식 0~4)\n")
-    print("| 판 | 씬 | 프레임 | q_e = yᵀK_e y · q_M = Σ m|y|²/τ² | 면 (밀도 낮음 / 높음) | 방식 0 (가중 없음) | 1 φmax(1−φmin) | 2 Frei w_max | 3 1−φ̄ | 4 φmax |")
-    print("|---|---|---|---|---|---|---|---|---|---|")
+    print("| 판 | 씬 | 프레임 | q_e = yᵀK_e y · q_M = Σ m|y|²/τ² | 면 (밀도 낮음 / 높음) | 방식 0 (가중 없음) | 1 φmax(1−φmin) | 2 Frei w_max | 3 1−φ̄ | 4 φmax | 5 1−φmin | 6 1−φmax |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
     print("\n".join(out))
     print()

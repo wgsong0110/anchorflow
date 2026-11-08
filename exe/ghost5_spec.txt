@@ -13,3 +13,33 @@ s0k kF2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g5w 2 @g4fd 1,5 --fr
 s0k dL0w L d E @tb 1000 @g4 0 @g4t 0 @g5w 1
 s0k dM_b M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4dump 5,8,10,12,14,16,20,30,50,100 @g5ed 5,10,14,20,50
 s0k dF_0x F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g4dump 60 @g5ed 15,30,45,60,90,120
+# s1 가르기 (가중 방식 고르기, 결과 판정 전): ficus 방식 0 + 구속 빼기 위 가중 1·2·3·5·6 각 2 판 (+ 가중 없음 1 판 더; @g5ed 60), 수박 방식 0 + 질량 위 가중 1·3·5·6 각 4 판 + 가중 없음 (b) 대조 2 판. 앞 단계 스크립트 = 수박 (b) 덤프 그림.
+s1 rF_W1_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g5w 1 @g5ed 60
+s1 rF_W1_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g5w 1 @g5ed 60
+s1 rF_W2_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g5w 2 @g5ed 60
+s1 rF_W2_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g5w 2 @g5ed 60
+s1 rF_W3_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g5w 3 @g5ed 60
+s1 rF_W3_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g5w 3 @g5ed 60
+s1 rF_W5_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g5w 5 @g5ed 60
+s1 rF_W5_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g5w 5 @g5ed 60
+s1 rF_W6_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g5w 6 @g5ed 60
+s1 rF_W6_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g5w 6 @g5ed 60
+s1 rF_W0_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g5ed 60
+s1 mW1_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 1
+s1 mW1_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 1
+s1 mW1_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 1
+s1 mW1_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 1
+s1 mW3_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 3
+s1 mW3_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 3
+s1 mW3_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 3
+s1 mW3_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 3
+s1 mW5_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 5
+s1 mW5_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 5
+s1 mW5_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 5
+s1 mW5_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 5
+s1 mW6_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 6
+s1 mW6_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 6
+s1 mW6_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 6
+s1 mW6_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g5w 6
+s1 mW0_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0
+s1 mW0_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0

@@ -1,5 +1,5 @@
 """절 CM55 묶음 ghost5 (fem_ghost4 복사 + 면 가중 AF_G5_W): 면 벌점 (강성·고스트 질량 모두) 에 면마다 가중 w_F (양쪽 칸 점유 φ = min(1, 칸 입자 부피 합 / h³) 의 연속 함수, 문턱 없음) 를 곱함.
-  w 방식 (AF_G5_W): 0 = 1 (ghost4 그대로) · 1 = φ_max (1 − φ_min) · 2 = Frei, Knoke, Steinbach, Wenske, Wick 2024 (arXiv:2402.00209 2.3 절) Σ_{K ∋ F} ½ w_max^{1−2κ_K} (w_max = AF_G5_WMAX, 그 논문 수치 예 3) · 3 = 1 − ½(φ_a + φ_b) · 4 = φ_max.
+  w 방식 (AF_G5_W): 0 = 1 (ghost4 그대로) · 1 = φ_max (1 − φ_min) · 2 = Frei, Knoke, Steinbach, Wenske, Wick 2024 (arXiv:2402.00209 2.3 절) Σ_{K ∋ F} ½ w_max^{1−2κ_K} (w_max = AF_G5_WMAX, 그 논문 수치 예 3) · 3 = 1 − ½(φ_a + φ_b) · 4 = φ_max · 5 = 1 − φ_min (덜 찬 칸의 결손 몫) · 6 = 1 − φ_max (더 찬 칸의 결손 몫).
   진단 (결과 불변): ediag = 걸음 끝 y 방향 헤시안 몫 (요소 탄성 yᵀK y · 벌점 k yᵀG_w y · 고스트 질량 · 집중 질량), 칸 밀도로 나눈 면 갈래별.
 원래 절 CM53 묶음 ghost4 (fem_ghost3 복사 + 면 한정 방식 AF_G4_THIN 0~3: 2 = 5x5x5 열림 (두꺼운 칸 = 체비셰프 반경 2 안 124 칸이 모두 활성인 칸의 반경 2 안), 3 = 내부 칸-경계 칸 면만; 환경 AF_G4_*).
 원래 절 CM51 묶음 ghost3: 작은 받침 안정화 ghost penalty 3 -- (1) 고스트 질량 (Stoter 외 2023) + (2) 얇은 구조 면 빼기 + (3) 칸별 커널 (가속). 감싸개 인자 없으면 이 모듈을 안 부름 = 소스·그래프 그대로.
@@ -77,7 +77,7 @@ __global__ void gq5_cell(const int* IP, const float* C, const float* Am, float* 
     phi[c] = fminf(V / fabsf(det), 1.f);
     rhoc[c] = (V > 0.f) ? C[(size_t)c*30 + 29] / V : 0.f;
 }
-// 면 가중 fw[c*3+a] (면 = 칸 c 와 +a 이웃 c2, 표지 비트가 선 면만): 1 = φ_max (1 − φ_min), 2 = Frei 외 2024 Σ_K ½ w_max^{1−2κ_K}, 3 = 1 − ½(φ_a + φ_b), 4 = φ_max, 그 밖 = 1
+// 면 가중 fw[c*3+a] (면 = 칸 c 와 +a 이웃 c2, 표지 비트가 선 면만): 1 = φ_max (1 − φ_min), 2 = Frei 외 2024 Σ_K ½ w_max^{1−2κ_K}, 3 = 1 − ½(φ_a + φ_b), 4 = φ_max, 5 = 1 − φ_min, 6 = 1 − φ_max, 그 밖 = 1
 __global__ void gq5_w(const int* IP, const int* cb, const int* cidx, const unsigned char* fm, const float* phi, int mode, float wmax, float* fw) {
 #ifdef AF_ADAPT
     if (AF_SKIP) return;
@@ -96,6 +96,8 @@ __global__ void gq5_w(const int* IP, const int* cb, const int* cidx, const unsig
             else if (mode == 2) w = 0.5f*powf(wmax, 1.f - 2.f*pa) + 0.5f*powf(wmax, 1.f - 2.f*pb);
             else if (mode == 3) w = 1.f - 0.5f*(pa + pb);
             else if (mode == 4) w = hi;
+            else if (mode == 5) w = 1.f - lo;
+            else if (mode == 6) w = 1.f - hi;
             else w = 1.f;
         }
         fw[c*3+a] = w;
@@ -461,6 +463,10 @@ def wfun(pa, pb, mode=None):
         return 1 - 0.5 * (pa + pb)
     if mode == 4:
         return hi
+    if mode == 5:
+        return 1 - lo
+    if mode == 6:
+        return 1 - hi
     return torch.ones_like(pa)
 
 
@@ -1069,7 +1075,7 @@ def ediag(s, fi, out):
         rs.update(nface=dict(all=nf(fmr), low=nf(fl), high=nf(fh)), ncell_low=int(lowc.sum()), rho_bar=float(s._g3rho))
         fwt = torch.zeros(capQc * 3, device=dev)
         qg = {}
-        for md in (0, 1, 2, 3, 4):
+        for md in (0, 1, 2, 3, 4, 5, 6):
             s.k("gq5_w", capQc, (P(s.IP), P(s.cb), P(s.cidx), P(fmr), P(s.g5phi), np.int32(md), np.float32(WMAX), P(fwt)), 128)
             d = {}
             for nm, fm_ in (("all", fmr), ("low", fl), ("high", fh)):
