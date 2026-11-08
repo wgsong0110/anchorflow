@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 argv = sys.argv[1:]
 out = argv[argv.index("--out") + 1] if "--out" in argv else "."
 os.makedirs(out, exist_ok=True)
-O7 = dict(s7kp="", s7nm="0", s7z="0", s7src="0")
+O7 = dict(s7kp="", s7nm="0", s7z="0", s7src="0", s7ovf="0")
 OPT = dict(s6w="0", s6o="0", s6l="0", s6prof="", s6b="0", s6r="0", s6rw="0")
 while argv and (argv[0].startswith("--s7") or argv[0].startswith("--s6")):
     k_ = argv[0][2:]
@@ -39,7 +39,7 @@ def run_path(path, *a, **kw):
                    b=int(float(OPT["s6b"])), r=int(float(OPT["s6r"])), rw=int(float(OPT["s6rw"])))
         if ON7:
             from anchorflow import fem_speed7 as S7
-            S7.install(out, kp=O7["s7kp"] or None, nm=int(float(O7["s7nm"])), z=int(float(O7["s7z"])), src=int(float(O7["s7src"])))
+            S7.install(out, kp=O7["s7kp"] or None, nm=int(float(O7["s7nm"])), z=int(float(O7["s7z"])), src=int(float(O7["s7src"])), ovf=int(float(O7["s7ovf"])))
     return _orig(path, *a, **kw)
 
 

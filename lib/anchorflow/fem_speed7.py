@@ -263,25 +263,47 @@ def frame_install():
 
 
 def src_install(out):
-    """(SRC) 진단 (--s7src 1, 결과 불변): cupy RawModule 소스 글자를 <out>/s7src_<n>.cu 로 (커널 글자 바꾸기 설계용)."""
+    """(SRC) 진단 (--s7src 1, 결과 불변): cupy RawModule 소스 글자를 <out>/s7src_<n>.cu 로 (커널 글자 바꾸기 설계용). RawModule 은 Cython 형이라 이름을 함수로 바꿔 끼움."""
     import cupy as cp
-    o_init = cp.RawModule.__init__
+    orig = cp.RawModule
     n_ = [0]
 
-    def __init__(self, *a, **kw):
+    def RawModule(*a, **kw):
         code = kw.get("code", a[0] if a else None)
         if isinstance(code, str) and n_[0] < 12:
             open(os.path.join(out, f"s7src_{n_[0]}.cu"), "w").write(code)
             n_[0] += 1
-        return o_init(self, *a, **kw)
-    cp.RawModule.__init__ = __init__
+        return orig(*a, **kw)
+    cp.RawModule = RawModule
 
 
-def install(out, kp=None, nm=0, z=0, src=0):
+def ovf_install(out):
+    """(OVF) 진단 (--s7ovf 1, 결과 불변): 새 실행기 넘침 다시 할당 때 (alloc(None) 부름) 넘침 비트 IP[13]·상자 수·용량 -> <out>/s7ovf.jsonl."""
+    from . import fem_an_rt as ART
+    f = open(os.path.join(out, "s7ovf.jsonl"), "w")
+    oa = ART.RTSolver.alloc
+
+    def alloc(s, need, *a, **kw):
+        try:
+            if need is None and getattr(s, "IP", None) is not None and getattr(s, "capN", None) is not None:
+                ip = [int(v) for v in s.IP[:16].tolist()]
+                ml = [{k: (int(v) if isinstance(v, (int, np.integer)) else None) for k, v in L.items() if k in ("capn", "capq", "cap")} for L in getattr(s, "ML", [])]
+                f.write(json.dumps(dict(ip=ip, capN=int(s.capN), capC=int(s.capC), capQc=int(s.capQc), cap_mul=float(s.cap_mul), ml=ml)) + "\n")
+                f.flush()
+        except Exception as e_:
+            f.write(json.dumps(dict(err=str(e_))) + "\n")
+            f.flush()
+        return oa(s, need, *a, **kw)
+    ART.RTSolver.alloc = alloc
+
+
+def install(out, kp=None, nm=0, z=0, src=0, ovf=0):
     """실행기를 runpy 로 띄우는 순간, speed6 설치 뒤 (가장 바깥) 에 부름."""
     C.out, C.nm, C.z = out, int(nm), int(z)
     if int(src):
         src_install(out)
+    if int(ovf):
+        ovf_install(out)
     if C.z:
         LZ.mode = C.z
         lz_install(out)

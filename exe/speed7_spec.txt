@@ -29,3 +29,5 @@ s2 vZ_6 M3 r Hc @s7nm 1 @s7z 2
 s2 vZ_7 M3 r Hc @s7nm 1 @s7z 2
 s2 vZ_8 M3 r Hc @s7nm 1 @s7z 2
 s2 zZM M3 z Hc @s7nm 1 @s7z 1
+# s2 bread f124 넘침 다시 할당: 어느 용량이 넘치는지 (비결정 1 판, 진단만)
+s2 oB B r Hc @s7nm 1 @s7ovf 1
