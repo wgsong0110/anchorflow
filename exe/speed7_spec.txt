@@ -16,3 +16,16 @@ s1 hB0 B h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1 @mf2 1
 s1 hB1 B h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1 @mf2 1 --cap_mul 3
 s1 hL0 L h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1 @mf2 1
 s1 hL1 L h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1 @mf2 1 @s7nm 1
+# s2k 지연 백업 Z 연기: 확인 판 (@s7z 2, 프레임 시작 실제 백업과 비트 대조) + 켬 (@s7z 1) + 소스 글자 받기 (@s7src 1)
+s2k kZ2 M3 q Hc @s7nm 1 @s7z 2 @s7src 1 --frames 30
+s2k kZ1 M3 q Hc @s7nm 1 @s7z 1 --frames 30
+# s2 지연 백업 확인 판 수박 비결정 8 판 (X3c·쪼개기·넘침 프레임 포함) + 단독 a·b (Z 켬)
+s2 vZ_1 M3 r Hc @s7nm 1 @s7z 2
+s2 vZ_2 M3 r Hc @s7nm 1 @s7z 2
+s2 vZ_3 M3 r Hc @s7nm 1 @s7z 2
+s2 vZ_4 M3 r Hc @s7nm 1 @s7z 2
+s2 vZ_5 M3 r Hc @s7nm 1 @s7z 2
+s2 vZ_6 M3 r Hc @s7nm 1 @s7z 2
+s2 vZ_7 M3 r Hc @s7nm 1 @s7z 2
+s2 vZ_8 M3 r Hc @s7nm 1 @s7z 2
+s2 zZM M3 z Hc @s7nm 1 @s7z 1

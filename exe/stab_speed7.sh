@@ -139,6 +139,7 @@ case $STG in *k)                                                                
     $PY -c "import json,sys; s=json.load(open('$O/$n/summary.json')); sys.exit(0 if s['frames_done'] >= 5 and not s.get('diverged') else 1)" 2>/dev/null || { OK=0; log "[연기] $n 5 프레임 못 감/발산"; }
     grep -q "절 CM65\] speed6 켬" $O/$n/log.txt || { OK=0; log "[연기] $n CM65 줄 없음"; }
     case " $x " in *" @s7"*) grep -q "절 CM72\] speed7 켬" $O/$n/log.txt || { OK=0; log "[연기] $n CM72 줄 없음"; };; esac
+    case " $x " in *" @s7z "*) [ -f $O/$n/s7z.jsonl ] && grep -q "절 CM72\] 지연 백업 Z 켬" $O/$n/log.txt || { OK=0; log "[연기] $n 지연 백업 줄·s7z.jsonl 없음"; };; esac
     case " $x " in *" @s7kp "*) [ -s $O/$n/s7trace.json.gz ] || { OK=0; log "[연기] $n s7trace 없음 $(head -c 600 $O/$n/s7kp_err.txt 2>/dev/null)"; };; esac
     case " $x " in *" @mf2 1"*|*" Gpp "*|*" Hc "*) grep -q "절 CM67\] mfix 켬" $O/$n/log.txt || { OK=0; log "[연기] $n CM67 mfix 줄 없음"; };; esac
     [ "$(wc -l < $O/$n/s6.jsonl 2>/dev/null || echo 0)" -ge 5 ] || { OK=0; log "[연기] $n s6.jsonl 없음"; }

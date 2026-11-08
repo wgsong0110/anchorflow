@@ -221,3 +221,14 @@ if KPR:
             KPm.md(os.path.join(O, n), r, 45)
         except Exception as e_:
             print(f"(커널 프로파일 {n} 실패: {e_})")
+
+ZR = [r for r in runs if os.path.exists(os.path.join(O, r[1], "s7z.jsonl"))]
+if ZR:
+    print("\n## (6) 지연 백업 Z 셈 (s7z.jsonl; 확인 판 @s7z 2 = 할 일 없는 되돌리기마다 지금 상태와 프레임 시작 실제 백업 비트 대조)\n")
+    print("| 판 | 플래그 | 결과 | 기록 프레임 | 지연 백업 | 실제로 뜸 | 할 일 없는 되돌리기 | 실제 되돌리기 | 비트 대조 | **다름 (되돌리기)** | **다름 (뜰 때)** | 다른 배열 |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    for st, n, s, md, x in ZR:
+        L = jl(n, "s7z.jsonl") or []
+        sm = {k: sum((q.get(k) or 0) for q in L) for k in ("lazy", "mat", "rs_noop", "rs_real", "cmp", "mis", "mis_mat")}
+        nm_ = sorted({a for q in L for b in (q.get("mis_names") or []) for a in b})
+        print(f"| {n} | {x} | {res(n)} | {len(L)} | {sm['lazy']} | {sm['mat']} | {sm['rs_noop']} | {sm['rs_real']} | {sm['cmp']} | {sm['mis']} | {sm['mis_mat']} | {','.join(nm_) or '-'} |")
