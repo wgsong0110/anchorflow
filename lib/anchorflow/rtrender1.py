@@ -406,7 +406,12 @@ def _frame(s, upd, ras):
                 assert G["sh_deg"] == 3 and G["shs_shape"][1:] == [16, 3], ("합친 커널은 SH 3 차 (N,16,3) 만", G["sh_deg"], G["shs_shape"])
             ST["G"] = G; ST["ready"] = True
             ST["log"] = open(os.path.join(C.out, "rr.jsonl"), "w")
-            meta = {k: v for k, v in G.items() if isinstance(v, (int, float, str, bool, list))}
+            meta = {}
+            for k, v in G.items():                                                     # json 으로 쓸 수 있는 것만 (R 같은 텐서 목록은 뺌)
+                try:
+                    json.dumps(v); meta[k] = v
+                except TypeError:
+                    pass
             meta.update(kind=C.kind, shape=C.shape, fast=C.fast, setup_s=time.perf_counter() - t0, Np=int(s.x.shape[0]))
             json.dump(meta, open(os.path.join(C.out, "rr_meta.json"), "w"), ensure_ascii=False, indent=1)
             print(f"[절 CM54 rtrender1] {C.kind} {C.shape} 가우시안 {G['NG']} 해상도 {G['Wd']}x{G['H']} 갱신 방식 {C.fast} (준비 {meta['setup_s']:.1f} s)", flush=True)
