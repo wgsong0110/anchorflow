@@ -30,6 +30,9 @@ c (--w5c 1) 정의 C (정의 변경, 구속 노드의 저질량 고정 자리): 
 g (--w5g 1) 정의 B_g (정의 변경, ghost penalty 면): P1X 는 고정 (cuboid) 구속 노드에 닿는 면을 뺌 (@g4x) -- 순차 방출 구속 노드 (k_구속 < 1) 는 고정 노드와 같은
     구속인데 면이 남아, 걸음 변위 법선 미분 점프 벌점 (강성 + 고스트 질량) 이 구속 받침 옆 풀린 칸의 상대 운동을 막음. B_g: 걸음마다 (mt_floor_n 뒤, 프레임 면 표지 위 멱등)
     면 36 노드 (칸 27 + 그 축 바깥 층 9) 중 k_구속 < 1 노드가 있는 면을 뺌 (절 CM63 gs·fem_ghost4 gq_fix 와 같은 배치). 문턱 없음 (k_구속 < 1 = 구속 노드 정의 그대로, mt_akb 와 같은 판정).
+w (--w5gw 1) 정의 B_gk (정의 변경, B_g 의 연속판): 면을 빼는 대신 ghost penalty 면 가중 (ghost6 g5w, 강성 + 고스트 질량 같은 가중) 을
+    fw_F = min_{n ∈ 면 36 노드} k_구속,n -- 면이 묶는 노드 중 가장 묶인 노드가 풀이에서 움직일 수 있는 몫만큼만 벌점 (k = 1 노드뿐인 면은 1 = P1X 그대로, k = 0 노드가 끼면 0 = B_g 와 같음).
+    걸음마다 mt_floor_n 뒤 덮어씀 (gq5_w 방식 99 = 1 을 프레임마다 깔고 그 위에). 문턱·클램프 없음.
 """
 import atexit
 import json
@@ -244,6 +247,26 @@ __global__ void w5_gfx(const int* IP, const int* cb, const float* kb, unsigned c
     }
     if (m2 != m) { fm[c] = (unsigned char)m2; atomicAdd(&cnt[0], nr); }
 }
+// B_gk: 면 가중 = 면 36 노드 k_구속 최솟값 (표지 비트가 선 면만)
+__global__ void w5_gwk(const int* IP, const int* cb, const float* kb, const unsigned char* fm, float* fw) {
+    int c = blockIdx.x*blockDim.x + threadIdx.x;
+    if (IP[13] || c >= IP[11]) return;
+    int m = fm[c];
+    if (!m) return;
+    int nb1 = IP[7], nb2 = IP[8]; int s1 = nb2, s0 = nb1*nb2;
+    int base = (cb[c*3]*nb1 + cb[c*3+1])*nb2 + cb[c*3+2];
+    float kc = 1.f;
+    for (int o=0;o<27;o++) kc = fminf(kc, kb[base + (o/9)*s0 + ((o/3)%3)*s1 + (o%3)]);
+    for (int a=0;a<3;a++) {
+        if (!(m & (1 << a))) continue;
+        float k = kc;
+        for (int i=0;i<3;i++) for (int j=0;j<3;j++) {
+            int id = (a == 0) ? (base + 3*s0 + i*s1 + j) : ((a == 1) ? (base + i*s0 + 3*s1 + j) : (base + i*s0 + j*s1 + 3));
+            k = fminf(k, kb[id]);
+        }
+        fw[c*3+a] = k;
+    }
+}
 __global__ void w5s_akb(const int* IP, const float* kb, float* ak) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= IP[9]) return;
@@ -339,10 +362,10 @@ def _bindfe(s_):
     ART.cp.ndarray((1,), dtype=ART.cp.int32, memptr=mod.get_global("W5_CF"))[0] = 1 if (ST["c"] and _rel(s_)) else 0
 
 
-def install(dg=0, s=0, out=".", rel=None, c=0, g=0, gk0=0):
+def install(dg=0, s=0, out=".", rel=None, c=0, g=0, gk0=0, gw=0):
     from . import fem_an_rt as ART
     from . import fem_mat_rt as MRT
-    ST.update(dg=int(dg), s=int(s), c=int(c), g=int(g), gk0=int(gk0), out=out, rel=rel or {}, dxg=float((rel or {}).get("dxg", 0.01)))
+    ST.update(dg=int(dg), s=int(s), c=int(c), g=int(g), gk0=int(gk0), gw=int(gw), out=out, rel=rel or {}, dxg=float((rel or {}).get("dxg", 0.01)))
     _ob = ART.build_src
     ART.build_src = lambda *a, **kw: patch_src(_ob(*a, **kw))
     i32, f32 = np.int32, np.float32
@@ -366,6 +389,10 @@ def install(dg=0, s=0, out=".", rel=None, c=0, g=0, gk0=0):
         try:
             _alloc(s_)
             on_rel = _rel(s_)
+            if ST["gw"] and on_rel and name == "rt_gauss":                                   # B_gk: ghost6 가 g5w 포인터를 커널에 넘기게 (방식 99 = 프레임마다 1 로 깖)
+                from . import fem_ghost6 as G6
+                if not G6.WMODE:
+                    G6.WMODE = 99
             if name == "rt_reset":
                 s_._w5ks, s_._w5toff = 0, 0.0
             if ST["dg"]:
@@ -379,6 +406,8 @@ def install(dg=0, s=0, out=".", rel=None, c=0, g=0, gk0=0):
             r = _k(s_, name, nn, args, b)
             if ST["g"] and on_rel and name == "mt_floor_n" and getattr(s_, "g3fm", None) is not None:   # B_g: 구속 노드 면 빼기 (걸음마다, k_구속 계산 뒤)
                 _k(s_, "w5_gfx", int(s_.capQc), (args[0], P(s_.cb), P(s_.kb), P(s_.g3fm), P(s_._w5gc)), 128)
+            if ST["gw"] and on_rel and name == "mt_floor_n" and getattr(s_, "g5w", None) is not None:   # B_gk: 면 가중 (걸음마다, k_구속 계산 뒤)
+                _k(s_, "w5_gwk", int(s_.capQc), (args[0], P(s_.cb), P(s_.kb), P(s_.g3fm), P(s_.g5w)), 128)
             if ST["dg"] and name == "ao_elem_s":
                 _k(s_, "w5_copy_d", int(s_.capN) * 3, (P(s_.IP), P(s_.f), P(s_._w5ft)), 256)
             if name == "ao_pbc_acc" and ST["s"] and on_rel:                                     # 프레임마다: 정답 격자 노드 질량·구속 질량 표본
@@ -448,16 +477,21 @@ def install(dg=0, s=0, out=".", rel=None, c=0, g=0, gk0=0):
             s_._gpk = 0.0
             return s_._gpk
         G6._k_of = _k_of
-    print(f"[절 CM70] wolfh5 켬: 진단 {ST['dg']} · S_구속 {ST['s']} · C {ST['c']} · B_g {ST['g']} · 강성 0 {ST['gk0']} · 방출 {ST['rel']}", flush=True)
+    print(f"[절 CM70] wolfh5 켬: 진단 {ST['dg']} · S_구속 {ST['s']} · C {ST['c']} · B_g {ST['g']} · 강성 0 {ST['gk0']} · B_gk {ST['gw']} · 방출 {ST['rel']}", flush=True)
 
     def _fin():
-        info = dict(dg=ST["dg"], s=ST["s"], c=ST["c"], g=ST["g"], rel=ST["rel"], **ST["info"])
+        info = dict(dg=ST["dg"], s=ST["s"], c=ST["c"], g=ST["g"], gw=ST["gw"], rel=ST["rel"], **ST["info"])
         sol = ST.get("sol")
         if sol is not None:
             try:
                 import torch
                 torch.cuda.synchronize()
                 info["rel_scene"] = _rel(sol)
+                if ST["gw"] and getattr(sol, "g5w", None) is not None:
+                    from . import fem_ghost6 as G6
+                    info["gw_mode"] = int(G6.WMODE)
+                    fw = sol.g5w[:int(sol.IP[11].item()) * 3]
+                    info.update(gw_lt1=int((fw < 1).sum()), gw_eq0=int((fw == 0).sum()))
                 if ST["g"] and getattr(sol, "_w5gc", None) is not None:
                     info["g_removed_faces_total"] = int(sol._w5gc[0].item())
                 if ST["s"] and getattr(sol, "has_pbc", False):

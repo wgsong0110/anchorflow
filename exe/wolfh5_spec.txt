@@ -47,3 +47,10 @@ s5 fSC_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5fb 1 @w5s 1 @w5c 1 @w5dg 1
 s5 fSC_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5fb 1 @w5s 1 @w5c 1 @w5dg 1
 s5 fkSC_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5fb 1 @w5gk0 1 @w5s 1 @w5c 1 @w5dg 1
 s5 fkSC_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5fb 1 @w5gk0 1 @w5s 1 @w5c 1 @w5dg 1
+# ---- s6 정의 B_gk (ghost 면 가중 = 면 36 노드 k_구속 최솟값): S_구속 + C + B_gk 4 판 · C + B_gk (기본 구속 몫) 2 판
+s6 wSC_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5gw 1 @w5dg 1 --dump_F
+s6 wSC_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5gw 1 @w5dg 1
+s6 wSC_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5gw 1 @w5dg 1
+s6 wSC_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5gw 1 @w5dg 1
+s6 wC_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5c 1 @w5gw 1 @w5dg 1
+s6 wC_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5c 1 @w5gw 1 @w5dg 1
