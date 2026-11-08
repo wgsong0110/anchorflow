@@ -19,6 +19,7 @@
 import json
 import os
 import re
+import time
 
 import numpy as np
 import torch
@@ -311,13 +312,72 @@ class X1:
     x3e = 0
 
 
+XB_SRC = r"""
+extern "C" {
+__global__ void xb_x(const int* IP, const int* ufl, const float* ufg, float T, int* out) {      // 'x': 넘침 · C3.nfail(K 1) > 0 (같은 식, float 비교)
+    out[0] = IP[13]; out[1] = (T > 0.f) ? ((ufl[0] > 0 && !(ufg[0] <= T)) ? 1 : 0) : ufl[0];
+}
+__global__ void xb_r(const int* IP, const double* SC, const double* CD, double T, int* out) {    // 'r': 넘침 · !(‖g‖² ≤ T F²) (반복 0 시작 잔차)
+    out[2] = IP[13]; out[3] = !(SC[1] <= T*CD[2]) ? 1 : 0;
+}
+__global__ void xb_cp(const float* src, float* dst, const int* IP, int ci, int mul) {           // 수만큼만 복사 (IP[ci]·mul 원소)
+    long long n = (long long)IP[ci]*mul;
+    for (long long i = (long long)blockIdx.x*blockDim.x + threadIdx.x; i < n; i += (long long)gridDim.x*blockDim.x) dst[i] = src[i];
+}
+}
+"""
+
+
+class XB:
+    mod = None
+    fn = {}
+    hb = []                                                                           # 프레임 안 경계 호스트 몫 [(종류, ms)] (1 ms 넘는 것)
+    hmax = 0.0
+
+
+def _xb(name, grid, args):
+    from . import fem_rt_cuda as RTC
+    if XB.mod is None:
+        import cupy as cp
+        XB.mod = cp.RawModule(code=XB_SRC)
+    f = XB.fn.get(name)
+    if f is None:
+        f = XB.fn[name] = XB.mod.get_function(name)
+    with RTC._Stream():
+        f((grid,), (256 if grid > 1 else 1,), args)
+
+
+def _hb(tsy):
+    if tsy is None:
+        return
+    dt = 1e3 * (time.perf_counter() - tsy[0])
+    XB.hmax = max(XB.hmax, dt)
+    if dt > 1.0:
+        XB.hb.append([tsy[1], round(dt, 2)])
+
+
+def _xb_buf(s):
+    if getattr(s, "_xbd", None) is None:
+        s._xbd = torch.zeros(4, device=s.dev, dtype=torch.int32)
+        s._xbh = torch.zeros(4, dtype=torch.int32).pin_memory()
+        s._xbn = s._xbh.numpy()
+
+
+def _d2h(s):
+    import cupy as cp
+    cp.cuda.runtime.memcpyAsync(int(s._xbh.data_ptr()), int(s._xbd.data_ptr()), 16, cp.cuda.runtime.memcpyDeviceToHost, int(torch.cuda.current_stream().cuda_stream))
+
+
+def _cpn(src, dst, IP, ci, mul):
+    """그래프 안 수만큼 복사 (용량 전체 copy_ 대신)."""
+    P_ = lambda t: np.uint64(t.data_ptr())
+    _xb("xb_cp", 1024, (P_(src), P_(dst), P_(IP), np.int32(ci), np.int32(mul)))
+
+
 def _x_read(s):
-    """'x' 경계 한 번 읽기: (넘침 IP[13], C3.nfail(K 1) > 0) -- nfail 과 같은 식을 장치에서."""
-    from . import fem_common3 as C3
-    T = float(getattr(s, "ksbig", 0.0) or 0.0)
-    fl, g2 = s.ufl[:1], s.ufg[:1]
-    c = ((fl > 0) & ~(g2 <= T)).int() if T > 0 else fl.int()
-    ov, cc = torch.cat((s.IP[13:14].int(), c)).tolist()
+    """'x' 경계 읽기: 그래프 안 xb_x 가 쓰고 고정 호스트 메모리로 복사해 둔 (넘침 IP[13], C3.nfail(K 1)) -- 호스트는 기다린 뒤 읽기만 (커널·할당 없음)."""
+    torch.cuda.current_stream().synchronize()
+    ov, cc = int(s._xbn[0]), int(s._xbn[1])
     s._x4coll = cc > 0
     return ov, cc
 
@@ -325,10 +385,9 @@ def _x_read(s):
 def _restore(s):
     import cupy as cp
     torch.cuda.synchronize()
-    s.bx.copy_(s._x2bx)
-    s.y.copy_(s._x2y)
+    _cpn(s._x2bx, s.bx, s.IP, 12, 4); _cpn(s._x2y, s.y, s.IP, 9, 3)
     if getattr(s, "_x2dq", None) is not None:
-        s.e5DQ.copy_(s._x2dq)
+        _cpn(s._x2dq, s.e5DQ, s.IP, 12, 1)
     s.cnt.zero_()
     if getattr(s, "aq", False):
         s.qb.zero_()
@@ -425,25 +484,33 @@ def x1_install(level=1, x3e=0.0):
             dq = getattr(s, "e5DQ", None)
             if dq is not None and (getattr(s, "_x2dq", None) is None or s._x2dq.numel() != dq.numel()):
                 s._x2dq = torch.empty_like(dq)
+        if not cap:
+            _xb_buf(s)
         return o_rec(s, t_frame, K)
 
     def k(s, name, n, args, b=128):
         if X1.level >= 2 and name == "ao_floor_n":
             s._x1ks = int(getattr(s, "_x1ks", -1)) + 1
             if s._x1ks == 0 and getattr(s, "_x1K", 0) == 1 and getattr(s, "wbar", None) is not None:
-                s._x2bx.copy_(s.bx); s._x2y.copy_(s.y)                                 # 바닥 노드 커널 앞 사본 (그래프 안): 표본점 버퍼 (R2 옮긴 뒤) · 관성 시작점 y · A2 δ
+                _cpn(s.bx, s._x2bx, s.IP, 12, 4); _cpn(s.y, s._x2y, s.IP, 9, 3)       # 바닥 노드 커널 앞 사본 (그래프 안, 수만큼): 표본점 버퍼 (R2 옮긴 뒤) · 관성 시작점 y · A2 δ
                 if getattr(s, "_x2dq", None) is not None:
-                    s._x2dq.copy_(s.e5DQ)
+                    _cpn(s.e5DQ, s._x2dq, s.IP, 12, 1)
                 if getattr(s, "_c3cap", None) is not None:
                     C3.mark(s, "s")
         r = o_k(s, name, n, args, b)
         if name == "uf_end" and getattr(s, "_c3cap", None) is not None and getattr(s, "_x1K", 0) == 1:
+            P_ = lambda t: np.uint64(t.data_ptr())
+            _xb("xb_x", 1, (P_(s.IP), P_(s.ufl), P_(s.ufg), np.float32(float(getattr(s, "ksbig", 0.0) or 0.0)), P_(s._xbd)))
+            _d2h(s)                                                                    # 그래프 안 장치 -> 고정 호스트 메모리 (memcpy 마디)
             C3.mark(s, "x")
         return r
 
     def ctl(s, op, it=0):
         r = o_ctl(s, op, it)
         if X1.T > 0 and op == 3 and it == 0 and getattr(s, "_c3cap", None) is not None and getattr(s, "_x1K", 0) == 1:
+            P_ = lambda t: np.uint64(t.data_ptr())
+            _xb("xb_r", 1, (P_(s.IP), P_(s.SC), P_(s.CD), np.float64(X1.T), P_(s._xbd)))
+            _d2h(s)
             C3.mark(s, "r")
         return r
     cls.record, cls.k, cls.ctl = record, k, ctl
@@ -475,12 +542,16 @@ def x1_install(level=1, x3e=0.0):
         si = self.k4.index("s") if "s" in self.k4 else None
         if st is not None:                                                             # 재생 시작 (step 의 e0 바로 뒤) -- 첫 시도 몫 시간 나누기용
             st["e0"] = torch.cuda.Event(enable_timing=True); st["e0"].record()
+        tsy = None                                                                     # 경계 호스트 몫 재기: 읽기 (동기) 끝 -> 다음 구간 띄움 끝
         while i < len(self.segs):
             cond, g = self.segs[i]
             kd = self.k4[i]
+            if tsy is not None and tsy[2] != i:
+                tsy = None
             if kd == "r" and st is not None and X1.T > 0 and not st["jump"] and st["won"] == 0 and si is not None:
-                g2, F2, ov = torch.cat((s.SC[1:2], s.CD[2:3], s.IP[13:14].double())).tolist()   # 한 번 읽기
-                if ov == 0 and not (g2 <= X1.T * F2):                                              # X3e4: 반복 0 시작 잔차로 무너짐 판정 -> 켜고 걸음 시작부터
+                torch.cuda.current_stream().synchronize()
+                tsy = (time.perf_counter(), "r", i)
+                if int(s._xbn[2]) == 0 and int(s._xbn[3]) == 1:                       # X3e4: 반복 0 시작 잔차로 무너짐 판정 (그래프 안 xb_r) -> 켜고 걸음 시작부터
                     ev = torch.cuda.Event(enable_timing=True); ev.record(); st["ev"] = ev
                     _restore(s)
                     from . import fem_speed3 as S3
@@ -496,7 +567,10 @@ def x1_install(level=1, x3e=0.0):
                 elif getattr(s, "_x2c", None) is not None:                              # X2 확인 (나): 다시 한 시도 (P2G 새로) 걸음 시작 앞 값 대 첫 시도 'x' 시점 값
                     X2C.rec.append(dict(kind="다시", **_x2c_cmp(s._x2c, _x2c_snap(s, False))))
                     s._x2c = None
-            if kd == "x" and _x_read(s)[0] == 0:
+            xr = _x_read(s) if kd == "x" else None
+            if xr is not None:
+                tsy = (time.perf_counter(), "x", i)
+            if kd == "x" and xr[0] == 0:
                 coll = s._x4coll
                 if X1.level == 3 and getattr(s, "_x1won", 1) == 0 and getattr(s, "_x2s", None) is not None:
                     xs = _x2c_snap(s, False)                                            # (가) 같은 시도 's' 대 'x' (bx 는 걸음 안에서 옮겨짐 -> 사본 대 's' 값을 따로)
@@ -520,17 +594,19 @@ def x1_install(level=1, x3e=0.0):
                 if coll and discard:
                     X1.hits += 1
                     return
-            if not cond:                                                                 # 아래는 fem_common3.SegGraph.replay 글자 그대로
+            if not cond:                                                                 # 아래는 fem_common3.SegGraph.replay 글자 그대로 (+ 경계 호스트 몫 기록)
                 skip = False
                 if mode == 2:
                     e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
                     e0.record(); g.replay(); e1.record(); cst["ev"].append((0, e0, e1))
                 else:
                     g.replay()
+                _hb(tsy); tsy = None
                 i += 1
                 continue
             if not skip:
                 skip = bool(int(s.CT[0]) != 0)
+                tsy = (time.perf_counter(), kd, i)
             cst["sk" if skip else "run"] += 1
             if mode == 1 and skip:
                 i += 1
@@ -540,6 +616,7 @@ def x1_install(level=1, x3e=0.0):
                 e0.record(); g.replay(); e1.record(); cst["ev"].append((2 if skip else 1, e0, e1))
             else:
                 g.replay()
+            _hb(tsy); tsy = None
             i += 1
     C3.SegGraph.__init__, C3.SegGraph.replay = __init__, replay
     o_on = WRX.on
@@ -771,6 +848,8 @@ def frame_install(out):
                 if YL4.mode:
                     rec["yl4"] = yl4_counts(s)
                 if X1.on:
+                    rec["hb"] = [round(XB.hmax, 3)] + XB.hb
+                    XB.hb, XB.hmax = [], 0.0
                     rec["x1"] = [X1.hits, X1.x2, X1.x3e]
                     X1.hits = X1.x2 = X1.x3e = 0
                     if X2C.rec:

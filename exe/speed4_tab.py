@@ -174,3 +174,37 @@ for d in dirs:
         b = [r.get(k) for r in redo if r.get(k) is not None]
         fa = lambda v: v[0] if isinstance(v, list) else v
         print(f"| {k} | {max((fa(v) for v in a), default='-')} | {sum(1 for v in a if fa(v) != 0)} | {max((fa(v) for v in b), default='-')} | {max((v[1] for v in b if isinstance(v, list)), default='-')} |")
+
+# ---- 수박 후보별 정확도 분포 (비결정 판 + 단독 판 모두; 진단·기록 켬 판 포함 -- 결과 불변 진단)
+import re as _re
+GRP = [("F (대조)", r"^(nF_\d|zF_[abc]|zF2_[abc]|zF3_[abc]|pF_a|qF_a|zFG1_[abc])$"),
+       ("A = S1+X1+X2(걸음 시작 앞부터)", r"^(nFA_\d|zFA_[abc]|pFA_a|cX_\d)$"),
+       ("A2 = S1+S2+X1+X2", r"^(nFA2_\d|zFA2_[abc]|pFA2_a|cY_\d|cX2_\d)$"),
+       ("A2 + G", r"^(nFA2G_\d|zFA2G_[abc]|pFA2G_a)$"),
+       ("AE = A + X3e4", r"^(nFAE_\d|zFAE_[abc]|pFAE_a)$"),
+       ("AE2 = A2 + X3e4", r"^(nFAE2_\d|zFAE2_[abc]|pFAE2[bcd]?_a)$"),
+       ("AE2 + G", r"^(nFAE2G_\d|zFAE2G_[abc]|pFAE2Gb?_a)$"),
+       ("A3 (최종 결과 불변)", r"^(nA3_\d|zA3_[abc]|pA3_a|cX3_\d)$"),
+       ("AE3 (최종 후보)", r"^(nAE3_\d|zAE3b?_[abc]|pAE3[bc]?_a)$")]
+print("\n## 수박 후보별 정확도 분포 (판마다 100 프레임; 손상 = logJp > 0 몫, 정답 끝 6.51 % · f5 4.41 · f6 6.94 · f8 7.08; 오차 = 평균 위치 오차 / 몸 크기)\n")
+print("| 후보 | 판 | 발산 | 오차 % 중앙 [범위] | 끝 손상 % 중앙 [범위] | f5 · f6 · f8 손상 % 중앙 | 노드 상자 최대 중앙 [최대] | 상자 > 50 만 판 | X3c·X3e4 다시 한 프레임 중앙 |")
+print("|---|---|---|---|---|---|---|---|---|")
+for gname, pat in GRP:
+    R = []
+    for d in dirs:
+        n = os.path.basename(d)
+        if not _re.match(pat, n):
+            continue
+        S = json.load(open(os.path.join(d, "summary.json"))) if os.path.exists(os.path.join(d, "summary.json")) else None
+        L = jl(os.path.join(d, "fem.jsonl"))
+        if S is None or not L:
+            continue
+        lj = {q["t"]: q["en"].get("lj0") for q in L if isinstance(q.get("en"), dict)}
+        R.append(dict(div=bool(S.get("diverged")), err=100 * S["err_mean_done"], lj=100 * (lj.get(len(L) - 1) or 0.0), f5=100 * (lj.get(4) or 0), f6=100 * (lj.get(5) or 0), f8=100 * (lj.get(7) or 0),
+                      nn=max(q.get("nn", 0) for q in L), redo=sum(1 for q in L if len((q.get("ks") or {}).get("tries", [])) > 1)))
+    if not R:
+        continue
+    md = lambda k: float(np.median([r[k] for r in R]))
+    rg = lambda k: f"{min(r[k] for r in R):.2f}~{max(r[k] for r in R):.2f}"
+    print(f"| {gname} | {len(R)} | {sum(r['div'] for r in R)} | {md('err'):.2f} [{rg('err')}] | {md('lj'):.2f} [{rg('lj')}] | {md('f5'):.2f} · {md('f6'):.2f} · {md('f8'):.2f} | "
+          f"{int(md('nn'))} [{max(r['nn'] for r in R)}] | {sum(1 for r in R if r['nn'] > 500000)} | {md('redo'):.0f} |")

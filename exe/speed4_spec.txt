@@ -107,3 +107,30 @@ s5 zLG L z F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
 s5 zWG W z F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
 s5 zFiG F z F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
 s5 zBG B z F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 @s4g 2
+# ---- s6k·s6: 경계 읽기를 그래프 안 (xb_x·xb_r -> 고정 호스트 메모리 memcpy 마디, 호스트는 기다린 뒤 읽기만) + 사본 복사를 수만큼 + 경계 호스트 몫 기록 (s4.jsonl hb)
+#      최종: A3 = @s4w 1 @s4y 1 @s4x 2 (결과 불변 전부), AE3 = A3 + @s4e 1e6 (후보)
+s6k kB M3 n F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 --frames 14
+s6k kB3 M3 n F @s4w 1 @s4x 3 --frames 14
+s6k kBp M3 p F @s4p 1 @s4w 1 @s4y 1 @s4x 2 @s4e 1e6 --frames 14
+s6 zF3 M3 z F
+s6 zA3 M3 z F @s4w 1 @s4y 1 @s4x 2
+s6 zAE3 M3 z F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s6 zAE3b M3 z F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s6 pAE3 M3 p F @s4p 1 @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s6 pAE3b M3 p F @s4p 1 @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s6 pAE3c M3 p F @s4p 1 @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s6 pA3 M3 p F @s4p 1 @s4w 1 @s4y 1 @s4x 2
+s6 cX3_1 M3 n F @s4w 1 @s4x 3
+s6 cX3_2 M3 n F @s4w 1 @s4x 3
+s6 nA3_1 M3 n F @s4w 1 @s4y 1 @s4x 2
+s6 nA3_2 M3 n F @s4w 1 @s4y 1 @s4x 2
+s6 nA3_3 M3 n F @s4w 1 @s4y 1 @s4x 2
+s6 nA3_4 M3 n F @s4w 1 @s4y 1 @s4x 2
+s6 nAE3_1 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s6 nAE3_2 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s6 nAE3_3 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s6 nAE3_4 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s6 nAE3_5 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s6 nAE3_6 M3 n F @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s6 hLDA3 L h D @tb 1000 @tb_m 0.8 @tb_w 2 @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
+s6 hWDA3 W h D @tb 1000 @tb_m 0.8 @tb_w 2 @s4w 1 @s4y 1 @s4x 2 @s4e 1e6
