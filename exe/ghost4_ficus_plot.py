@@ -1,4 +1,4 @@
-"""절 CM53 ficus 벌점 칸·면 위치 그림: python exe/ghost4_ficus_plot.py <g4cells_f*.npz> <출력.png> [제목]
+"""절 CM53 ficus 벌점 칸·면 위치 그림: python exe/ghost4_ficus_plot.py <g4cells_f*.npz> <출력.png> [제목] [x]
 칸 중심 (격자 좌표 IP[0:3] + cb + 1 -> 세계 A·y), 입자 (회색, 밀도 영역별 색), 방식 0~3 의 벌점 면이 걸린 칸 (면 표지 fm ≠ 0 인 칸과 그 +축 이웃 칸).
 영역 = 입자 밀도 (--region_density 의 ρ) 값별; 칸 영역 = 그 칸 안 입자의 가장 많은 영역. 표: 방식별 벌점 면 수를 영역별로 (면의 두 칸 영역 쌍).
 """
@@ -20,6 +20,7 @@ plt.rcParams["axes.unicode_minus"] = False
 
 p, out = sys.argv[1], sys.argv[2]
 title = sys.argv[3] if len(sys.argv) > 3 else p
+FX = len(sys.argv) > 4 and sys.argv[4] == "x"                                              # x = 구속 노드에 닿는 면 뺀 표지 (fmx*)
 d = np.load(p)
 IP, cb, A, x, rho, cut = d["IP"], d["cb"].astype(np.int64), d["A"].astype(np.float64), d["x"].astype(np.float64), d["rho"], d["cut"]
 Ai = np.linalg.inv(A)
@@ -68,7 +69,8 @@ NM = {0: "방식 0 (절 CM47 면 전부)", 1: "방식 1 (3x3x3 열림, 절 CM51)
 sub = np.random.default_rng(0).choice(len(x), min(len(x), 40000), replace=False)
 rows = []
 for t in range(4):
-    fm = d[f"fm{t}"] if f"fm{t}" in d else (d["fm"] if t == int(d["thin"]) else None)
+    kk = f"fmx{t}" if FX else f"fm{t}"
+    fm = d[kk] if kk in d else None
     if fm is None:
         continue
     a_, b_ = face_cells(fm.astype(np.int64))
@@ -88,7 +90,7 @@ for t in range(4):
         ax.scatter(xc[:, i0], xc[:, i1], s=1.5, c="0.6", alpha=0.3, label=f"활성 칸 {nc}")
         if len(pen):
             ax.scatter(xc[pen, i0], xc[pen, i1], s=10, c="red", label=f"벌점 면 칸 {len(pen)} (면 {len(a_)})")
-        ax.set_title(f"{NM[t]} · {lab}", fontsize=10)
+        ax.set_title(f"{NM[t]}{' + 구속 노드 면 빼기' if FX else ''} · {lab}", fontsize=9)
         ax.set_aspect("equal")
         ax.set_xlabel(["x", "y", "z"][i0] + " (m)"); ax.set_ylabel("z (m)")
         if t == 0:
