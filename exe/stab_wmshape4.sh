@@ -40,6 +40,7 @@ run() {   # run 이름 씬 방식 카드 플래그
   c="exe/wmshape4_wrap.py $w $b $(dg_of $md) $x"
   rm -rf $O/$n; mkdir -p $O/$n
   local pre=""; [ $md = r ] && pre="AF_E2_DG=1"
+  case "$5" in *"@e3dg 1"*) pre="$pre AF_E3_DG=1";; esac                             # 절 CM45 진단 D3 (결과 불변): 새로 바닥 밑 입자의 자기 표본점 높이·활성
   echo "$pre $PY -u $c --out $O/$n" > $O/$n/cmd.txt
   nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader > $O/$n/apps_at_start.txt 2>&1
   log "$n 카드 $g 시작"

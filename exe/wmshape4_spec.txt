@@ -44,3 +44,9 @@ s2 dV2NWT_1 M3 r V2N @w4t 1 @w4dg 3,4,5 @e3w 1 --frames 6
 s2 dV2NWT_2 M3 r V2N @w4t 1 @w4dg 3,4,5 @e3w 1 --frames 6
 s2 zV2NFWT M3 z V2NF @w4t 1 @e3w 1
 s2 zV2NWT M3 z V2N @w4t 1 @e3w 1
+# s3 (s1·s2 뒤): V2NF 발산 7 판 중 6 판이 입자 1~3 개 바닥 뚫음 (z −1~−11.5 m, 노드 4 천만) -- W̄ (--e3w 1, G 없음) 로도 V2NFW 4/6·V2NW 1/6 그대로 깊이 떨어짐
+#   -> 왜 W̄ 로도 뚫는지 진단 D3 (AF_E3_DG=1: 새로 바닥 밑 입자의 자기 표본점 d_bw·d_wq·d_pm·활성) 를 V2NF+W̄ 4 판에 (결과 불변)
+s3 V2NFWq_1 M3 r V2NF @e3w 1 @e3dg 1
+s3 V2NFWq_2 M3 r V2NF @e3w 1 @e3dg 1
+s3 V2NFWq_3 M3 r V2NF @e3w 1 @e3dg 1
+s3 V2NFWq_4 M3 r V2NF @e3w 1 @e3dg 1
