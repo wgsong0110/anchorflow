@@ -5,6 +5,7 @@
   --w5dg 1  진단 (결과 불변): 걸음마다 방출 앞면 거리 칸 x 높이 칸 별 구속 몫·노드 속도·재질 힘·ghost 힘 (입자) + 가우스 점 응력 (w5dg.json)
   --w5c 1   C: 구속 받침 안 저질량 고정 노드를 구속 예측에 (Ũ 대신)
   --w5g 1   B_g: ghost penalty 면 중 순차 방출 구속 노드 (k_구속 < 1) 에 닿는 면 빼기
+  --w5gk0 1 진단: ghost penalty 강성 0 (고스트 질량 그대로)
   --w5s 1   S_구속: 순차 방출 구속 노드 몫을 정답 dx 격자 받침에서 (정답 노드 k_g -> 입자 κ_p -> 우리 노드 질량 가중)
 인자가 하나도 없으면 모듈을 안 부름 (mfix_wrap 그대로). 방출 매개 (축·끝 위치·반폭·앞면 속도·정답 dx) 는 --data 의 cfg 에서.
 """
@@ -51,7 +52,7 @@ def run_path(path, *a, **kw):
     if ON and not _st["done"] and os.path.basename(path) in ("fem_an_rt_sim.py",):
         _st["done"] = True
         from anchorflow import fem_wolfh5 as W5
-        W5.install(dg=CAND.get("dg", 0), s=CAND.get("s", 0), c=CAND.get("c", 0), g=CAND.get("g", 0), out=out, rel=rel_of(argv[argv.index("--data") + 1]))
+        W5.install(dg=CAND.get("dg", 0), s=CAND.get("s", 0), c=CAND.get("c", 0), g=CAND.get("g", 0), gk0=CAND.get("gk0", 0), out=out, rel=rel_of(argv[argv.index("--data") + 1]))
     return _orig(path, *a, **kw)
 
 

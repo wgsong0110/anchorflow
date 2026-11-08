@@ -35,3 +35,8 @@ s3 bSCG_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5g 1 @w5dg 1
 s3 bSCG_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5c 1 @w5g 1 @w5dg 1
 s3 bCG_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5c 1 @w5g 1 @w5dg 1
 s3 bCG_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5c 1 @w5g 1 @w5dg 1
+# ---- s4 기전 대조 (진단): S_구속 + C 위에서 ghost penalty 강성만 0 ('@w5gk0 1', 고스트 질량 그대로) · 고스트 질량만 0 ('@g4m 0', 강성 그대로), 각 2 판
+s4 kSC0_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5gk0 1 @w5s 1 @w5c 1 @w5dg 1
+s4 kSC0_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5gk0 1 @w5s 1 @w5c 1 @w5dg 1
+s4 mSC0_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @g4m 0 @w5s 1 @w5c 1 @w5dg 1
+s4 mSC0_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @g4m 0 @w5s 1 @w5c 1 @w5dg 1

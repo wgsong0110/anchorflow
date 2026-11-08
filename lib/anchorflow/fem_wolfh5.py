@@ -339,10 +339,10 @@ def _bindfe(s_):
     ART.cp.ndarray((1,), dtype=ART.cp.int32, memptr=mod.get_global("W5_CF"))[0] = 1 if (ST["c"] and _rel(s_)) else 0
 
 
-def install(dg=0, s=0, out=".", rel=None, c=0, g=0):
+def install(dg=0, s=0, out=".", rel=None, c=0, g=0, gk0=0):
     from . import fem_an_rt as ART
     from . import fem_mat_rt as MRT
-    ST.update(dg=int(dg), s=int(s), c=int(c), g=int(g), out=out, rel=rel or {}, dxg=float((rel or {}).get("dxg", 0.01)))
+    ST.update(dg=int(dg), s=int(s), c=int(c), g=int(g), gk0=int(gk0), out=out, rel=rel or {}, dxg=float((rel or {}).get("dxg", 0.01)))
     _ob = ART.build_src
     ART.build_src = lambda *a, **kw: patch_src(_ob(*a, **kw))
     i32, f32 = np.int32, np.float32
@@ -435,7 +435,20 @@ def install(dg=0, s=0, out=".", rel=None, c=0, g=0):
             print(f"[절 CM70] S_구속 정답 격자 상자 {s_._w5g['G']} 노드 {s_._w5g['ng']} 표본 {s_._w5g['KS']}", flush=True)
         return r
     ART.RTSolver.step = step
-    print(f"[절 CM70] wolfh5 켬: 진단 {ST['dg']} · S_구속 {ST['s']} · C {ST['c']} · B_g {ST['g']} · 방출 {ST['rel']}", flush=True)
+    if ST.get("gk0"):                                                                    # 진단 (기전 대조): ghost penalty 강성 0, 고스트 질량 그대로 (절 CM63 gk0 와 같은 훅)
+        from . import fem_ghost6 as G6
+        _ok0 = G6._k_of
+
+        def _k_of(s_):
+            first = getattr(s_, "_w5k0", None) is None
+            _ok0(s_)
+            if first:
+                s_._w5k0 = float(s_._gpk)
+                print(f"[절 CM70] gk0: ghost penalty 강성 k {s_._gpk:.6g} -> 0 (고스트 질량 그대로)", flush=True)
+            s_._gpk = 0.0
+            return s_._gpk
+        G6._k_of = _k_of
+    print(f"[절 CM70] wolfh5 켬: 진단 {ST['dg']} · S_구속 {ST['s']} · C {ST['c']} · B_g {ST['g']} · 강성 0 {ST['gk0']} · 방출 {ST['rel']}", flush=True)
 
     def _fin():
         info = dict(dg=ST["dg"], s=ST["s"], c=ST["c"], g=ST["g"], rel=ST["rel"], **ST["info"])
