@@ -24,3 +24,5 @@ s1 mS_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3dg 1 @w2s 1 --fl_pt
 s1 mS_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3dg 1 @w2s 1 --fl_pt
 s1 mSN_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3dg 1 @w2s 1 @w2n 1 --fl_pt
 s1 mSN_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3dg 1 @w2s 1 @w2n 1 --fl_pt
+# ---- s2: 통과 후보 없음 -> 영상용 최선 판 (Y5 + S: f30 553~573 로 정답 573 과 가장 가까운 무너짐, 단 이탈) --dump_F 판; s3 = 렌더만 (exe/wolfh3_pre_s3.sh, 판 목록 없음). G' 칸은 절 CM63 vC_1 렌더 그대로
+s2 vY5S_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3y 1 @w3dg 1 @w2s 1 --fl_pt --dump_F
