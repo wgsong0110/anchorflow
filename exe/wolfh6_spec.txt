@@ -31,3 +31,9 @@ s2 SCKLX_1 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1 @w6x 1 --dump_F
 s2 SCKLX_2 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1 @w6x 1
 s2 SCKLX_3 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1 @w6x 1
 s2 SCKLX_4 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6l 1 @w6x 1
+# s2 결과: SCKX 3/4 · SCKLX 4/4 메모리 발산 -> 통과 후보 없음, 회귀 안 함.
+# s3: 기전 대조 (후보 아님) -- SCK 를 시간 예산 끔 '@tb 1000' (덜 풀린 걸음이 예산 탓인지) 2 판 + 영상용 SCKX --dump_F 2 판 (완주 판을 얻으려고; 무리 이름 vSCKX 로 따로)
+s3 tSCK_1 W nd H4n @w5s 1 @w5c 1 @w6k 1 @tb 1000
+s3 tSCK_2 W nd H4n @w5s 1 @w5c 1 @w6k 1 @tb 1000
+s3 vSCKX_1 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6x 1 --dump_F
+s3 vSCKX_2 W nd H4n @w5s 1 @w5c 1 @w6k 1 @w6x 1 --dump_F
