@@ -47,13 +47,21 @@ __global__ void e3_wq(int N, const int* IP, const int* pb, const float* fx, cons
         s += ww[o];
     }
     float sc = m[p]*((g == 2 && s > 0.f) ? 1.f/s : 1.f);                      // G 판 G2P 와 같은 나눔 (Σ w m = 0 이면 G2P 변위 0 -> 몫 0)
-    for (int o=0;o<27;o++) atomicAdd(&AF_WQ[q*27+o], ww[o]*sc);
+    for (int o=0;o<27;o++) atomicAdd(&E3W(q, o), ww[o]*sc);
+}
+__global__ void e3_wqz(const int* IP) {                                    // 쓰는 칸만 0 (o 별 앞 IP[12] 개)
+    int i = blockIdx.x*blockDim.x + threadIdx.x;
+    int nq = IP[12];
+    if (i >= nq*27) return;
+    E3W(i % nq, i / nq) = 0.f;
 }
 __global__ void e3_wqn(const int* IP) {
     int i = blockIdx.x*blockDim.x + threadIdx.x;
-    if (i >= IP[12]*27) return;
-    float bm = AF_BX[(i/27)*4+3];
-    AF_WQ[i] = (bm > 0.f) ? AF_WQ[i]/bm : 0.f;
+    int nq = IP[12];
+    if (i >= nq*27) return;
+    int q = i % nq, o = i / nq;
+    float bm = AF_BX[q*4+3];
+    E3W(q, o) = (bm > 0.f) ? E3W(q, o)/bm : 0.f;
 }
 '''
 
@@ -90,20 +98,20 @@ def w_apply(src):
         if nm in ("rt_floor_q", "wb_floor_q"):
             old = "float w = BW[oc*27+o];"
             assert b.count(old) == 1 and b.count("BW[oc*27+o]*mw") == 1, ("--e3w", nm)
-            b2 = b.replace(old, "float w = E3_FLW(bm_, q, oc, o);" if nm == "rt_floor_q" else "float w = AF_WQ[(size_t)q*27+o];", 1)
+            b2 = b.replace(old, "float w = E3_FLW(bm_, q, oc, o);" if nm == "rt_floor_q" else "float w = E3W(q, o);", 1)
         else:
             qv = "qq" if re.search(r"\bint\s+qq\b", b) else "q"
             assert re.search(r"\bint\s+%s\b" % qv, b) or re.search(r"\b%s\s*=" % qv, b), ("--e3w 표본점 번호", nm)
-            b2 = b.replace("BW[oc*27+o]", "AF_WQ[(size_t)%s*27+o]" % qv)
+            b2 = b.replace("BW[oc*27+o]", "E3W(%s, o)" % qv)
         out.append(src[pos:i] + b2)
         pos = j
         hit.append(nm)
     out.append(src[pos:])
     src = "".join(out)
-    src = src.replace('extern "C" {', 'extern "C" {\n__device__ float* AF_WQ;', 1)
+    src = src.replace('extern "C" {', 'extern "C" {\n__device__ float* AF_WQ;\n__device__ int AF_WQN;\n#define E3W(q, o) AF_WQ[(size_t)(o)*AF_WQN + (size_t)(q)]   // W̄ 는 o 별로 이어 둠 (같은 o 를 이웃 q 가 이어 읽음)', 1)
     if "rt_floor_q" in hit:                                                              # 매크로는 커널 바로 앞 (AF_BAR 정의 뒤라야 함)
         i = src.index("__global__ void rt_floor_q(")
-        src = src[:i] + ("#ifdef AF_BAR\n#define E3_FLW(bm_, q, oc, o) (((bm_) > 0.f) ? AF_WQ[(size_t)(q)*27+(o)] : BW[(oc)*27+(o)])\n"
+        src = src[:i] + ("#ifdef AF_BAR\n#define E3_FLW(bm_, q, oc, o) (((bm_) > 0.f) ? E3W(q, o) : BW[(oc)*27+(o)])\n"
                          "#else\n#define E3_FLW(bm_, q, oc, o) BW[(oc)*27+(o)]\n#endif\n") + src[i:]
     i = src.rstrip().rfind("}")
     src = src[:i] + E3_SRC + "\n}\n"
@@ -163,6 +171,7 @@ def _bind(s):
     except Exception:
         return                                                                           # 고치지 않은 모듈 (장벽 없는 판의 첫 모듈 등)
     ART.cp.ndarray((1,), dtype=ART.cp.uint64, memptr=g)[0] = int(s.e3wq.data_ptr())
+    ART.cp.ndarray((1,), dtype=ART.cp.int32, memptr=s.mod.get_global("AF_WQN"))[0] = int(s.e3wq.numel() // 27)
     s._e3bound = (id(s.mod), int(s.e3wq.data_ptr()))
 
 
@@ -212,7 +221,7 @@ def install(w=0, g=0, newg=False):
                     s._e3in = True
                     try:
                         i32 = np.int32
-                        s.zf(s.e3wq, 12, 27)
+                        _ok(s, "e3_wqz", s.capQc * 8 * 27, (P(s.IP),), 256)
                         _ok(s, "e3_wq", s.N, (i32(s.N), P(s.IP), P(s.Np), P(s.fx), P(s.m), P(s.pcd), P(s.cidx), P(s.mn), i32(ST["w"])))
                         _ok(s, "e3_wqn", s.capQc * 8 * 27, (P(s.IP),), 256)
                     finally:

@@ -104,10 +104,10 @@ if os.environ.get("AF_E3_DG", "0") == "1":
         wq = getattr(s, "e3wq", None)
         d_wq = None
         if wq is not None:
-            d_wq = zbar + (wq[:nq * 27].reshape(nq, 27).float() * Uz[ids]).sum(1) - ZF
+            d_wq = zbar + (wq.reshape(27, -1)[:, :nq].t().float() * Uz[ids]).sum(1) - ZF
             if bool(has.any()):
                 rec["dwq_max"] = float((d_wq - d_pm).abs()[has].max())
-                sw = wq[:nq * 27].reshape(nq, 27).float().sum(1)[has]
+                sw = wq.reshape(27, -1)[:, :nq].t().float().sum(1)[has]
                 rec.update(wsum_min=float(sw.min()), wsum_max=float(sw.max()), wsum_bad=int(((sw - 1).abs() > 1e-3).sum()), trig=list(getattr(s, "_e3trig", (None, 0))))
         below_q = has & (d_pm < 0)
         rec.update(nq_pm_below=int(below_q.sum()), nq_pm_below_bw_above=int((below_q & (d_bw >= 0)).sum()))
@@ -121,7 +121,7 @@ if os.environ.get("AF_E3_DG", "0") == "1":
         if wq is not None and bool(has.any()):                                           # W̄ 를 파이썬으로 다시 모아 장치 값과 비교 (디버그)
             wp = torch.zeros(nq, 27, device=x.device, dtype=torch.float64).index_add_(0, q, (w * m[:, None]).double())
             wp = (wp / ms.clamp_min(1e-30)[:, None]).float()
-            rec["wq_py_err"] = float((wp - wq[:nq * 27].reshape(nq, 27).float())[has].abs().max())
+            rec["wq_py_err"] = float((wp - wq.reshape(27, -1)[:, :nq].t().float())[has].abs().max())
             rec["dpy_max"] = float((zbar + (wp * Uz[ids]).sum(1) - ZF - d_pm).abs()[has].max())
         ok = torch.isfinite(x).all(-1)
         if zr is not None:

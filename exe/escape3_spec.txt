@@ -65,3 +65,21 @@ s0k2 k2L L nd E @e3g 1 @e3w 2 --frames 8
 s0k2 k2Wo W nd E @e3g 1 @e3w 2 --frames 8
 s0k2 k2B B nd E @e3g 1 @e3w 2 --frames 8
 s0k2 k2F F nd E @e3g 1 @e3w 2 --frames 8
+# s3 (커밋 뒤 추가): W̄ 를 o 별로 이어 둔 배치 (E3W(q, o) = AF_WQ[o·용량 + q], 값 같음 -- 읽기 모음) + 수박 프로파일 + 수박 W̄ 4 판 더 + 단독 시간 다시, wolf 발산 가르기 (G 만 · W̄ 만)
+s3 pMG M3 p E @e2g 1
+s3 pMGW M3 p E @e2g 1 @e3w 2
+s3 tG_1 M3 g E @e2g 1 @e3w 2
+s3 tG_2 M3 g E @e2g 1 @e3w 2
+s3 tG_3 M3 g E @e2g 1 @e3w 2
+s3 tG_4 M3 g E @e2g 1 @e3w 2
+s3 gW_1 W nd E @e3g 1
+s3 gW_2 W nd E @e3g 1
+s3 gW_3 W nd E @e3g 1
+s3 gW_4 W nd E @e3g 1
+s3 wW_1 W nd E @e3w 1
+s3 wW_2 W nd E @e3w 1
+s3 wW_3 W nd E @e3w 1
+s3 wW_4 W nd E @e3w 1
+s3 zMGW2 M3 z E @e2g 1 @e3w 2
+s3 zL_G2 L z E @e3g 1 @e3w 2
+s3 zW_G2 W z E @e3g 1 @e3w 2
