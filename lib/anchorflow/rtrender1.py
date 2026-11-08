@@ -36,11 +36,22 @@ ST = dict(ready=False, fi=0, log=None, clog=None, dep=0)
 
 
 # ---------------------------------------------------------------- 준비 (첫 프레임 끝, 시간 밖)
+def _purge(root):
+    """이미 다른 곳에서 읽힌 utils·scene 모듈이 있으면 빼서 렌더러 소스 (root) 의 것을 읽게."""
+    for k in list(sys.modules):
+        if k.split(".")[0] in ("utils", "scene"):
+            f = getattr(sys.modules[k], "__file__", None) or ""
+            if not os.path.abspath(f).startswith(os.path.abspath(root)):
+                print(f"[절 CM54 rtrender1] 모듈 {k} ({f}) 빼고 {root} 것으로", flush=True)
+                sys.modules.pop(k)
+
+
 def _setup_pg():
     cfg = json.load(open(C.cfg)); meta = json.load(open(f"{C.traj}/meta.json"))
     sys.path.append(f"{W}/i-physgaussian"); sys.path.append(f"{W}/i-physgaussian/gaussian-splatting")
     cwd = os.getcwd(); os.chdir(f"{W}/i-physgaussian")
     try:
+        _purge(f"{W}/i-physgaussian")
         from scene.gaussian_model import GaussianModel
         from utils.transformation_utils import transform2origin, shift2center111
         from utils.graphics_utils import getWorld2View2, getProjectionMatrix
@@ -98,12 +109,18 @@ def _setup_gf():
     sys.path.insert(0, C.gf); sys.path.insert(1, os.path.join(C.gf, "gaussian-splatting"))
     cwd = os.getcwd(); os.chdir(C.gf)
     try:
+        _purge(C.gf)
         from utils.decode_param import decode_param_json
-        import utils.transformation_utils as TU
-        import utils.camera_view_utils as CV
-        import utils.render_utils as RU
+        import types
+        import utils.transformation_utils as _TU
+        import utils.camera_view_utils as _CV
+        import utils.render_utils as _RU
         from scene.gaussian_model import GaussianModel
         from utils.system_utils import searchForMaxIteration
+        NS = {}                                                                        # wm_render 의 'from ... import *' 세 줄과 같은 이름 공간 (뒤가 앞을 덮음)
+        for _m in (_TU, _CV, _RU):
+            NS.update({k: v for k, v in vars(_m).items() if not k.startswith("_")})
+        TU = CV = RU = types.SimpleNamespace(**NS)
 
         class PP:
             convert_SHs_python = False; compute_cov3D_python = True; debug = False

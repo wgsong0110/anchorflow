@@ -7,6 +7,9 @@ s0k vW1k W v 1 F @s4w 1 @s4y 1 @s4x 2 --frames 12
 s0k vB1k B v 1 F @s4w 1 @s4y 1 @s4x 2 --frames 12
 s0k vM1k M3 v 1 F @s4w 1 @s4y 1 @s4x 2 --frames 12
 s0k zL0k L z 0 F @s4w 1 @s4y 1 @s4x 2 --frames 12
+# s0k2 연기 다시 (수박: GF 이름 공간 고침)
+s0k2 vM1k2 M3 v 1 F @s4w 1 @s4y 1 @s4x 2 --frames 12
+s0k2 zM0k M3 z 0 F @s4w 1 @s4y 1 @s4x 2 --frames 12
 # s1 확인 판 (전체 프레임, 영상 경로 화면 대조): 다섯 씬 x 갱신 1 (같은 프레임 갱신 0 도)
 s1 vL L v 1 F @s4w 1 @s4y 1 @s4x 2
 s1 vF F v 1 F @s4w 1 @s4y 1 @s4x 2
