@@ -15,7 +15,7 @@ import numpy as np
 O, JP = sys.argv[1], sys.argv[2]
 E0 = 7.13
 FR = [3, 4, 5, 6, 8, 10, 15, 20, 30, 50, 100]
-spec = [l.split(None, 4) for l in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "wmshape_spec.txt")) if l.strip() and not l.startswith("#")]
+spec = [l.split(None, 4) for l in open(os.environ.get("WSH_SPEC", os.path.join(os.path.dirname(os.path.abspath(__file__)), "wmshape_spec.txt"))) if l.strip() and not l.startswith("#")]   # 절 CM41 은 WSH_SPEC 로 다른 판 목록
 spec = [s + [""] * (5 - len(s)) for s in spec]
 runs = [(s[1], s[4]) for s in spec if s[3] in ("r", "b", "e") and os.path.exists(os.path.join(O, s[1], "fem.jsonl"))]
 grp = {}
@@ -265,4 +265,4 @@ for g, ns in grp.items():
         by = W[n]["by"]
         f05 = next((t for t in sorted(by) if by[t]["d0"] > 0.005), None)
         print(f"| {g} | {n} | {on[:16]} | {f05} | " + " · ".join(f_(100 * by[t]["d0"], 2) if t in by else "-" for t in (6, 10, 20, 50)) + " |")
-json.dump(CUR, open(os.path.join(O, "wmshape_curves.json"), "w"))
+json.dump(CUR, open(os.path.join(O, os.environ.get("WSH_CUR", "wmshape_curves.json")), "w"))
