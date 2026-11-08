@@ -1,0 +1,10 @@
+# 절 CM43 묶음 escape2 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_escape2.sh)
+# E = 공통 후보 D + 시간 예산 T2 (@tb 16.7 @tb_m 0.8 @tb_w 2), 수박 M3 은 + 가속 I (@inv 1) + --sp2 31 (셀 3); 수박 바탕 (WMB) 에 --gq_mass 원래 있음.
+# 방식 g = 수박 --erec + 진단 D2 (AF_E2_DG=1, 결과 불변: 고정 노드 몫·이탈 입자 앞 5 프레임 노드·입자 기록)
+# d0k 연기: D2 훅이 수박 E 에서 돌아가는지 (14 프레임)
+d0k kD M3 g E --frames 14
+# d1 진단: 수박 E 비결정 4 판 + D2
+d1 dM_1 M3 g E
+d1 dM_2 M3 g E
+d1 dM_3 M3 g E
+d1 dM_4 M3 g E
