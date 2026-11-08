@@ -20,7 +20,7 @@ s (--w5s 1) 정의 S_구속 (정의 변경, 순차 방출 구속 노드 몫의 �
             (3) 우리 노드 k_구속,n = Σ_p w_pn m_p κ_p / Σ_p w_pn m_p (우리 P2G 질량 가중 -- 노드가 대표하는 입자들의 정답 몫 평균).
         = 절 CM63 S (바닥 고착 몫을 정답 격자에서 우리 표본점으로) 와 같은 꼴: '정답 받침의 구속 몫' 을 우리 노드로 옮김. 구속 입자 질량 몫이 아니라 정답 노드가 묶는 몫이라,
         앞면 뒤 정답 받침 (1.5 cm) 밖 입자는 κ = 1. 구속 노드 걸음 끝 가속도 처치 (mt_akb: k < 1 이면 a = 0) 는 연속판 a ← k a (k ∈ {0, 1} 이면 같음).
-        문턱·클램프 없음 (κ = 1 − Σ w (1 − k_g) 로 모아 받침 밖은 정확히 1, k ≤ 1 은 식에서). 정답 격자 버퍼는 첫 프레임 입자 상자 ± 3 칸 (구속 입자는 거의 안 움직임; 상자 밖 입자는 몫 없음 = κ 1).
+        문턱·클램프 없음 (κ = Σ w k_g ≥ 0, 받침 표지 Σ w (1 − k_g) 가 0 인 노드만 정확히 1). 정답 격자 버퍼는 첫 프레임 입자 상자 ± 3 칸 (구속 입자는 거의 안 움직임; 상자 밖 입자는 몫 없음 = κ 1).
     순차 방출 구속이 없는 씬 (구속 입자 없음) 과 구속 속도 (pvb, bread 의 enforce_particle_translation) 씬은 아무것도 안 함.
 """
 import atexit
@@ -98,7 +98,8 @@ __global__ void w5_pdg(int N, const int* IP, const int* pb, const float* fx, con
     __syncthreads();
     if (row < cap) for (int i=threadIdx.x;i<9*2*14;i+=blockDim.x) if (sh[i] != 0.0) atomicAdd(&D[(size_t)row*252 + i], sh[i]);
 }
-// 가우스 점 진단 (걸음 끝 시험 X = (I + ∇U) F_q 의 투영 상태·응력)
+// 가우스 점 진단 (걸음 끝 시험 X = (I + ∇U) F_q 의 투영 상태·응력) -- 장벽 판 (표본점 위치 AF_BX) 만
+#ifdef AF_BAR
 __global__ void __launch_bounds__(128) w5_qdg(const int* IP, const int* cb, const float* BG, const float* BW, const float* Fq, const float* Vq, const float* U,
                        float mu, float lam, float cdp, const float* kb, const float* al, int ax, float c0, float H0, float vf, const float* tbuf, float toff,
                        float n0, float n1, float n2, float pn, double* D, const int* ctr, int cap) {
@@ -143,6 +144,7 @@ __global__ void __launch_bounds__(128) w5_qdg(const int* IP, const int* cb, cons
     __syncthreads();
     if (row < cap) for (int i=threadIdx.x;i<9*2*10;i+=blockDim.x) if (sh[i] != 0.0) atomicAdd(&D[(size_t)row*180 + i], sh[i]);
 }
+#endif
 __global__ void w5_inc(int* ctr, float* meta, const float* tbuf, float toff, float dt, int k, int cap) {
     int r = ctr[0];
     if (r < cap) { meta[r*4] = tbuf[0] + toff; meta[r*4+1] = dt; meta[r*4+2] = (float)k; meta[r*4+3] = 1.f; }
@@ -190,9 +192,10 @@ __global__ void w5s_kn(int N, const int* IP, const int* pb, const float* fx, con
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N || IP[13]) return;
     int bl[3]; float wg[3][3];
-    float om = 0.f;
+    float om = 0.f, kp = 0.f;                                                   // om = Σ w (1 − k_g) (받침 표지), κ = Σ w k_g (음수 없음)
     if (w5_gbase(x + p*3, idx, gi0, gj0, gk0, G0, G1, G2, bl, wg))
-        for (int o=0;o<27;o++) { int i = o/9, j = (o/3)%3, k = o%3; float og = omg[((size_t)(bl[0]+i)*G1 + (bl[1]+j))*G2 + (bl[2]+k)]; if (og != 0.f) om += wg[0][i]*wg[1][j]*wg[2][k]*og; }
+        for (int o=0;o<27;o++) { int i = o/9, j = (o/3)%3, k = o%3; float og = omg[((size_t)(bl[0]+i)*G1 + (bl[1]+j))*G2 + (bl[2]+k)]; float ww_ = wg[0][i]*wg[1][j]*wg[2][k];
+                                 if (og != 0.f) om += ww_*og; kp += ww_*(1.f - og); }
     float w[3][3], dw[3][3];
     for (int a=0;a<3;a++) bwf(fx[p*3+a], w[a], dw[a]);
     int nb1 = IP[7], nb2 = IP[8];
@@ -202,7 +205,7 @@ __global__ void w5s_kn(int N, const int* IP, const int* pb, const float* fx, con
         int nid = ((pb[p*3]+i)*nb1 + (pb[p*3+1]+j))*nb2 + (pb[p*3+2]+k);
         float ww = w[0][i]*w[1][j]*w[2][k]*mp;
         atomicAdd(&den[nid], ww);
-        if (om != 0.f) { atomicAdd(&nom[nid], ww*om); atomicAdd(&num[nid], ww*(1.f - om)); } else atomicAdd(&num[nid], ww);
+        if (om != 0.f) { atomicAdd(&nom[nid], ww*om); atomicAdd(&num[nid], ww*kp); } else atomicAdd(&num[nid], ww);
     }
 }
 __global__ void w5s_kb(const int* IP, const float* num, const float* nom, const float* den, float* kb) {
@@ -235,9 +238,6 @@ def patch_src(src):
     i = src.rfind("\n", 0, src.rfind("__device__ __forceinline__ void ao_pairs", 0, i))
     src = src[:i] + "\n__device__ double* W5_FE;\n" + src[i:]
     body = W5_SRC
-    if "AF_BX" not in src:                                                        # 장벽 없는 판: 가우스 점 진단 빼기 (표본점 위치 없음)
-        a_ = body.index("// 가우스 점 진단"); b_ = body.index("__global__ void w5_inc(")
-        body = body[:a_] + body[b_:]
     k = src.rstrip().rfind("}")
     return src[:k] + body + "\n}\n"
 
