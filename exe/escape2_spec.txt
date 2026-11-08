@@ -41,3 +41,20 @@ g1 gM_5 M3 g E @e2g 1
 g1 gM_6 M3 g E @e2g 1
 g1 gM_7 M3 g E @e2g 1
 g1 gM_8 M3 g E @e2g 1
+# h1 (D2 에 바닥 아래 입자 수·이탈 입자 중 고정 노드 몫 > 0.5 수 더함): E 대조 4 판 + G 4 판 (긴 이탈이 바닥을 뚫고 떨어지는 것인지) + G + --mlow 0 8 판 (고정 노드가 바닥을 안 보는 것 없앰)
+h1 eE_1 M3 g E
+h1 eE_2 M3 g E
+h1 eE_3 M3 g E
+h1 eE_4 M3 g E
+h1 eG_1 M3 g E @e2g 1
+h1 eG_2 M3 g E @e2g 1
+h1 eG_3 M3 g E @e2g 1
+h1 eG_4 M3 g E @e2g 1
+h1 gu_1 M3 g E @e2g 1 --mlow 0
+h1 gu_2 M3 g E @e2g 1 --mlow 0
+h1 gu_3 M3 g E @e2g 1 --mlow 0
+h1 gu_4 M3 g E @e2g 1 --mlow 0
+h1 gu_5 M3 g E @e2g 1 --mlow 0
+h1 gu_6 M3 g E @e2g 1 --mlow 0
+h1 gu_7 M3 g E @e2g 1 --mlow 0
+h1 gu_8 M3 g E @e2g 1 --mlow 0

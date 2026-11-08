@@ -132,6 +132,11 @@ if os.environ.get("AF_E2_DG", "0") == "1":
         new = far & (~prev if prev is not None and prev.numel() == far.numel() else torch.ones_like(far))
         ST["far"] = far
         rec.update(nfar=int(far.sum()), nnew=int(new.sum()), cell=cell)
+        zf = float(os.environ.get("AF_E2_FLOORZ", "0.02"))                              # 수박 바닥 평면 z (--floor_plane 1,1,0.02,0,0,1)
+        zz = x[:, 2]
+        below = ok & (zz < zf - cell)                                                  # 바닥 아래 한 칸 넘게 (바닥을 뚫고 떨어진 입자)
+        rec.update(zmin=float(zz[ok].min()), nbelow=int(below.sum()), nfar_below=int((below & far).sum()),
+                   nfar_wpin05=int((far & (wpin > 0.5)).sum()))
         LOG.write(json.dumps(rec) + "\n")
         nnew = int(new.sum())
         if nnew == 0 or ST["nesc"] >= 40:                                              # 이탈 프레임 기록은 40 번까지
