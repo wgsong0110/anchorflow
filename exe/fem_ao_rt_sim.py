@@ -168,6 +168,7 @@ ap.add_argument("--ws2_fcn", type=int, default=1, help="절 CM41 (b): 첫 접촉
 ap.add_argument("--ws3", type=int, default=0, help="절 CM44 후보 (lib/anchorflow/fem_wmshape3.py): 수렴 안 한 걸음은 커밋에서 소성 상태 확정 안 함 -- 1 = 허용치 εN 판정, 2 = 절 CM24 덜 풀린 걸음 판정 (0 = 끔, 모듈 안 부름)")
 ap.add_argument("--ws3_lj", type=int, default=0, help="절 CM44: 1 = 미룸 대신 RM 투영은 하고 손상 변수 (ys·logJp·al) 만 걸음 시작 값 유지")
 ap.add_argument("--ws3_win", type=int, default=0, help="절 CM44: 1 = 절 CM41 충격 창 (--ws2_win) 끝난 다음 프레임부터만")
+ap.add_argument("--ws3_pf", type=int, default=0, help="절 CM44: 1 = 후보가 켜진 프레임에서 마지막 걸음이 손상 변수를 확정 안 했으면 입자 logJp 도 프레임 시작 값 그대로 (보간 교체 번짐 막기; --ws3 위)")
 ap.add_argument("--ws3_ep", type=int, default=0, help="절 CM44 (2) 후보: 1 = 충격 창 끝까지 뉴턴 힘 탄성 (prm[15]) + 커밋 RM 만 (탄성 예측 -> 소성 보정), 창 뒤 그대로 (--ws2_win 위)")
 a = ap.parse_args()
 if a.wrx:                                                                       # 절 CM38 후보 (소스 바꾸기는 모듈 만들기 전에)
