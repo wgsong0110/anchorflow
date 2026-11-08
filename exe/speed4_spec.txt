@@ -1,0 +1,35 @@
+# 절 CM50 묶음 speed4 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_speed4.sh)
+# F = 공통 후보 F (E + W̄ + R2 + A2), FH = 예산이 안 걸리는 F (@tb 1000, 해시 대조용), @s4p 1 단계 기록, @s4w 1 S1 (2 = 확인 판), @s4x 1 X1
+# ---- s0k 연기 (14 프레임): 컴파일·훅·기록 확인
+s0k kP M3 p F @s4p 1 --frames 14
+s0k kW M3 n F @s4w 2 --frames 14
+s0k kS M3 n F @s4w 1 @s4x 1 --frames 14
+s0k kPX M3 n F @s4p 1 @s4w 1 @s4x 1 --frames 14
+s0k kL L n FH @s4w 1 @s4x 1 --frames 8
+# ---- s1 수박 F: 단독 시간 (a·b) · 단계 기록 · 커널 프로파일 · S1 확인 판 · 비결정 분포
+s1 zF M3 z F
+s1 zFA M3 z F @s4w 1 @s4x 1
+s1 pF M3 p F @s4p 1
+s1 pFA M3 p F @s4p 1 @s4w 1 @s4x 1
+s1 qF M3 q F
+s1 cW_1 M3 n F @s4w 2
+s1 cW_2 M3 n F @s4w 2
+s1 nF_1 M3 n F
+s1 nF_2 M3 n F
+s1 nFA_1 M3 n F @s4w 1 @s4x 1
+s1 nFA_2 M3 n F @s4w 1 @s4x 1
+s1 nFA_3 M3 n F @s4w 1 @s4x 1
+s1 nFA_4 M3 n F @s4w 1 @s4x 1
+# ---- s2 다른 씬: 결정적 해시 (예산 안 걸리는 FH, 가속 끔·켬) + F 단독 시간 (가속 켬, a·b)
+s2 hL L h FH
+s2 hLA L h FH @s4w 1 @s4x 1
+s2 hW W h FH
+s2 hWA W h FH @s4w 1 @s4x 1
+s2 hF F h FH
+s2 hFA F h FH @s4w 1 @s4x 1
+s2 hB B h FH
+s2 hBA B h FH @s4w 1 @s4x 1
+s2 zL L z F @s4w 1 @s4x 1
+s2 zW W z F @s4w 1 @s4x 1
+s2 zFi F z F @s4w 1 @s4x 1
+s2 zB B z F @s4w 1 @s4x 1
