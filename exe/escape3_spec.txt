@@ -59,3 +59,9 @@ s2 zW_E W z E
 s2 zW_G W z E @e3g 1 @e3w 2
 # s0d 디버그 (커밋 뒤 추가): 수박 E+G+W̄ 4 프레임 D3 (ΣW̄·모은 횟수)
 s0dk dEGW M3 g E @e2g 1 @e3w 2 --frames 6
+# s0k2 연기 다시 (rt_gauss 를 잘못 고친 판 고침 -- W̄ 는 표본점 커널 목록만): 판 이름 새로
+s0k2 k2EGW M3 g E @e2g 1 @e3w 2 --frames 14
+s0k2 k2L L nd E @e3g 1 @e3w 2 --frames 8
+s0k2 k2Wo W nd E @e3g 1 @e3w 2 --frames 8
+s0k2 k2B B nd E @e3g 1 @e3w 2 --frames 8
+s0k2 k2F F nd E @e3g 1 @e3w 2 --frames 8

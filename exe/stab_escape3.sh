@@ -102,7 +102,8 @@ case $STG in *k)                                                                
     $PY -c "import json,sys; s=json.load(open('$O/$n/summary.json')); sys.exit(0 if s['frames_done'] >= 5 and not s.get('diverged') else 1)" 2>/dev/null || OK=0
     [ -s $O/$n/e1.jsonl ] && [ ! -s $O/$n/e1_err.txt ] || { OK=0; log "[연기] $n 진단 e1 없음/오류"; }                       # 절 CM42 진단 훅 확인
     [ $md != g ] || { [ -s $O/$n/e2.jsonl ] && [ ! -s $O/$n/e2_err.txt ] && [ -s $O/$n/e3.jsonl ] && [ ! -s $O/$n/e3_err.txt ]; } || { OK=0; log "[연기] $n 진단 e2·e3 없음/오류"; }   # 절 CM43 D2·절 CM45 D3 확인
-    case " $x " in *" @e3"*) grep -q "절 CM45\] 장벽" $O/$n/log.txt || { OK=0; log "[연기] $n CM45 설치 줄 없음"; };; esac
+    case " $x " in *" @e3w"*) grep -q "절 CM45\] W̄ 고친 커널\|절 CM45\] 장벽 바닥 없는" $O/$n/log.txt || { OK=0; log "[연기] $n CM45 W̄ 줄 없음"; };; esac
+    case " $x " in *" @e3w"*) [ $md != g ] || $PY -c "import json,sys; L=[json.loads(l) for l in open('$O/$n/e3.jsonl')]; L=[q for q in L if 'nq' in q]; sys.exit(0 if L and all(q.get('wsum_bad', 1) == 0 and q.get('dwq_max', 1) < 1e-4 for q in L) else 1)" || { OK=0; log "[연기] $n W̄ 확인 (ΣW̄ = 1, |d_wq − d_pm| < 1e-4) 실패"; };; esac
   done <<< "$SPEC"
   log "[연기] OK=$OK"; [ $OK = 1 ] || { echo "연기 실패 $STG $(date '+%F %T')" > $O/escape3.FAIL; rclone copy $O $RO -q --include escape3.FAIL; };;
 esac

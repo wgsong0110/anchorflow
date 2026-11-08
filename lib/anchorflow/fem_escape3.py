@@ -24,7 +24,9 @@ import numpy as np
 import torch
 
 G2PN = ("rt_g2p_ga", "aq_g2p", "ao_g2p", "ao_g2p_a")
-ST = dict(w=0, g=0, patched=set(), gpatched=set())
+BARK = ("rt_floor_q", "wb_floor_q", "rt_bar_q", "rt_bar_mvq", "rt_bar_lsN", "rt_bar_kfe", "rt_bar_y0e", "rt_bare_q", "rt_vres_q", "rt_vres_lsN",
+        "yl_kq", "yl_chk", "wb_cnt", "ul_bar", "ws_bk", "en_phi_q")                   # 장벽 표본점 (x̄_q + Σ BW (U + thinv (y − U))) 을 쓰는 커널
+ST = dict(w=0, g=0, patched=set(), gpatched=set(), skipped=set())
 
 E3_SRC = r'''
 // ---- 절 CM45 W̄: 표본점 q 의 입자 G2P 기저 질량 평균 W̄_q,o = Σ_p m_p ŵ_o(x_p) / Σ m_p (AF_WQ, 프레임 시작) ----
@@ -81,6 +83,9 @@ def w_apply(src):
     for nm, i, j in list(_bodies(src)):
         b = src[i:j]
         if "BW[oc*27+o]" not in b or not any(k_ in b for k_ in ("AF_BX", "AF_BPH", "AF_BACT")) or nm.startswith("e3_"):
+            continue
+        if nm not in BARK:                                                               # 표본점 커널만 (rt_gauss 처럼 AF_BX 를 칸 질량으로 읽는 커널은 아님)
+            ST["skipped"].add(nm)
             continue
         if nm in ("rt_floor_q", "wb_floor_q"):
             old = "float w = BW[oc*27+o];"
@@ -199,6 +204,9 @@ def install(w=0, g=0, newg=False):
                         print("[절 CM45] 장벽 바닥 없는 씬 -- W̄ 해당 없음 (표본점 없음, 소스 그대로)", flush=True)
                     s._e3done = not hasbar
                 elif name in ST["patched"] and not getattr(s, "_e3done", True):
+                    if not ST.get("said"):
+                        ST["said"] = True
+                        print(f"[절 CM45] W̄ 고친 커널 {sorted(ST['patched'])}, 안 고친 AF_BX 커널 {sorted(ST['skipped'])}, W̄ 모으는 자리 = {name} 앞", flush=True)
                     assert getattr(s, "_e3bound", None) == (id(s.mod), int(s.e3wq.data_ptr())), "--e3w: AF_WQ 가 이 모듈·버퍼에 안 묶임"
                     assert not getattr(s, "det", False), "--e3w: 결정적 판 (AF_BDET 노드 모으기 커널) 은 안 고침"
                     s._e3in = True
