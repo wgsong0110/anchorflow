@@ -269,3 +269,34 @@ if DG:
             i = jl(n, "w4info.json") or {}
             print(f"| {n} | {i.get('commit_pts', '-')} | {i.get('fb_pts', '-')} | {fm(i.get('lnc_abs_mean'), 5)} · {fm(i.get('lnc_rms'), 5)} | {i.get('nonfinite', '-')} | {i.get('dg_rows', '-')} |")
     print()
+
+# ---- 절 CM68 표 (절 CM66 표 형식 + f10·f20 높이·회전 반경 f50; 높이 = 질량중심 세계 z mm, 바닥 0.48 m)
+if GR:
+    print("## 절 CM66 표 형식 (+ f10·f20 높이, 회전 반경 f50)\n")
+    print("| 후보 | 판 | 발산 | f10 · f20 mm | f30 mm | f50 mm [범위] (완주) | 오차 % [범위] | 면적 f30 · f50 cm² | 회전 반경 f50 mm | 바닥 층 접선 m/s | 이탈 판 · 최대 m | 동시 ms 최대 |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    if GT:
+        print(f"| 정답 | - | - | {480 + GT['10']['com']:.0f} · {480 + GT['20']['com']:.0f} | {480 + GT['30']['com']:.0f} | 533 | - | {GT['30']['area_cm2']:.0f} · {GT['50']['area_cm2']:.0f} | "
+              f"{GT['50']['rg_mm']:.0f} | {fm(vt0(lambda f: GT[str(f)].get('vt_layers')), 3)} | - | - |")
+    for g, ns in GR.items():
+        f10, f20, f30, f50, er, a30, a50, rg, vt, nd, ne, dm, mx = [], [], [], [], [], [], [], [], [], 0, 0, [], []
+        for n in ns:
+            s = jl(n, "summary.json"); r = rec(n)
+            if s is None and r is None:
+                continue
+            if div(s):
+                nd += 1
+            else:
+                f50.append(com(r, 49)); er.append(err(s)); a50.append(an(n, 50, "area_cm2")); rg.append(an(n, 50, "rg_mm"))
+            f10.append(com(r, 9)); f20.append(com(r, 19)); f30.append(com(r, 29)); a30.append(an(n, 30, "area_cm2")); vt.append(vt0(lambda f, n=n: an(n, f, "vt_layers")))
+            b = bbox(n)
+            if b:
+                dm.append(b[1])
+                if b[0] > 20:
+                    ne += 1
+            t = tm(r)
+            if t:
+                mx.append(t[1])
+        print(f"| {g} | {len(ns)} | {nd} | {rng(f10)} · {rng(f20)} | {rng(f30)} | {rng(f50)} | {rng(er, 2)} | {rng(a30)} · {rng(a50)} | {rng(rg)} | {rng(vt, 3)} | "
+              f"{ne}/{len(ns)} · {fm(max(dm) if dm else None, 2)} | {fm(max(mx) if mx else None, 1)} |")
+    print()
