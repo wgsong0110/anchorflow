@@ -80,9 +80,9 @@ SPEC=$(grep -v '^#' exe/speed4_spec.txt | awk -v s=$STG '$1==s')
 # ---- 단독 (z·p·q) 먼저: 계산 프로세스 0 인 카드 하나에 차례로 (a 다 돌고 b)
 if echo "$SPEC" | awk '$4=="z" || $4=="p" || $4=="q"' | grep -q .; then
   ZG=$(claim_wait $$); log "단독 카드 $ZG (계산 프로세스 0 인 카드 하나; 노드 계산 프로세스 $(nvidia-smi --query-compute-apps=pid --format=csv,noheader | grep -c .))"
-  for r in a b; do
+  for r in a b c; do
     while read -r st n s md x; do
-      case $md in z) ;; p|q) [ $r = b ] && continue;; *) continue;; esac
+      case $md in z) ;; p|q) [ $r != a ] && continue;; *) continue;; esac
       [ -f $O/${n}_$r/summary.json ] && continue
       while [ "$(nvidia-smi -i $ZG --query-compute-apps=pid --format=csv,noheader | grep -c .)" != 0 ]; do log "카드 $ZG 에 다른 계산 프로세스 -- 기다림"; sleep 30; done
       log "${n}_$r 단독 카드 $ZG 부하 $(cut -d' ' -f1 /proc/loadavg)"
@@ -105,6 +105,18 @@ case $STG in *k)                                                                
     $PY -c "import json,sys; s=json.load(open('$O/$nn/summary.json')); sys.exit(0 if s['frames_done'] >= 5 and not s.get('diverged') else 1)" 2>/dev/null || { OK=0; log "[연기] $nn 5 프레임 못 감/발산"; }
     case "$s $x " in M*" @s4"*) [ -s $O/$nn/s4.jsonl ] || { OK=0; log "[연기] $nn s4.jsonl 없음"; }; grep -q "절 CM50\] speed4" $O/$nn/log.txt || { OK=0; log "[연기] $nn CM50 줄 없음"; };; esac
     case " $x " in *" @s4p 1"*) $PY -c "import json,sys; L=[json.loads(l) for l in open('$O/$nn/s4.jsonl')]; t=[q['sp']['tries'] for q in L if q['sp'].get('n')]; sys.exit(0 if len(t) >= 3 and all(len(q) >= 1 for q in t) else 1)" || { OK=0; log "[연기] $nn 단계 기록 비었음"; };; esac
+    case " $x " in *" @s4x 3"*) $PY -c "
+import json,sys
+L=[json.loads(l) for l in open('$O/$nn/s4.jsonl')]
+R=[r for q in L for r in q.get('x2c',[]) if r['kind']=='같은 시도']
+bad=[]
+for r in R:
+    for k,v in r.items():
+        if k in ('kind','coll','IP','bx','bx_snap'): continue
+        if (isinstance(v,list) and (v[0]!=0 or v[3]!=0)) or (isinstance(v,int) and v!=0): bad.append((k,v))
+    if r.get('bx_snap') is None or r['bx_snap'][0]!=0: bad.append(('bx_snap',r.get('bx_snap')))
+print('x2c 같은 시도', len(R), '어긋남', bad[:5])
+sys.exit(0 if R and not bad else 1)" >> $O/speed4_$STG.log 2>&1 || { OK=0; log "[연기] $nn X2 확인 실패"; };; esac
     case " $x " in *" @s4w 2"*) $PY -c "import json,sys; L=[json.loads(l) for l in open('$O/$nn/s4.jsonl')]; b=sum(q['ws4']['bad'] for q in L); r=sum(q['ws4']['round'] for q in L); print('ws4 bad', b, 'round', r); sys.exit(0 if b == 0 and r > 0 else 1)" >> $O/speed4_$STG.log 2>&1 || { OK=0; log "[연기] $nn S1 확인 실패"; };; esac
   done <<< "$SPEC"
   log "[연기] OK=$OK"; [ $OK = 1 ] || { echo "연기 실패 $STG $(date '+%F %T')" > $O/speed4.FAIL; rclone copy $O $RO -q --include speed4.FAIL; };;

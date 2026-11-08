@@ -162,8 +162,10 @@ def sp_install():
     SP.mod = cp.RawModule(code=SP_SRC)
     SP.fn = SP.mod.get_function("sp_st")
     SP.on = True
+    from . import fem_an_rt_v0 as V0
     cls = AORT.AORTSolver
-    o_rec, o_k, o_ctl = cls.record, cls.k, cls.ctl
+    o_rec, o_ctl = cls.record, cls.ctl
+    o_k = V0.RTSolver.k                                                                # 가장 안쪽 (다른 모듈이 V0.RTSolver.k 를 감싸 띄우는 e3_·e5_ 커널도 지나감)
 
     def record(s, t_frame, K=None):
         s._spph, s._spit, s._spks, s._splast = "pre", 0, -1, None
@@ -177,13 +179,14 @@ def sp_install():
         return r
 
     def k(s, name, n, args, b=128):
-        if name in ("ao_step0_ga", "rt_step0", "ao_step0_th"):
-            s._spph, s._spit = "start", 0
-            s._spks = int(getattr(s, "_spks", -1)) + 1
-        if _cap():
-            c = _cat(s, name)
-            if c is not None:
-                _emit(s, c)
+        if isinstance(s, cls):
+            if name in ("ao_step0_ga", "rt_step0", "ao_step0_th"):
+                s._spph, s._spit = "start", 0
+                s._spks = int(getattr(s, "_spks", -1)) + 1
+            if _cap():
+                c = _cat(s, name)
+                if c is not None:
+                    _emit(s, c)
         return o_k(s, name, n, args, b)
 
     def ctl(s, op, it=0):
@@ -192,11 +195,12 @@ def sp_install():
         elif op == 8:
             s._spph = "tail"
         return o_ctl(s, op, it)
-    cls.record, cls.k, cls.ctl = record, k, ctl
+    cls.record, cls.ctl = record, ctl
+    V0.RTSolver.k = k
     o_mark = C3.mark
 
     def mark(s, kind):
-        if getattr(s, "_c3cap", None) is not None:
+        if getattr(s, "_c3cap", None) is not None and isinstance(s, cls):
             _stamp(CI["구간 사이"])
             s._splast = None
         return o_mark(s, kind)
@@ -280,37 +284,141 @@ def ws4_counts(s):
     return o
 
 
-# ======================= (X1) 버릴 시도의 꼬리 건너뛰기 (결과 불변) =======================
+# ======================= (X1·X2) 버릴 시도의 꼬리 건너뛰기 · X3c 다시 하기를 걸음 시작부터 (결과 불변) + (X3e4) 후보 =======================
 # 수박 F 의 K 1 시도는 무너진 걸음 (덜 풀림 ∧ !(‖g‖²/F² ≤ --ue_bigT), C3.nfail) 이 있으면 버려짐: X3c 첫 시도 (AF_WRXON 0, --wrx_col 1) 는 입자 상태를 되돌리고
 #   켠 채 다시, 쪼개기 (split_step depth > 0) 는 되돌리고 K 2 로 다시. 판정 값 ufl·ufg 는 걸음 끝 uf_end 가 쓰고 그 뒤 커널 (걸음 끝 갱신·RM 커밋·G2P·R2 끝 기준 높이)
-#   은 입자·노드 상태만 바꿈 -> 되돌리는 시도에서는 버려짐. 여기서는 K 1 그래프를 uf_end 뒤에서 한 번 더 나누고 ('x' 구간), 재생 때 '버려질 수 있는 시도' 이면
-#   그 경계에서 호스트가 넘침 (IP[13]) 0 · nfail > 0 을 읽어 나머지 구간 (꼬리) 을 안 띄움. 판정·되돌림·다음 시도는 그대로 (같은 ufl·ufg 를 split_step 이 다시 읽음).
-#   시간 예산 (T2) 기록 tb_end 도 꼬리 구간이라 그 시도는 C_tail 표본을 안 냄 (다음 시도가 냄).
+#   은 입자·노드 상태만 바꿈 -> 되돌리는 시도에서는 버려짐.
+# X1 (--s4x 1): K 1 그래프를 uf_end 뒤에서 한 번 더 나누고 ('x' 구간), 재생 때 '버려질 시도' 이면 그 경계에서 호스트가 넘침 (IP[13]) 0 · nfail > 0 을 읽어
+#   나머지 구간 (꼬리) 을 안 띄움. 판정·되돌림·다음 시도는 그대로 (같은 ufl·ufg 를 split_step 이 다시 읽음). 시간 예산 기록 tb_end 도 꼬리라 그 시도는 C_tail 표본을 안 냄.
+# X2 (--s4x 2, X1 포함): X3c 다시 하기 (켠 채 K 1) 를 프레임 처음 (P2G) 부터가 아니라 걸음 시작 ('s' 구간, ao_step0_ga 앞) 부터 같은 재생 안에서.
+#   근거: 걸음 시작 ~ uf_end 커널은 P2G 단계 산물 (U·vk·gaA·mn·mqn·Fq·Vq·mq·Sq·W̄ 재료·칸 표) 을 읽기만 하고 (aq_elem·en_phi_q 는 Fq·Sq const, U·vk·gaA 는 꼬리
+#   ao_stepend·aq_commit 만 씀 -- X1 로 꼬리를 안 띄움), 걸음 안에서 쓰는 노드 상태 (Ut·z0·y·yh·η·sk·pm·an·...) 는 ao_step0_ga·ao_floor_n 등이 모든 노드에 새로 씀.
+#   예외 = 표본점 버퍼 AF_BX (s.bx): R2·A2 (e5_sh, rt_bar_q mode 0) 가 걸음 시작에 제자리로 옮김 -> 's' 앞에서 사본 (그래프 안 복사), 다시 할 때 되돌림.
+#   프레임 시작에 0 으로 채우는 진단 셈 (cnt·qb·awst) 과 제어 (CT, AF_SKIP = rt_ctl op 0 과 같게) 도 되돌림. P2G 결과는 첫 시도 것 그대로 (원자 합 순서 한 판).
+#   켠 채 K 1 도 무너지면 (depth > 0) 그 시도 꼬리도 X1 로 건너뛰고 K 2 부터는 split_step 과 같은 쪼개기 (입자 되돌림·프레임 처음부터).
+# X3e4 (--s4e T, 결과 바뀜 -- 절 CM39.5 X3e 정의를 W̄·R2·A2 위로): X2 위에서 첫 시도 반복 0 시작 잔차 (ctl op 3 뒤, 'r' 경계) ‖g‖²/F² 가 T 를 넘거나 비유한이면
+#   바로 켜고 (AF_WRXON 1) 걸음 시작 ('s') 부터 다시 (X2 와 같은 되돌림 + 예산 시계 TB_RUN 0 -- 앞 반복 0 시간이 C_it 에 안 섞이게). 놓친 무너짐은 X2 경로.
+#   X3e 로 켠 시도가 끝에서 무너지면 같은 켬 K 1 을 되풀이하지 않고 K 2 쪼개기로.
 class X1:
     on = False
+    level = 0
+    T = 0.0
     hits = 0
+    x2 = 0
+    x3e = 0
 
 
-def x1_install():
+def _restore(s):
+    import cupy as cp
+    torch.cuda.synchronize()
+    s.bx.copy_(s._x2bx)
+    s.cnt.zero_()
+    if getattr(s, "aq", False):
+        s.qb.zero_()
+    if getattr(s, "lsinv", False) or getattr(s, "y0z", False):
+        s.awst.zero_()
+    s.CT.zero_()
+    cp.ndarray((1,), dtype=cp.int32, memptr=s.mod.get_global("AF_SKIP"))[0] = 0
+    torch.cuda.synchronize()
+
+
+X2C_F = ("U", "vk", "gaA", "mn", "mv", "mqn", "Fq", "Vq", "mq", "xq0", "Sq", "bx")
+X2C_I = ("cidx", "cb", "act")
+
+
+def _x2c_snap(s, first):
+    """X2 확인 판 (--s4x 3): 걸음 시작 입력 (P2G 단계 산물) 사본 -- 첫 시도는 uf_end 뒤 ('x', 표본점 버퍼는 's' 앞 사본), 다시 한 시도는 걸음 시작 ('s') 앞."""
+    torch.cuda.synchronize()
+    IP = s.IP.cpu().tolist()
+    nn, nq, nc = int(IP[9]), int(IP[12]), int(IP[11])
+    capN, capQ = int(s.capN), int(s.capQc) * 8
+    o = dict(IP=IP[:16])
+    for nm in X2C_F + X2C_I:
+        t = getattr(s, nm, None)
+        if not torch.is_tensor(t):
+            continue
+        if nm == "bx" and first:
+            t = s._x2bx
+        t = t.reshape(-1)
+        n_ = t.numel()
+        if nm == "act":
+            m = int(IP[14])
+        elif nm == "cidx":
+            m = int(IP[10])
+        elif nm == "cb":
+            m = nc * (n_ // max(int(s.capQc), 1))
+        elif n_ % capN == 0 and n_ // capN <= 9:
+            m = nn * (n_ // capN)
+        elif n_ % capQ == 0:
+            m = nq * (n_ // capQ)
+        else:
+            m = n_
+        o[nm] = t[:m].clone()
+    return o
+
+
+def _x2c_cmp(a, b):
+    r = dict(IP=[int(x != y) for x, y in zip(a["IP"], b["IP"])].count(1))
+    for nm in X2C_F + X2C_I:
+        if nm not in a or nm not in b:
+            continue
+        x, y = a[nm], b[nm]
+        if x.numel() != y.numel():
+            r[nm] = ["크기", x.numel(), y.numel()]
+            continue
+        if not x.is_floating_point():
+            r[nm] = int((x != y).sum())
+            continue
+        d = (x.double() - y.double()).abs()
+        ok = torch.isfinite(d)
+        sc = float(x.double().abs()[torch.isfinite(x.double())].max()) if x.numel() else 0.0
+        mx = float(d[ok].max()) if bool(ok.any()) else 0.0
+        r[nm] = [mx, mx / sc if sc > 0 else 0.0, int((d[ok] > 1e-4 * max(sc, 1e-30)).sum()), int((~ok).sum())]
+    return r
+
+
+class X2C:
+    rec = []
+
+
+def x1_install(level=1, x3e=0.0):
     from . import fem_ao_rt as AORT
     from . import fem_common3 as C3
     from . import fem_wmrx as WRX
-    X1.on = True
+    X1.on, X1.level, X1.T = True, int(level), float(x3e)
+    assert X1.T <= 0 or X1.level == 2, "--s4e 는 --s4x 2 위"
     cls = AORT.AORTSolver
-    o_rec, o_k = cls.record, cls.k
+    o_rec, o_k, o_ctl = cls.record, cls.k, cls.ctl
 
     def record(s, t_frame, K=None):
         s._x1K = int(K if K is not None else getattr(s, "Kcur", getattr(s, "K", 1)))
-        if getattr(s, "_c3cap", None) is not None:
+        s._x1ks = -1
+        cap = getattr(s, "_c3cap", None) is not None
+        if cap:
             s._k4b = ["start"]
+        elif X1.level >= 2 and getattr(s, "wbar", None) is not None:                 # 데움 (캡처 밖): 사본 버퍼를 지금 용량으로
+            if getattr(s, "_x2bx", None) is None or s._x2bx.numel() != s.bx.numel():
+                s._x2bx = torch.empty_like(s.bx)
         return o_rec(s, t_frame, K)
 
     def k(s, name, n, args, b=128):
+        if X1.level >= 2 and name == "ao_step0_ga":
+            s._x1ks = int(getattr(s, "_x1ks", -1)) + 1
+            if s._x1ks == 0 and getattr(s, "_x1K", 0) == 1 and getattr(s, "wbar", None) is not None:
+                s._x2bx.copy_(s.bx)                                                    # 걸음 시작 앞 표본점 버퍼 사본 (그래프 안)
+                if getattr(s, "_c3cap", None) is not None:
+                    C3.mark(s, "s")
         r = o_k(s, name, n, args, b)
         if name == "uf_end" and getattr(s, "_c3cap", None) is not None and getattr(s, "_x1K", 0) == 1:
             C3.mark(s, "x")
         return r
-    cls.record, cls.k = record, k
+
+    def ctl(s, op, it=0):
+        r = o_ctl(s, op, it)
+        if X1.T > 0 and op == 3 and it == 0 and getattr(s, "_c3cap", None) is not None and getattr(s, "_x1K", 0) == 1:
+            C3.mark(s, "r")
+        return r
+    cls.record, cls.k, cls.ctl = record, k, ctl
     o_mark = C3.mark
 
     def mark(s, kind):
@@ -324,38 +432,84 @@ def x1_install():
         o_init(self, s, segs)
         kb = getattr(s, "_k4b", None)
         self.k4 = list(kb) if (kb is not None and len(kb) == len(segs)) else None
-        assert self.k4 is None or self.k4.count("x") <= 1
+        assert self.k4 is None or (self.k4.count("x") <= 1 and self.k4.count("s") <= 1 and self.k4.count("r") <= 1)
         s._k4b = None
 
     def replay(self):
         s = self.s
-        if self.k4 is None or "x" not in self.k4 or not getattr(s, "_x1ok", False):
+        st = getattr(s, "_s4st", None)
+        if self.k4 is None or not ("x" in self.k4 and (getattr(s, "_x1ok", False) or st is not None)):
             return o_rep(self)
         mode = int(s.xg)
-        st = s.c3st
+        cst = s.c3st
         skip = False
-        for i, (cond, g) in enumerate(self.segs):
-            if self.k4[i] == "x" and int(s.IP[13]) == 0 and C3.nfail(s, s.ufl, s.ufg, 1) > 0:
-                X1.hits += 1
-                return
+        i = 0
+        si = self.k4.index("s") if "s" in self.k4 else None
+        if st is not None:                                                             # 재생 시작 (step 의 e0 바로 뒤) -- 첫 시도 몫 시간 나누기용
+            st["e0"] = torch.cuda.Event(enable_timing=True); st["e0"].record()
+        while i < len(self.segs):
+            cond, g = self.segs[i]
+            kd = self.k4[i]
+            if kd == "r" and st is not None and X1.T > 0 and not st["jump"] and st["won"] == 0 and si is not None and int(s.IP[13]) == 0:
+                g2, F2 = float(s.SC[1]), float(s.CD[2])
+                if not (g2 <= X1.T * F2):                                              # X3e4: 반복 0 시작 잔차로 무너짐 판정 -> 켜고 걸음 시작부터
+                    ev = torch.cuda.Event(enable_timing=True); ev.record(); st["ev"] = ev
+                    _restore(s)
+                    from . import fem_speed3 as S3
+                    if S3.TB.mod is not None:
+                        S3.TB.g("TB_RUN", np.int32)[0] = 0
+                        torch.cuda.synchronize()
+                    WRX.on(s, 1); st["won"] = 1; st["jump"] = "x3e"; X1.x3e += 1
+                    i, skip = si, False
+                    continue
+            if kd == "s" and X1.level == 3 and int(s.IP[13]) == 0:
+                if getattr(s, "_x1won", 0) == 0:                                       # X2 확인 (가): 첫 시도 걸음 시작 앞 값
+                    s._x2s = _x2c_snap(s, False)
+                elif getattr(s, "_x2c", None) is not None:                              # X2 확인 (나): 다시 한 시도 (P2G 새로) 걸음 시작 앞 값 대 첫 시도 'x' 시점 값
+                    X2C.rec.append(dict(kind="다시", **_x2c_cmp(s._x2c, _x2c_snap(s, False))))
+                    s._x2c = None
+            if kd == "x" and int(s.IP[13]) == 0:
+                coll = C3.nfail(s, s.ufl, s.ufg, 1) > 0
+                if X1.level == 3 and getattr(s, "_x1won", 1) == 0 and getattr(s, "_x2s", None) is not None:
+                    xs = _x2c_snap(s, False)                                            # (가) 같은 시도 's' 대 'x' (bx 는 걸음 안에서 옮겨짐 -> 사본 대 's' 값을 따로)
+                    r_ = _x2c_cmp(s._x2s, xs)
+                    r_["bx_snap"] = _x2c_cmp(dict(IP=s._x2s["IP"], bx=s._x2s["bx"]), dict(IP=s._x2s["IP"], bx=s._x2bx.reshape(-1)[:s._x2s["bx"].numel()].clone())).get("bx")
+                    X2C.rec.append(dict(kind="같은 시도", coll=bool(coll), **r_))
+                    s._x2s = None
+                    if coll:
+                        s._x2c = _x2c_snap(s, True)
+                if coll and st is not None and not st["jump"] and st["won"] == 0 and si is not None:
+                    ev = torch.cuda.Event(enable_timing=True); ev.record(); st["ev"] = ev   # X2: 첫 시도 무너짐 -> 켜고 걸음 시작부터 (같은 재생 안)
+                    st["nf0"] = 1
+                    _restore(s)
+                    WRX.on(s, 1); st["won"] = 1; st["jump"] = "x2"; X1.x2 += 1
+                    i, skip = si, False
+                    continue
+                discard = getattr(s, "_x1ok", False) if st is None else (coll and (st["depth"] > 0 or st["won"] == 0))
+                if coll and discard:
+                    X1.hits += 1
+                    return
             if not cond:                                                                 # 아래는 fem_common3.SegGraph.replay 글자 그대로
                 skip = False
                 if mode == 2:
                     e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-                    e0.record(); g.replay(); e1.record(); st["ev"].append((0, e0, e1))
+                    e0.record(); g.replay(); e1.record(); cst["ev"].append((0, e0, e1))
                 else:
                     g.replay()
+                i += 1
                 continue
             if not skip:
                 skip = bool(int(s.CT[0]) != 0)
-            st["sk" if skip else "run"] += 1
+            cst["sk" if skip else "run"] += 1
             if mode == 1 and skip:
+                i += 1
                 continue
             if mode == 2:
                 e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-                e0.record(); g.replay(); e1.record(); st["ev"].append((2 if skip else 1, e0, e1))
+                e0.record(); g.replay(); e1.record(); cst["ev"].append((2 if skip else 1, e0, e1))
             else:
                 g.replay()
+            i += 1
     C3.SegGraph.__init__, C3.SegGraph.replay = __init__, replay
     o_on = WRX.on
 
@@ -374,6 +528,64 @@ def x1_install():
         finally:
             s._x1ok = prev
     AORT.split_step = split_step
+    if X1.level != 2:
+        return
+    o_col = WRX.split_col
+
+    def split_col(s, t, h, sub_dt, depth, fn=None):
+        """WRX.split_col 과 같은 돌려줌 (다시 했는지, K, 시도 [(K, 무너진 걸음, ms, 켬)]) -- 켠 채 K 1 은 같은 재생 안 (X2·X3e4), K 2 부터는 split_step 과 같음."""
+        if fn is not None or not isinstance(s, cls):
+            return o_col(s, t, h, sub_dt, depth, fn)
+        import math
+        bk = s._bk()
+        WRX.on(s, 0)
+        base = (s.ga_c, s.nt, s.cg)
+        AORT.set_K_ga(s, 1, h, sub_dt)
+        st = s._s4st = dict(jump=None, won=0, depth=int(depth), ev=None, nf0=None, e0=None)
+        try:
+            redo = s.step(t)
+        finally:
+            s._s4st = None
+        ms = float(s.last_ms)
+        nf = C3.nfail(s, s.ufl, s.ufg, 1)
+        if st["jump"] is None:
+            tries = [(1, nf, ms, 0)]
+            if nf == 0 or not math.isfinite(ms):
+                return redo, 1, tries
+            s._rs(bk)                                                                  # (넘침으로 같은 재생 안 다시 하기를 못 한 경우) 원래 X3c 경로
+            WRX.on(s, 1)
+            r1, K1, tr1 = AORT.split_step(s, t, h, sub_dt, depth)
+            WRX.on(s, 0)
+            s.last_ms = ms + float(s.last_ms)
+            return (redo or r1), K1, tries + [(a, b, c, 1) for (a, b, c) in tr1]
+        torch.cuda.synchronize()
+        m1 = st["e0"].elapsed_time(st["ev"]) if (st["ev"] is not None and st["e0"] is not None) else 0.0
+        m1 = min(max(m1, 0.0), ms)
+        tries = [(1, st["nf0"] if st["jump"] == "x2" else -1, m1, 0), (1, nf, ms - m1, 1)]
+        tot = ms
+        K = 1
+        if nf > 0 and math.isfinite(ms) and depth > 0:                               # 켠 채 K 1 도 무너짐 -> K 2 부터 (split_step 과 같은 글자, 켠 채)
+            wf = getattr(s, "wf", {})
+            for dp in range(1, depth + 1):
+                K = 1 << dp
+                s._rs(bk)
+                if wf.get("ks_ga") is not None:
+                    s.ga_c = wf["ks_ga"]
+                if wf.get("ks_nt"):
+                    s.nt, s.cg = int(wf["ks_nt"]), int(wf["ks_cg"])
+                AORT.set_K_ga(s, K, h, sub_dt)
+                redo = s.step(t) or redo
+                m_ = float(s.last_ms)
+                nf_ = C3.nfail(s, s.ufl, s.ufg, K)
+                tries.append((K, nf_, m_, 1))
+                tot += m_
+                if nf_ == 0 or not math.isfinite(m_):
+                    break
+            s.ga_c, s.nt, s.cg = base
+        WRX.on(s, 0)
+        s.last_ms = tot
+        return redo, K, tries
+    WRX.split_col = split_col
 
 
 # ======================= 프레임 기록 =======================
@@ -395,7 +607,7 @@ def frame_install(out):
                 r = fn(s, *a, **kw)
             finally:
                 dep[0] -= 1
-            if dep[0] == 0:
+            if dep[0] == 0 and isinstance(s, AORT.AORTSolver):
                 rec = dict(t=fr[0])
                 fr[0] += 1
                 if SP.on:
@@ -406,8 +618,11 @@ def frame_install(out):
                 if WS4.mode:
                     rec["ws4"] = ws4_counts(s)
                 if X1.on:
-                    rec["x1"] = X1.hits
-                    X1.hits = 0
+                    rec["x1"] = [X1.hits, X1.x2, X1.x3e]
+                    X1.hits = X1.x2 = X1.x3e = 0
+                    if X2C.rec:
+                        rec["x2c"] = X2C.rec
+                        X2C.rec = []
                 log.write(json.dumps(rec, ensure_ascii=False) + "\n"); log.flush()
             return r
         return w

@@ -55,7 +55,8 @@ def run_row(d):
     if S4 and "ws4" in S4[0]:
         r["ws4"] = [sum(q["ws4"][k] for q in S4) for k in ("round", "clean", "bad")]
     if S4 and "x1" in S4[0]:
-        r["x1"] = sum(q["x1"] for q in S4)
+        v = [q["x1"] if isinstance(q["x1"], list) else [q["x1"], 0, 0] for q in S4]
+        r["x1"] = [sum(a[i] for a in v) for i in range(3)]
     return r
 
 
@@ -66,7 +67,7 @@ def f(v, p=2):
 dirs = sorted(d for d in glob.glob(os.path.join(O, "*")) if os.path.isdir(d) and os.path.exists(os.path.join(d, "cmd.txt")))
 print("# 절 CM50 speed4 표\n")
 print("## 판별 (시간 = 그래프 재생 GPU ms, 프레임 3~; 16.7 넘는 프레임 수; 다시 한 프레임 = 시도 2 이상; 손상 = 끝 프레임 logJp > 0 몫)\n")
-print("| 판 | 프레임 | 발산 | 오차 % | 평균 ms | 최대 ms (프레임) | > 16.7 | 다시 한 프레임 | 끝 손상 % | 노드 상자 최대 | 끝 해시 | 시작 카드 다른 프로세스 | S1 라운드·깨끗·어긋남 | X1 건너뜀 |")
+print("| 판 | 프레임 | 발산 | 오차 % | 평균 ms | 최대 ms (프레임) | > 16.7 | 다시 한 프레임 | 끝 손상 % | 노드 상자 최대 | 끝 해시 | 시작 카드 다른 프로세스 | S1 라운드·깨끗·어긋남 | 꼬리 건너뜀·X2·X3e4 |")
 print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 rows = []
 for d in dirs:
@@ -149,3 +150,22 @@ for d in dirs:
     print("|---|---|---|")
     for k, (ms, c) in sorted(tot.items(), key=lambda kv: -kv[1][0])[:30]:
         print(f"| {k} | {ms / len(P):.3f} | {c / len(P):.1f} |")
+
+# ---- X2 확인 판 (--s4x 3)
+for d in dirs:
+    S4 = jl(os.path.join(d, "s4.jsonl"))
+    R = [r for q in S4 for r in q.get("x2c", [])]
+    if not R:
+        continue
+    n = os.path.basename(d)
+    same = [r for r in R if r["kind"] == "같은 시도"]
+    redo = [r for r in R if r["kind"] == "다시"]
+    keys = [k for k in (same or redo)[0] if k not in ("kind", "coll", "IP", "bx_snap")]
+    print(f"\n## X2 확인 {n}: (가) 같은 첫 시도의 걸음 시작 앞 대 uf_end 뒤 (비트 같아야, bx 는 걸음 안에서 옮겨짐 -> 사본이 걸음 시작 앞 값과 같은지 bx_snap) {len(same)} 프레임 · (나) X3c 로 프레임 처음부터 다시 한 시도의 걸음 시작 앞 대 첫 시도 값 (P2G 원자 합 순서만 다름) {len(redo)} 프레임\n")
+    print("| 배열 | (가) 최대 |차| | (가) 다른 원소 프레임 수 | (나) 최대 |차| | (나) 최대 상대 차 |")
+    print("|---|---|---|---|---|")
+    for k in keys + ["bx_snap"]:
+        a = [r.get(k) for r in same if r.get(k) is not None]
+        b = [r.get(k) for r in redo if r.get(k) is not None]
+        fa = lambda v: v[0] if isinstance(v, list) else v
+        print(f"| {k} | {max((fa(v) for v in a), default='-')} | {sum(1 for v in a if fa(v) != 0)} | {max((fa(v) for v in b), default='-')} | {max((v[1] for v in b if isinstance(v, list)), default='-')} |")

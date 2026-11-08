@@ -1,35 +1,52 @@
 # 절 CM50 묶음 speed4 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_speed4.sh)
-# F = 공통 후보 F (E + W̄ + R2 + A2), FH = 예산이 안 걸리는 F (@tb 1000, 해시 대조용), @s4p 1 단계 기록, @s4w 1 S1 (2 = 확인 판), @s4x 1 X1
-# ---- s0k 연기 (14 프레임): 컴파일·훅·기록 확인
+# F = 공통 후보 F (E + W̄ + R2 + A2), FH = 예산이 안 걸리는 F (@tb 1000, 해시 대조용)
+# @s4p 1 단계 기록, @s4w 1 S1 (2 = 확인 판), @s4x 1 X1 · 2 = X1 + X2 · 3 = X2 확인 판 (다시 하기는 원래대로, 걸음 시작 입력 비교), @s4e T = X3e4 후보 (결과 바뀜)
+# A = 결과 불변 가속 (@s4w 1 @s4x 2), AE = A + X3e4 (@s4e 1e6)
+# ---- s0k 연기 (14 프레임): 컴파일·훅·기록 확인 (첫 판: kL 이 새 실행기에서 S1 셈을 읽다 실패 -> s0k2 로 다시)
 s0k kP M3 p F @s4p 1 --frames 14
 s0k kW M3 n F @s4w 2 --frames 14
 s0k kS M3 n F @s4w 1 @s4x 1 --frames 14
 s0k kPX M3 n F @s4p 1 @s4w 1 @s4x 1 --frames 14
 s0k kL L n FH @s4w 1 @s4x 1 --frames 8
-# ---- s1 수박 F: 단독 시간 (a·b) · 단계 기록 · 커널 프로파일 · S1 확인 판 · 비결정 분포
+s0k2 kP2 M3 p F @s4p 1 @s4w 1 @s4x 2 --frames 14
+s0k2 kX2 M3 n F @s4w 1 @s4x 2 --frames 14
+s0k2 kX3 M3 n F @s4w 1 @s4x 3 --frames 14
+s0k2 kE M3 n F @s4w 1 @s4x 2 @s4e 1e6 --frames 14
+s0k2 kL2 L n FH @s4w 1 @s4x 2 @s4e 1e6 --frames 8
+# ---- s1 수박 F: 단독 시간 (a·b·c) · 단계 기록 · 커널 프로파일 · 확인 판 · 비결정 분포
 s1 zF M3 z F
-s1 zFA M3 z F @s4w 1 @s4x 1
+s1 zFA M3 z F @s4w 1 @s4x 2
+s1 zFAE M3 z F @s4w 1 @s4x 2 @s4e 1e6
 s1 pF M3 p F @s4p 1
-s1 pFA M3 p F @s4p 1 @s4w 1 @s4x 1
+s1 pFA M3 p F @s4p 1 @s4w 1 @s4x 2
+s1 pFAE M3 p F @s4p 1 @s4w 1 @s4x 2 @s4e 1e6
 s1 qF M3 q F
 s1 cW_1 M3 n F @s4w 2
 s1 cW_2 M3 n F @s4w 2
+s1 cX_1 M3 n F @s4w 1 @s4x 3
+s1 cX_2 M3 n F @s4w 1 @s4x 3
 s1 nF_1 M3 n F
 s1 nF_2 M3 n F
-s1 nFA_1 M3 n F @s4w 1 @s4x 1
-s1 nFA_2 M3 n F @s4w 1 @s4x 1
-s1 nFA_3 M3 n F @s4w 1 @s4x 1
-s1 nFA_4 M3 n F @s4w 1 @s4x 1
-# ---- s2 다른 씬: 결정적 해시 (예산 안 걸리는 FH, 가속 끔·켬) + F 단독 시간 (가속 켬, a·b)
+s1 nF_3 M3 n F
+s1 nF_4 M3 n F
+s1 nFA_1 M3 n F @s4w 1 @s4x 2
+s1 nFA_2 M3 n F @s4w 1 @s4x 2
+s1 nFA_3 M3 n F @s4w 1 @s4x 2
+s1 nFA_4 M3 n F @s4w 1 @s4x 2
+s1 nFAE_1 M3 n F @s4w 1 @s4x 2 @s4e 1e6
+s1 nFAE_2 M3 n F @s4w 1 @s4x 2 @s4e 1e6
+s1 nFAE_3 M3 n F @s4w 1 @s4x 2 @s4e 1e6
+s1 nFAE_4 M3 n F @s4w 1 @s4x 2 @s4e 1e6
+# ---- s2 다른 씬: 결정적 해시 (예산 안 걸리는 FH, 가속 끔·켬) + F 단독 시간 (가속 켬, a·b·c)
 s2 hL L h FH
-s2 hLA L h FH @s4w 1 @s4x 1
+s2 hLA L h FH @s4w 1 @s4x 2 @s4e 1e6
 s2 hW W h FH
-s2 hWA W h FH @s4w 1 @s4x 1
+s2 hWA W h FH @s4w 1 @s4x 2 @s4e 1e6
 s2 hF F h FH
-s2 hFA F h FH @s4w 1 @s4x 1
+s2 hFA F h FH @s4w 1 @s4x 2 @s4e 1e6
 s2 hB B h FH
-s2 hBA B h FH @s4w 1 @s4x 1
-s2 zL L z F @s4w 1 @s4x 1
-s2 zW W z F @s4w 1 @s4x 1
-s2 zFi F z F @s4w 1 @s4x 1
-s2 zB B z F @s4w 1 @s4x 1
+s2 hBA B h FH @s4w 1 @s4x 2 @s4e 1e6
+s2 zL L z F @s4w 1 @s4x 2 @s4e 1e6
+s2 zW W z F @s4w 1 @s4x 2 @s4e 1e6
+s2 zFi F z F @s4w 1 @s4x 2 @s4e 1e6
+s2 zB B z F @s4w 1 @s4x 2 @s4e 1e6
