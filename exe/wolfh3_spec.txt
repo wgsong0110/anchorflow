@@ -1,0 +1,26 @@
+# 절 CM66 묶음 wolfh3 판 목록: 단계 이름 씬 방식 플래그 (낱말: F·P1X·A3 = exe/stab_wolfh3.sh dfl, G' = F P1X A3 @hc 5 @rr 1 @tc 8)
+# ---- s0k 연기 (새 코드 경로 컴파일·훅 확인): G' + 진단 · Y5 + 진단 · Y5 + N 꼴 + S + 진단
+s0k kD W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3dg 1
+s0k kY5 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3y 1 @w3dg 1
+s0k kY5NS W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3y 1 @w3nt 1 @w3dg 1 @w2s 1 --fl_pt
+# ---- s1 할 일 1 (걸음별 진단: G' 2 · G' ~--y0eb 2) + 할 일 2 (Y5 · Y5 + S · Y5 + N 각 4) + N 이 S 의 무너짐을 막는 기전 (S 2 · S + N 2, 진단 켬)
+s1 dG_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3dg 1
+s1 dG_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3dg 1
+s1 dE_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 ~--y0eb @w3dg 1
+s1 dE_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 ~--y0eb @w3dg 1
+s1 y5_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3y 1 @w3dg 1
+s1 y5_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3y 1 @w3dg 1
+s1 y5_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3y 1 @w3dg 1
+s1 y5_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3y 1 @w3dg 1
+s1 y5S_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3y 1 @w3dg 1 @w2s 1 --fl_pt
+s1 y5S_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3y 1 @w3dg 1 @w2s 1 --fl_pt
+s1 y5S_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3y 1 @w3dg 1 @w2s 1 --fl_pt
+s1 y5S_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3y 1 @w3dg 1 @w2s 1 --fl_pt
+s1 y5N_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3y 1 @w3nt 1 @w3dg 1
+s1 y5N_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3y 1 @w3nt 1 @w3dg 1
+s1 y5N_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3y 1 @w3nt 1 @w3dg 1
+s1 y5N_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3y 1 @w3nt 1 @w3dg 1
+s1 mS_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3dg 1 @w2s 1 --fl_pt
+s1 mS_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3dg 1 @w2s 1 --fl_pt
+s1 mSN_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3dg 1 @w2s 1 @w2n 1 --fl_pt
+s1 mSN_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @w3dg 1 @w2s 1 @w2n 1 --fl_pt
