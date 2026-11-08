@@ -74,6 +74,6 @@ if [ $STG = s0 ]; then                                                          
 fi
 [ $STG = s0 ] || { $PY exe/wmshape3_tab.py $O $JP > $O/wmshape3_table.md 2> $O/wmshape3_table.err; rclone copy $O $RO -q --include "wmshape3_table.*" --include wmshape3_curves.json; }
 if [ $STG = s2 ] || [ $STG = s3 ]; then                                                                      # 절 CM44 (2) 층별 첫 접촉 진단 (CPU, 읽기만)
-  $PY exe/wmshape3_prof.py $O $JP $WMD/wm.pt BW4_1,V2_1,V2N_1,V3_2,QR,QB5,QB2,BE_1,V2NE_1 > $O/wmshape3_prof.md 2> $O/wmshape3_prof.err; rclone copy $O $RO -q --include "wmshape3_prof.*"
+  $PY exe/wmshape3_prof.py $O $JP $WMD/wm.pt BW4_1,V2_1,V2N_1,V3_2,QR,QB5,QB2,BE_1,V2NE_1,V2NP_1,V2NEP_1 > $O/wmshape3_prof.md 2> $O/wmshape3_prof.err; rclone copy $O $RO -q --include "wmshape3_prof.*"
 fi
 log "단계 끝 $STG"
