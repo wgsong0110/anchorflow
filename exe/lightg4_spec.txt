@@ -1,0 +1,46 @@
+# 절 CM75 묶음 lightg4 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_lightg4.sh; 낱말 F·P1X·A3 는 stab 의 dfl 이 펼침)
+# 바탕 G'' = 'F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1'. '@l3 10 @l3sc 1 @l3fr 1' = 절 CM73 (A) γ̄_L 10 P1X 밖만, '@l4 1' = 그 가벼움 몫에 재질 응집 몫 κ = 2σ_t/(σ_t+σ_c) 곱 (수박 NACC β 1 -> 1, bread von Mises -> 1, 레고·ficus 탄성 -> 1, wolf DP c 0 -> 0).
+# 이름 K = (A) γ̄_L 10 × κ. 방식 h = 결정적 끝 해시 (--det --fhash, @tb 1000): 짝 0 = κ 없음, 1 = κ 켬 (wolf: κ 0 -> G'' 와 같은 계산인지; @mf2 1 결정적 판은 wolf 메모리 넘침 (절 CM72) 이라 wolf 짝은 G' 바탕. bread: κ 1 -> 절 CM73 (A) 와 같은 계산인지).
+# s0k 연기·검사: 수박 8 프레임 (검사 f3·f7 + 금 면), wolf 8 (κ 0 -> 아무것도 안 함), bread 8 (검사 f3·f7), 레고·ficus 8
+s0k kKM3 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @l3fd 3,7 @wfm -1 @wfd6 1 --frames 8
+s0k kKW W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 --frames 8
+s0k kKB B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3fd 3,7 --frames 8
+s0k kKL L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 --frames 8
+s0k kKF F nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 --frames 8
+# s1: 수박 16 판 (진단 D1·D2·D5·D6·lg3·금 면) + 단독 렌더 포함 a · b + 결정적 해시 짝 (wolf G' 바탕 κ 끔·켬, bread G'' + (A) γ̄_L 10 κ 끔·켬)
+s1 mK_1 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
+s1 mK_2 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
+s1 mK_3 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
+s1 mK_4 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
+s1 mK_5 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
+s1 mK_6 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
+s1 mK_7 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
+s1 mK_8 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
+s1 mK_9 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
+s1 mK_10 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
+s1 mK_11 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
+s1 mK_12 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
+s1 mK_13 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
+s1 mK_14 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
+s1 mK_15 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
+s1 mK_16 M3 g F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1 @l3ck 1 @wfm -1 @wfd6 1
+s1 hW0 W h F P1X A3 @hc 5 @rr 1 @tc 8 @tb 1000
+s1 hW1 W h F P1X A3 @hc 5 @rr 1 @tc 8 @tb 1000 @l4 1 @l3 10 @l3sc 1 @l3fr 1
+s1 hB0 B h F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @tb 1000 @l3 10 @l3sc 1 @l3fr 1
+s1 hB1 B h F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @tb 1000 @l4 1 @l3 10 @l3sc 1 @l3fr 1
+s1 zKM3 M3 z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1
+# s2: wolf 4 판, bread 4 판, 레고·ficus 1 판 + 단독 렌더 포함 a · b
+s2 wK_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1
+s2 wK_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1
+s2 wK_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1
+s2 wK_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1
+s2 bK_1 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1
+s2 bK_2 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1
+s2 bK_3 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1
+s2 bK_4 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1
+s2 lK_1 L nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1
+s2 fK_1 F nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @l3dg 1
+s2 zKW W z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1
+s2 zKB B z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1
+s2 zKL L z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1
+s2 zKF F z F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1
