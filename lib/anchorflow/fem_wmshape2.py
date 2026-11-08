@@ -9,6 +9,7 @@
   + 입자: 손상 입자·새 손상 입자의 탄성 J·전체 부피 비 J·Jp 분위, logJp 크기 구간 (0~0.01·0.01~0.1·0.1~0.4·> 0.4) 몫.
 후보 (a) --ws2_eps ε (> 0): 가우스 점마다 등분 수 n = clamp(⌈‖sym(∇U − ∇U0)‖ / ε⌉, 1, --rm_sub) (elem·commit 같은 식이라 같은 n; --rm_sub 가 상한).
 후보 (a2) --ws2_yc c (> 0): n = clamp(⌈(κ |tr Δε| + 2μ |dev Δε|) / (c · p0(logJp))⌉, 1, --rm_sub) -- 한 번의 RM 시험 응력 이동이 항복면 크기 p0 의 c 배를 넘지 않게 (소성 부분 걸음 표준 기준).
+후보 (c) --ws2_win M: 첫 접촉 (입자 에너지가 0.1 J 넘게 준 첫 프레임 t_c) 부터 M 프레임 (충격·되튐) 만 --rm_sub 등분, 그 뒤 n = 1 (장치 prm[12] 값만 바꿈, 소스·그래프 그대로).
 후보 (b) --ws2_fc 'N,C' : 첫 접촉 프레임 (보통 풀이 뒤 입자 최저 높이 < --ws2_fch 이고 입자 에너지가 0.1 J 넘게 준 첫 프레임) 을 되돌려 뉴턴·PCG 상한 N·C 로 다시 (그래프 따로),
   그 결과 입자 에너지 (운동 + 중력 위치 + SNH 탄성) 가 프레임 시작보다 --ws2_fctol J 넘게 늘면 버리고 보통 결과를 받음 (에너지 생성 없음 조건).
 """
@@ -121,14 +122,14 @@ def src_apply(r, diag, eps, mode=1):
     return r[:k] + body + r[e:]
 
 
-CFG = dict(diag=0, eps=0.0, yc=0.0, fc=None, fch=0.02, fctol=0.01, fcn=1, fcde=0.1)
+CFG = dict(diag=0, eps=0.0, yc=0.0, win=0, fc=None, fch=0.02, fctol=0.01, fcn=1, fcde=0.1)
 
 
 def install(a):
     """소스·alloc·bind·_rs 감싸기 (S 만들기 전에)."""
     from . import fem_ao_rt as AORT
     from . import fem_wmfrac as WF
-    CFG.update(diag=int(a.ws2), eps=float(a.ws2_eps), yc=float(a.ws2_yc), fch=float(a.ws2_fch), fctol=float(a.ws2_fctol), fcn=int(a.ws2_fcn))
+    CFG.update(diag=int(a.ws2), eps=float(a.ws2_eps), yc=float(a.ws2_yc), win=int(a.ws2_win), fch=float(a.ws2_fch), fctol=float(a.ws2_fctol), fcn=int(a.ws2_fcn))
     if a.ws2_fc:
         CFG["fc"] = tuple(int(q) for q in a.ws2_fc.split(","))
     if getattr(AORT, "_ws2", False):
@@ -177,7 +178,7 @@ def install(a):
         WRX.split_col = _fc_wrap(WRX.split_col)
 
 
-ST = dict(S=None, mu=None, lam=None, g=None, NR=None, PN=None, done=0, seen=False, log=[], lprev=None)
+ST = dict(S=None, mu=None, lam=None, g=None, NR=None, PN=None, done=0, seen=False, log=[], lprev=None, Ep=None, tc=None, sw=None)
 
 
 def setup(S, mu, lam, g, FL):
@@ -284,6 +285,16 @@ def frame(fi):
             dl = lj - lp
             o["dlq"] = _q(dl, [0.01, 0.5, 0.99])
         ST["lprev"] = lo.clone()
+    if CFG["win"] > 0 and ST["sw"] is None and int(S.IP[13]) == 0:                    # 후보 (c) 충격 창: 첫 접촉 (입자 에너지가 0.1 J 넘게 준 첫 프레임) 부터 win 프레임만 n 등분, 그 뒤 n = 1
+        E = energy(S)[0]
+        if ST["tc"] is None and ST["Ep"] is not None and ST["Ep"] - E > CFG["fcde"]:
+            ST["tc"] = fi + 1
+        ST["Ep"] = E
+        if ST["tc"] is not None and fi + 1 >= ST["tc"] + CFG["win"] - 1:
+            S.prm[12] = 1.0
+            ST["sw"] = fi + 1
+            o["win"] = dict(tc=ST["tc"], sw=fi + 1)
+            print(f"[절 CM41 충격 창] 첫 접촉 f{ST['tc']}, f{fi + 1} 끝부터 등분 n = 1", flush=True)
     if ST["log"]:
         o["fc"] = ST["log"][:]
         ST["log"].clear()
