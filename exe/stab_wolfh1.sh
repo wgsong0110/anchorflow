@@ -12,7 +12,7 @@ PY=/home/dkta/.conda/envs/af/bin/python
 export PYTHONUTF8=1 OMP_NUM_THREADS=8
 source exe/fem_cm2_scn.sh
 for t in L000 ficus bread wolf; do cm_data $t; done
-WMD=/tmp/dkta/ag_data; mkdir -p $WMD
+WMD=/dev/shm/dkta/ag_data; mkdir -p $WMD
 [ -s $WMD/wm.pt ] || { rclone copyto r2:storage/result/anchorflow/lbours/fem_ag_data/wm.pt $WMD/wm.pt.$$ -q && mv $WMD/wm.pt.$$ $WMD/wm.pt; }
 BA0="--cell 1 --mg_levels 4 --mg_nc 4 --ls_n 10 --descent --mg_wreuse --mg_lreuse --mv2 --lsfast --fk --gq_oct 0.1 --mgbar 2 --ga_y0ut --hspec --ncomp --ga hht --rho 0.8"
 FBB="--floor vel --fl_bar --fl_bst 1 --y0eb"

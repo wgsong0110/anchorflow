@@ -1,10 +1,10 @@
 #!/bin/bash
-# 절 CM52 묶음 wolfh1 진입점 (잡 133077 안 pbs_attach 로; exe/job_run.sh AF_DETACH=1). 코드 = R2 bundle -> /tmp, 결과 /dev/shm -> R2 lbours/wolfh1 (5 분마다 + 판 끝날 때마다).
+# 절 CM52 묶음 wolfh1 진입점 (잡 133077 안 pbs_attach 로; exe/job_run.sh AF_DETACH=1). 코드 = R2 bundle -> /dev/shm/dkta (11-08 부터, 노드 /tmp 98 %), 결과 /dev/shm -> R2 lbours/wolfh1 (5 분마다 + 판 끝날 때마다).
 # 사용: bash go_wolfh1.sh <커밋> <단계>   (끝 표식 R2 lbours/wolfh1/go_<단계>.END; 마지막에 wolfh1.END)
 export PATH=/home/dkta/bin:$PATH
 H=$1; STG=$2
 R=r2:storage/result/anchorflow/lbours/wolfh1
-O=/dev/shm/dkta/lbours/wolfh1; CB=/tmp/dkta/wolfh1_code; C=$CB/$H
+O=/dev/shm/dkta/lbours/wolfh1; CB=/dev/shm/dkta/wolfh1_code; C=$CB/$H
 EN=go_$STG.END
 mkdir -p $O $CB /dev/shm/dkta/cache /tmp/dkta; rm -f $O/$EN $O/wolfh1.FAIL
 L=$O/go_$STG.log; say() { echo "[go $(date '+%F %T')] $*" >> $L; rclone copyto $L $R/go_$STG.log -q; }
