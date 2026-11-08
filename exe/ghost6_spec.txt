@@ -1,0 +1,37 @@
+# 절 CM57 묶음 ghost6 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_ghost6.sh)
+# F = 공통 후보 F = E + W̄ (@e3w 1) + R2 (@e5r 2) + A2 (@e5a 2) (절 CM49); 수박 M3 은 + @inv 1 + --sp2 31 (셀 3), 바탕 --gq_mass. γ̄ 1e-1, 고스트 질량 켬 (절 CM51~CM55 그대로).
+# @g6c 1 = 보존 판 (강성 벌점 인자 = 기준 형상 변위 u0 + 걸음 변위 y), 없으면 증분 판 (인자 = y). @g6en 1 = 프레임마다 에너지 진단 (결과 불변), @g6fd = 보존 판 검사 프레임.
+# 면 집합: 0x = @g4t 0 @g4x 1 (면 전부 + 구속 노드 면 빼기), Ax = @g4t 4 @g4x 1 (절 CM55 A).
+# s0k 연기 + 검사: 보존 판 0x·Ax 다섯 씬 (g4fd = ghost5 검사 + 훅 몫 u0, g6fd = u0 커널·아핀 운동·u0 든 힘·에너지·선탐색)
+s0k kM0 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g6c 1 @g4fd 4 @g6fd 1,4,8 --frames 10
+s0k kF0 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g6c 1 @g4fd 5 @g6fd 1,5 @g6en 1 --frames 8
+s0k kL0 L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g6c 1 @g4fd 5 @g6fd 1,5 --frames 8
+s0k kW0 W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g6c 1 @g4fd 5 @g6fd 1,5 --frames 8
+s0k kB0 B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g6c 1 @g4fd 5 @g6fd 1,5 --frames 8
+s0k kMA M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6c 1 @g4fd 4 @g6fd 1,4,8 --frames 10
+s0k kFA F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6c 1 @g4fd 5 @g6fd 1,5 @g6en 1 --frames 8
+s0k kLA L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6c 1 @g4fd 5 @g6fd 1,5 --frames 8
+s0k kWA W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6c 1 @g4fd 5 @g6fd 1,5 --frames 8
+s0k kBA B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6c 1 @g4fd 5 @g6fd 1,5 --frames 8
+# s1 (1) ficus 자유 진동 에너지: 대조 F (γ̄ 0 = 커널만, 참고 k 로 벌점 일 잼) · 증분 판 0x (주기 비 1.67 재현)·Ax·P1X (@g4t 1) · 보존 판 0x·Ax, 모두 @g6en 1 (결과 불변)
+# s1 (2) 보존 판 ficus 주기 (0x·Ax 각 4 판 = 에너지 판 1 + 3) · 수박 (0x·Ax 각 4 판, 진단 D1·D2·D5)
+s1 eF_ctl F nd E @e3w 1 @e5r 2 @e5a 2 @g4 0 @g4t 0 @g4x 1 @g6en 1
+s1 eF_inc0 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g6en 1
+s1 eF_incA F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6en 1
+s1 eF_inc1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 1 @g4x 1 @g6en 1
+s1 eF_c0 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g6c 1 @g6en 1
+s1 eF_cA F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6c 1 @g6en 1
+s1 rF_c0_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g6c 1
+s1 rF_c0_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g6c 1
+s1 rF_c0_3 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g6c 1
+s1 rF_cA_1 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6c 1
+s1 rF_cA_2 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6c 1
+s1 rF_cA_3 F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6c 1
+s1 mC0_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g6c 1
+s1 mC0_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g6c 1
+s1 mC0_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g6c 1
+s1 mC0_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g6c 1
+s1 mCA_1 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6c 1
+s1 mCA_2 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6c 1
+s1 mCA_3 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6c 1
+s1 mCA_4 M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6c 1
