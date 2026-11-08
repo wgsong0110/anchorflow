@@ -136,3 +136,45 @@ s1 rM0_117 M3 r F P1X @hc 0 --frames 8
 s1 rM0_118 M3 r F P1X @hc 0 --frames 8
 s1 rM0_119 M3 r F P1X @hc 0 --frames 8
 s1 rM0_120 M3 r F P1X @hc 0 --frames 8
+# s2 (할 일 3): H5 (@hc 5, s1 진단 뒤 확정 -- fem_hhtc2.py 머리말) 다섯 씬, 모두 Rf (+ A3); 수박 16 · 레고 8 · wolf·ficus·bread 4 판 + 단독 렌더 포함 a · b
+s2 m5R_1 M3 g F P1X A3 @hc 5 @rr 1 @tc 8
+s2 m5R_2 M3 g F P1X A3 @hc 5 @rr 1 @tc 8
+s2 m5R_3 M3 g F P1X A3 @hc 5 @rr 1 @tc 8
+s2 m5R_4 M3 g F P1X A3 @hc 5 @rr 1 @tc 8
+s2 m5R_5 M3 g F P1X A3 @hc 5 @rr 1 @tc 8
+s2 m5R_6 M3 g F P1X A3 @hc 5 @rr 1 @tc 8
+s2 m5R_7 M3 g F P1X A3 @hc 5 @rr 1 @tc 8
+s2 m5R_8 M3 g F P1X A3 @hc 5 @rr 1 @tc 8
+s2 m5R_9 M3 g F P1X A3 @hc 5 @rr 1 @tc 8
+s2 m5R_10 M3 g F P1X A3 @hc 5 @rr 1 @tc 8
+s2 m5R_11 M3 g F P1X A3 @hc 5 @rr 1 @tc 8
+s2 m5R_12 M3 g F P1X A3 @hc 5 @rr 1 @tc 8
+s2 m5R_13 M3 g F P1X A3 @hc 5 @rr 1 @tc 8
+s2 m5R_14 M3 g F P1X A3 @hc 5 @rr 1 @tc 8
+s2 m5R_15 M3 g F P1X A3 @hc 5 @rr 1 @tc 8
+s2 m5R_16 M3 g F P1X A3 @hc 5 @rr 1 @tc 8
+s2 l5R_1 L nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 l5R_2 L nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 l5R_3 L nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 l5R_4 L nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 l5R_5 L nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 l5R_6 L nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 l5R_7 L nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 l5R_8 L nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 w5R_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 w5R_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 w5R_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 w5R_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 f5R_1 F nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 f5R_2 F nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 f5R_3 F nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 f5R_4 F nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 b5R_1 B nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 b5R_2 B nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 b5R_3 B nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 b5R_4 B nd F P1X A3 @hc 5 @rr 1 @tc 8
+s2 z5RM3 M3 z F P1X A3 @hc 5 @rr 1 @tc 8
+s2 z5RL L z F P1X A3 @hc 5 @rr 1 @tc 8
+s2 z5RF F z F P1X A3 @hc 5 @rr 1 @tc 8
+s2 z5RW W z F P1X A3 @hc 5 @rr 1 @tc 8
+s2 z5RB B z F P1X A3 @hc 5 @rr 1 @tc 8

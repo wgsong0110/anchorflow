@@ -7,11 +7,13 @@ lib/anchorflow/fem_hhtc.py (절 CM58) 복사 + 아래. 모드 0~4 는 절 CM58 �
   v0 = 걸음 시작 속도, vH = α (y − z0) (HHT 걸음 끝), vB = (y − U)/h (같은 y 의 후퇴 오일러 걸음 끝 = 걸음 평균 속도), ΔU_H = h v0 + h² ((½−β) a0 + β a1), ΔU_B = y − U.
   노드 질량 가중 합 = 입자 질량 가중 합 (Σ_n m_n v_n = Σ_p m_p Σ_n w_pn v_n) 이라 P/Σm 이 입자 몸 질량중심 속도와 같음.
 정의 (문턱·클램프 없음):
-  5 (H5): H4 의 걸음 (충돌 걸음 ∧ 새 접촉 노드 법선 속도 합을 HHT 가 들어가는 쪽 -> 나오는 쪽으로 뒤집음) 중 **몸 질량중심 법선 운동량도 HHT 가 뒤집는 걸음**
-     (P0 < 0 ∧ PH > 0) 만 몸 전체 후퇴 오일러. 근거: 고치는 방법이 몸 전체 (H1·H4) 이므로 켜는 조건도 몸 전체의 반동 -- 정답 바닥 (MPM sticky collider) 은 들어오는
-     노드 속도를 0 으로 하는 완전 비탄성 (반발 계수 0) 이고, 국소 노드만 뒤집힌 걸음 (몸은 계속 들어가는 중) 에 몸 전체 감쇠를 거는 것은 정의 밖.
-  6 (H6, 비교용): H5 ∧ PB < 0 (같은 y 의 걸음 평균 운동량은 아직 들어가는 쪽인데 HHT 끝 속도만 나오는 쪽 = 사다리꼴 식이 만든 반전).
-  모드 0 은 H4·H5·H6 걸음 수만 셈 (nflip·nf5·nf6).
+  5 (H5, s2 부터; s1 진단 뒤 확정): H4 의 걸음 (충돌 걸음 ∧ 새 접촉 노드 법선 속도 합을 HHT 가 들어가는 쪽 -> 나오는 쪽으로 뒤집음) 중
+     **몸 질량중심 법선 운동량을 HHT 끝 속도가 뒤집는데 (P0 < 0 < PH) 같은 y 의 걸음 평균 (후퇴 오일러) 운동량은 아직 들어가는 쪽 (PB < 0)** 인 걸음만 몸 전체 후퇴 오일러.
+     = 반발 계수로: HHT 몸 반발 e_H = −PH/P0 > 0 인데 풀이가 실제로 옮긴 몸 반발 e_B = −PB/P0 < 0 -- 정답 바닥 (MPM sticky collider, 들어오는 노드 속도 0 =
+     완전 비탄성, 반발 0) 아래에서 위치로 실현되지 않은 반동 (v1 = 2 v̄ − v0 꼴 사다리꼴 식이 만든 몫). 위치로 실현된 반동 (PB ≥ 0, 레고가 실제로 구르며 튀는 걸음) 과
+     국소 노드만 뒤집힌 걸음 (몸은 계속 들어감, H4 가 레고에서 켜지던 걸음 대부분) 은 그대로 HHT.
+  6 (H5a, 비교용): H4 ∧ P0 < 0 < PH (몸 뒤집힘만, PB 조건 없음).
+  모드 0·4 는 H4·H5·H5a 걸음 수만 셈 (nflip·nf5·nf6). 주의: 커밋 fc33f1c (s0k·s1) 는 이름이 반대 (모드·셈 5 = 몸 뒤집힘만, 6 = + PB < 0).
 
 --- 아래는 절 CM58 fem_hhtc.py 원문 ---
 절 CM58 묶음 hhtc (조정자 11-08 위임): 수박 첫 접촉 뒤 몸 전체 튀어오름 (절 CM57.4) 을 접촉 걸음의 HHT 걸음 끝 갱신에서 끊는 정의.
@@ -162,14 +164,14 @@ __global__ void __launch_bounds__(256) hc_mom(const int* IP, const int* ms, cons
         atomicAdd(&mo[r*HC_NV + threadIdx.x], t);
     }
 }
-// H5 (모드 5): H4 조건 ∧ 몸 질량중심 법선 운동량을 HHT 가 뒤집음 (P0 < 0 ∧ PH > 0); H6 (모드 6): H5 ∧ 걸음 평균 운동량 PB < 0. 셈: st[7] H5 · st[8] H6
+// H5 (모드 5): H4 조건 ∧ 몸 질량중심 법선 운동량을 HHT 끝 속도가 뒤집음 (P0 < 0 < PH) ∧ 걸음 평균 운동량 PB < 0; H5a (모드 6): H4 ∧ P0 < 0 < PH. 셈: st[7] H5 · st[8] H5a
 __global__ void hc_all5(const int* IP, int* st, const double* fa, const double* mo, int mode, int* hm) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     int r = min(st[4], HC_MR - 1);
     const double* q = mo + r*HC_NV;
     bool c4 = st[2] > 0 && fa[0] < 0.0 && fa[1] > 0.0;
-    bool c5 = c4 && q[1] < 0.0 && q[2] > 0.0;
-    bool c6 = c5 && q[3] < 0.0;
+    bool c6 = c4 && q[1] < 0.0 && q[2] > 0.0;                                   // H5a 몸 뒤집힘
+    bool c5 = c6 && q[3] < 0.0;                                                  // H5 = H5a ∧ 걸음 평균 들어가는 쪽
     if (n == 0) { if (c4 && mode >= 5) atomicAdd(&st[6], 1); if (c5) atomicAdd(&st[7], 1); if (c6) atomicAdd(&st[8], 1); }   // 모드 0·4 의 st[6] 은 hc_all4 가 셈
     bool on = (mode == 5) ? c5 : ((mode == 6) ? c6 : false);
     if (n >= IP[9] || !on) return;
@@ -310,7 +312,7 @@ def install(mode, out):
     _wrap_k(AORT.AORTSolver, "ao_stepend_ufl", "ao_stepend_hc")
     for cls in (ART.RTSolver, V0.RTSolver):
         _wrap_step(cls)
-    name = {0: "진단만 (결과 불변)", 1: "H1 충돌 걸음 몸 전체 후퇴 오일러", 2: "H2 새 접촉 노드 후퇴 오일러", 3: "H3 걸음 끝 접촉 노드 가속도 기억 0", 4: "H4 HHT 가 새 접촉 노드 법선 속도를 뒤집는 충돌 걸음만 몸 전체 후퇴 오일러", 5: "H5 H4 걸음 중 HHT 가 몸 질량중심 법선 운동량도 뒤집는 걸음만 몸 전체 후퇴 오일러", 6: "H6 H5 걸음 중 걸음 평균 운동량이 아직 들어가는 쪽인 걸음만"}[MODE]
+    name = {0: "진단만 (결과 불변)", 1: "H1 충돌 걸음 몸 전체 후퇴 오일러", 2: "H2 새 접촉 노드 후퇴 오일러", 3: "H3 걸음 끝 접촉 노드 가속도 기억 0", 4: "H4 HHT 가 새 접촉 노드 법선 속도를 뒤집는 충돌 걸음만 몸 전체 후퇴 오일러", 5: "H5 H4 걸음 중 HHT 끝 속도가 몸 질량중심 법선 운동량을 뒤집고 걸음 평균 운동량은 아직 들어가는 쪽인 걸음만 몸 전체 후퇴 오일러", 6: "H5a H4 걸음 중 몸 질량중심 법선 운동량 뒤집힘 걸음만"}[MODE]
     print(f"[절 CM61] hhtc2 켬 -- 모드 {MODE}: {name}", flush=True)
 
     import atexit

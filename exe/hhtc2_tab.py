@@ -211,7 +211,7 @@ def hcof(fl):
     return int(m.group(1)) if m else None
 
 
-HCN = {None: "P1X (훅 없음)", 0: "P1X (대조, 진단만)", 1: "P1X + H1 (충돌 걸음 몸 전체 후퇴 오일러)", 2: "P1X + H2 (새 접촉 노드 후퇴 오일러)", 3: "P1X + H3 (접촉 노드 가속도 기억 0)", 4: "P1X + H4 (HHT 가 뒤집는 충돌 걸음만 몸 전체 후퇴 오일러)", 5: "P1X + H5 (H4 걸음 중 몸 질량중심 법선 운동량도 뒤집힌 걸음만)", 6: "P1X + H6 (H5 ∧ 걸음 평균 운동량 들어가는 쪽)"}
+HCN = {None: "P1X (훅 없음)", 0: "P1X (대조, 진단만)", 1: "P1X + H1 (충돌 걸음 몸 전체 후퇴 오일러)", 2: "P1X + H2 (새 접촉 노드 후퇴 오일러)", 3: "P1X + H3 (접촉 노드 가속도 기억 0)", 4: "P1X + H4 (HHT 가 뒤집는 충돌 걸음만 몸 전체 후퇴 오일러)", 5: "P1X + H5 (H4 걸음 중 HHT 가 몸 법선 운동량을 뒤집고 걸음 평균은 들어가는 쪽인 걸음만)", 6: "P1X + H5a (H4 걸음 중 몸 법선 운동량 뒤집힘만)"}
 
 
 def rfof(fl):
@@ -389,7 +389,7 @@ for (sc, h, rf), ns in RG.items():
         es = [e for e in (e1s(n) for n, _ in rs) if e]
         met = f"이탈 {sum(1 for e in es if e['nfar'] > 20)}/{len(es)} (최대 {max(e['nfar'] for e in es)} 개)" if es else "-"
     hs = [q for q in (hcsum(n) for n, _ in rs) if q]
-    hcc = (f"{min(q['ncol'] for q in hs)}~{max(q['ncol'] for q in hs)} (뒤집힘 {min(q['nflip'] for q in hs)}~{max(q['nflip'] for q in hs)}, 몸 뒤집힘 {min(q['nf5'] for q in hs)}~{max(q['nf5'] for q in hs)}) / {min(q['nstep'] for q in hs)}~{max(q['nstep'] for q in hs)} · {max(q['napp'] for q in hs)}") if hs else "-"
+    hcc = (f"{min(q['ncol'] for q in hs)}~{max(q['ncol'] for q in hs)} (뒤집힘 {min(q['nflip'] for q in hs)}~{max(q['nflip'] for q in hs)}, H5 {min(q['nf5'] for q in hs)}~{max(q['nf5'] for q in hs)}) / {min(q['nstep'] for q in hs)}~{max(q['nstep'] for q in hs)} · {max(q['napp'] for q in hs)}") if hs else "-"
     ff = [e1f(n) for n, _ in rs]
     fmx = max((a for a, _ in ff if a is not None), default=None)
     fr = [b for _, b in ff if b is not None]
