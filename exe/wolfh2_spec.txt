@@ -47,3 +47,6 @@ s2 dE_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 ~--y0eb
 s2 dE_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 ~--y0eb
 s2 dEG_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 ~--y0eb @w2gs 1 @w2n 1 --fl_pt --fl_bst 2
 s2 dEG_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 ~--y0eb @w2gs 1 @w2n 1 --fl_pt --fl_bst 2
+# ---- s3: 최선 판 dE (G' ~--y0eb) 이탈 표본 2 판 더 + 영상 렌더 (exe/wolfh2_pre_s3.sh: gC_1 · dE_2)
+s3 dE_3 W nd F P1X A3 @hc 5 @rr 1 @tc 8 ~--y0eb
+s3 dE_4 W nd F P1X A3 @hc 5 @rr 1 @tc 8 ~--y0eb
