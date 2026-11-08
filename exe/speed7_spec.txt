@@ -46,3 +46,9 @@ s3 vP_8 M3 r Hc @s7nm 1 @s7z 2 @s7p 2
 s3 zN3 M3 z Hc @s7nm 1
 s3 zZ3 M3 z Hc @s7nm 1 @s7z 1
 s3 zP3 M3 z Hc @s7nm 1 @s7z 1 @s7p 1
+# s4 bread 첫 할당 배수: 넘침 다시 할당 (f124 cap 2 · f209 cap 3) 이 300 프레임 안에 안 생기는 배수 (비결정 1 판씩, 진단만)
+s4 oB4 B r Hc @s7nm 1 @s7ovf 1 --cap_mul 4
+s4 oB5 B r Hc @s7nm 1 @s7ovf 1 --cap_mul 5
+s4 oB6 B r Hc @s7nm 1 @s7ovf 1 --cap_mul 6
+# s4 수박 커널 프로파일 Z + P (프레임 3~99)
+s4 pZP M3 q Hc @s7nm 1 @s7z 1 @s7p 1 @s7kp 3,100
