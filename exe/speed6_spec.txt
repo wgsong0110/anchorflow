@@ -45,3 +45,8 @@ s1 zCF F z Gp @s6o 1
 s1 zLF F z Gp @s6o 1 @s6l 1
 s1 zCB B z Gp @s6o 1
 s1 zLB B z Gp @s6o 1 @s6l 1
+# s2k 연기 (8 프레임): 백업 한 번 B (@s6b 1) · 렌더를 시뮬 스트림 밖으로 R (@s6r 1) · 벽시계 렌더 몫 Rw (@s6rw 1)
+s2k kRL L q Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 --frames 8
+s2k kRM M3 q Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1 --frames 8
+s2k kRW W q Gp @s6o 1 @s6l 1 @s6b 1 @s6r 1 @s6rw 1 --frames 8
+s2k khBL2 L h D A3 @hc 5 @tc 8 @rr 1 @tb 1000 @s6o 1 @s6l 1 @s6b 1 @s6r 1 --frames 8

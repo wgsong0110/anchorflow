@@ -17,6 +17,15 @@
     - 진단 E1 (AF_E1_DG) 은 끔 (stab 스크립트), 실행기는 exe/s6/ 사본 (프레임 사이 평가·기록을 끝으로 미룸, Defer 아래)
     렌더 (rtrender1) 와 Rf 는 그대로 (절 CM54·56 정의).
 
+(B) 백업 한 번 (--s6b 1, 결과 불변): 쪼개기 함수와 step 이 같은 프레임 시작 상태를 두 번 clone (_bk) 하는 것을 한 번으로 -- 같은 프레임 안에서
+    상태가 안 바뀌었으면 (그래프 재생·그래프 밖 record·alloc·다른 백업으로 되돌리기가 없었으면) 앞 백업 객체를 그대로 돌려줌 (백업은 읽기만 쓰임).
+(R) 렌더를 시뮬 스트림 밖으로 (--s6r 1, O 위; 래스터화·갱신은 읽기만이라 풀이 결과 불변, Rf 가 빼는 몫만 바뀜): 프레임 끝 시뮬 스트림 S 에서는 가우시안 입자 x·F 를
+    두 칸 버퍼로 모으기 (index_select) 만 하고, 갱신·래스터화는 기본 스트림 D 에서 그 사본으로. 래스터화 띄우기 (전처리 개수 읽기에서 호스트가 막힘) 는
+    다음 프레임 첫 그래프 재생을 띄운 바로 뒤로 미룸 -> 호스트가 막힌 동안에도 S 는 시뮬을 돎. rr.jsonl b = 모으기 (S), c = 0 (S 에 드러난 래스터화 없음).
+(Rw) 벽시계 렌더 몫 (--s6rw 1, 결과 바뀜 = Rf 의 벽시계 판): 프레임 n 의 예산 한도에서 빼는 몫 TC_RMS = W_k − T_k (k = 프레임 n 시작 때 이미 끝난 가장 최근 프레임,
+    W = 벽시계 프레임 간격, T = 시간 예산 시계 (globaltimer) 가 잰 그 프레임 시뮬 구간 TB_TE − TB_T0) -- 시뮬 예산 시계 밖의 모든 것 (렌더·호스트 빈틈·
+    프레임 사이 코드) 을 벽시계로 뺌. k 가 없으면 (처음 몇 프레임) Rf 값 그대로. 클램프 없음.
+
 (P) 프로파일 (--s6prof F0,F1): 프레임 F0 시작 ~ F1 시작 사이를 torch.profiler (CPU·CUDA, 파이썬 호출 쌓기) 로 -> <out>/trace.json.gz
     + 분석 analyze() -> <out>/s6prof.json (프레임별 GPU 빈 시간을 그때 호스트가 돌던 파이썬 함수·CUDA API 로 나눔).
 """
@@ -35,6 +44,9 @@ class C:
     o = 0
     lean = 0
     prof = None
+    b = 0
+    r = 0
+    rw = 0
 
 
 # ======================= (L) 가벼운 판 프레임 훅 (감싸개 설치 전에 바꿈) =======================
@@ -204,20 +216,38 @@ def _wall(ev):
 def _resolve(force=False):
     while W.q:
         rec, ev0, ev1, ras = W.q[0]
+        hold = None
+        if isinstance(ras, dict):                                                          # (R): 래스터화는 다음 프레임에 띄움 -> 띄운 뒤에야 끝 이벤트가 생김
+            if ras.get("ev") is None:
+                if not force:
+                    break
+                r_flush()
+            hold = ras
+            ras = ras.get("ev")
         last = ras if ras is not None else ev1
         if not force and not last.query():
+            break
+        if not force and rec.get("tb") is not None and not rec["tb"][0].query():
             break
         W.q.pop(0)
         if force:
             last.synchronize()
             ev1.synchronize()
         rec["per"] = round(ev0.elapsed_time(ev1), 4)
+        if rec.get("tb") is not None:
+            ok_, tb_ = rec.pop("tb")
+            if force:
+                ok_.synchronize()
+            if ok_.query():
+                rec["T"] = round((int(tb_[1]) - int(tb_[0])) * 1e-6, 4)
         P = _wall(last)
         rec["P"] = round(P, 4)
         rec["lat"] = round(P - rec["h0"], 4)
         rec["lag"] = round(_wall(ev0) - rec["h0"], 4)
         if ras is not None:
             rec["ras_end_after_ev1"] = round(ev1.elapsed_time(ras), 4)
+        if hold is not None and hold.get("craw") is not None:
+            rec["craw"] = round(hold["craw"][0].elapsed_time(hold["craw"][1]), 4)
         if W.prev_P is not None:
             rec["W"] = round(P - W.prev_P, 4)
         W.prev_P = P
@@ -225,6 +255,7 @@ def _resolve(force=False):
 
 
 def _flush_file():
+    r_flush()
     _resolve(True)
     with open(os.path.join(C.out, "s6.jsonl"), "w") as f:
         for r in W.recs:
@@ -236,7 +267,11 @@ def _counters():
 
     def replay(self, *a, **kw):
         W.ng += 1
-        return og(self, *a, **kw)
+        BK.mut += 1
+        r_ = og(self, *a, **kw)
+        if R.pend is not None:                                                            # (R): 이 프레임 첫 그래프를 띄운 뒤 앞 프레임 래스터화를 띄움
+            r_flush()
+        return r_
     torch.cuda.CUDAGraph.replay = replay
     osy = torch.cuda.synchronize
 
@@ -270,6 +305,11 @@ def frame_install(out):
                 ev0 = torch.cuda.Event(enable_timing=True)
                 ev0.record()
                 ng0, ns0 = W.ng, W.nsync
+                BK.frame += 1
+                if C.b:
+                    bk_install_on(type(s))
+                rw_ = rw_set() if C.rw else None
+                R.cur = None
                 if S5 is not None:
                     S5.O5.pend = []
                 if W.prof is not None:
@@ -291,7 +331,18 @@ def frame_install(out):
                 if W.prev_h1 is not None:
                     rec["gap"] = round(h0 - W.prev_h1, 4)
                 W.prev_h1 = h1
-                ras = S5.O5.pend[-1][1] if (S5 is not None and S5.O5.pend) else None
+                if rw_ is not None:
+                    rec["rw"] = rw_
+                if C.b:
+                    rec["bkhit"] = BK.hit
+                    BK.hit = 0
+                tbc = tb_copy()
+                if tbc is not None:
+                    rec["tb"] = tbc
+                if C.r and R.cur is not None:
+                    ras = R.cur
+                else:
+                    ras = S5.O5.pend[-1][1] if (S5 is not None and S5.O5.pend) else None
                 W.q.append((rec, ev0, ev1, ras))
                 W.fr += 1
                 _resolve()
@@ -304,6 +355,186 @@ def frame_install(out):
     WRX.split_col = outer(WRX.split_col)
     import atexit
     atexit.register(_flush_file)
+
+
+# ======================= (B) 백업 한 번 =======================
+class BK:
+    mut = 0
+    frame = 0
+    hit = 0
+    done = set()
+
+
+def bk_install_on(cls):
+    if cls in BK.done:
+        return
+    BK.done.add(cls)
+    ob, ors, orec, oal = cls._bk, cls._rs, cls.record, cls.alloc
+
+    def _bk(s):
+        c = getattr(s, "_s6c", None)
+        if c is not None and c[1] == BK.mut and c[2] == BK.frame:
+            BK.hit += 1
+            return c[0]
+        b = ob(s)
+        s._s6c = [b, BK.mut, BK.frame]
+        return b
+
+    def _rs(s, bk):
+        r = ors(s, bk)
+        BK.mut += 1
+        c = getattr(s, "_s6c", None)
+        if c is not None and bk is c[0]:
+            c[1] = BK.mut
+        return r
+
+    def record(s, *a, **kw):
+        BK.mut += 1
+        return orec(s, *a, **kw)
+
+    def alloc(s, *a, **kw):
+        BK.mut += 1
+        return oal(s, *a, **kw)
+    cls._bk, cls._rs, cls.record, cls.alloc = _bk, _rs, record, alloc
+    print(f"[절 CM65] 백업 한 번 (B) 설치 {cls.__module__}.{cls.__name__}", flush=True)
+
+
+# ======================= (R) 렌더를 시뮬 스트림 밖으로 =======================
+class R:
+    pend = None
+    cur = None
+    XS = None
+    FS = None
+    ar = None
+    eu = [None, None]
+    k = 0
+    n = 0
+
+
+class _Prox:
+    def __init__(s, x, F):
+        s.x, s.F = x, F
+
+
+def r_flush():
+    """미뤄 둔 래스터화를 기본 스트림에 띄움 (fem_speed5 O 감싸개가 앞 갱신 끝을 기다리고 시각 이벤트를 남김)."""
+    if R.pend is None:
+        return
+    G, U, t, ras, holder = R.pend
+    R.pend = None
+    from . import fem_speed5 as S5
+    D = torch.cuda.default_stream()
+    with torch.no_grad(), torch.cuda.stream(D):
+        ras(G, U, t)
+    holder["ev"] = S5.O5.pend[-1][1] if S5.O5.pend else None
+    holder["craw"] = S5.O5.pend[-1] if S5.O5.pend else None
+
+
+def r_install():
+    from . import rtrender1 as RR
+    o_frame = RR._frame                                                                     # (t2chain 감싸개 포함) -- 첫 프레임 (준비) 은 그대로
+
+    def _frame(s, upd, ras):
+        if not RR.ST.get("ready") or RR.ST.get("log") is None:
+            return o_frame(s, upd, ras)
+        return _frame_r(RR, s, upd, ras)
+    RR._frame = _frame
+    import atexit
+    atexit.register(r_flush)
+
+
+def _frame_r(RR, s, upd, ras):
+    ST = RR.ST
+    fi = ST["fi"]; ST["fi"] += 1; t = fi + 1
+    sim_ms = float(s.last_ms)
+    with torch.no_grad():
+        G = ST["G"]
+        if ST.get("perm") is not s.perm or getattr(s, "det", False):
+            inv = torch.empty_like(s.perm); inv[s.perm] = torch.arange(s.perm.numel(), device=s.perm.device)
+            ST["gi"] = inv[:G["NG"]].long().contiguous(); ST["perm"] = s.perm
+        gi = ST["gi"]
+        NG = int(G["NG"])
+        Sst = torch.cuda.current_stream()
+        D = torch.cuda.default_stream()
+        if R.XS is None:
+            R.XS = [torch.empty(NG, 3, device=s.x.device, dtype=s.x.dtype) for _ in range(2)]
+            R.FS = [torch.empty(NG, 9, device=s.x.device, dtype=s.F.dtype) for _ in range(2)]
+            R.ar = torch.arange(NG, device=s.x.device, dtype=torch.int64)
+        k = R.k
+        R.k ^= 1
+        if R.eu[k] is not None:
+            Sst.wait_event(R.eu[k])                                                        # 두 프레임 전 갱신이 이 칸을 다 읽은 뒤에 덮음
+        if R.pend is not None:                                                             # (이 프레임에 그래프 재생이 없었으면) 앞 래스터화를 먼저
+            r_flush()
+        e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        e0.record(Sst)
+        torch.index_select(s.x, 0, gi, out=R.XS[k])
+        torch.index_select(s.F.reshape(-1, 9), 0, gi, out=R.FS[k])
+        e1.record(Sst)
+        D.wait_event(e1)
+        with torch.cuda.stream(D):
+            U = upd(G, _Prox(R.XS[k], R.FS[k]), R.ar, t)
+            eu = torch.cuda.Event()
+            eu.record(D)
+        R.eu[k] = eu
+        holder = {"ev": None}
+        R.pend = (G, U, t, ras, holder)
+        R.cur = holder
+        R.n += 1
+        e1.synchronize()
+        b = e0.elapsed_time(e1)
+        rec = dict(t=fi, a=sim_ms, b=b, c=0.0, tot=sim_ms + b, r6=1)
+        ST["log"].write(json.dumps(rec) + "\n")                                           # t2chain _RLog -> TC_RMS (Rf)
+
+
+# ======================= (Rw) 벽시계 렌더 몫 =======================
+class RW:
+    tv = None
+    ring = None
+    k = 0
+
+
+def _tb_views():
+    if RW.tv is not None:
+        return RW.tv
+    from . import fem_speed3 as S3
+    if S3.TB.mod is None:
+        return None
+    import cupy as cp
+    a = torch.as_tensor(cp.ndarray((1,), dtype=cp.int64, memptr=S3.TB.mod.get_global("TB_T0")), device="cuda")
+    b = torch.as_tensor(cp.ndarray((1,), dtype=cp.int64, memptr=S3.TB.mod.get_global("TB_TE")), device="cuda")
+    RW.tv = (a, b)
+    RW.ring = torch.zeros(256, 2, dtype=torch.int64, pin_memory=True)
+    return RW.tv
+
+
+def tb_copy():
+    """프레임 끝 (시뮬 스트림) 에 예산 시계 TB_T0·TB_TE 를 고정 메모리 고리로 비동기 복사 -> (이벤트, 칸)."""
+    tv = _tb_views()
+    if tv is None:
+        return None
+    k = RW.k
+    RW.k = (RW.k + 1) % 256
+    RW.ring[k, 0:1].copy_(tv[0], non_blocking=True)
+    RW.ring[k, 1:2].copy_(tv[1], non_blocking=True)
+    ev = torch.cuda.Event()
+    ev.record()
+    return (ev, RW.ring[k])
+
+
+def rw_set():
+    """프레임 시작: 끝난 가장 최근 프레임 k 의 W_k − T_k 를 TC_RMS 로 (없으면 그대로). 돌려줌: [k, 값 ms] 또는 None."""
+    _resolve()
+    from . import fem_speed3 as S3
+    if S3.TB.mod is None:
+        return None
+    for r in reversed(W.recs):
+        if r.get("W") is not None and r.get("T") is not None:
+            v = r["W"] - r["T"]
+            import cupy as cp
+            cp.ndarray((1,), dtype=cp.int64, memptr=S3.TB.mod.get_global("TC_RMS"))[0] = int(round(v * 1e6))
+            return [r["t"], round(v, 4)]
+    return None
 
 
 # ======================= (P) 프로파일 =======================
@@ -472,13 +703,17 @@ def analyze(fn, top=40):
                 api_per_frame=sorted(((k, round(v / 1e3 / n, 4)) for k, v in tot_api.items()), key=lambda q: -q[1])[:20])
 
 
-def install(out, o=0, lean=0, prof=None):
-    C.out, C.o, C.lean, C.on = out, int(o), int(lean), True
+def install(out, o=0, lean=0, prof=None, b=0, r=0, rw=0):
+    C.out, C.o, C.lean, C.on, C.b, C.r, C.rw = out, int(o), int(lean), True, int(b), int(r), int(rw)
     if prof:
         C.prof = tuple(int(q) for q in str(prof).split(","))
+    if C.r:
+        assert C.o, "--s6r 은 겹치기 O (--s6o 1) 위에서만"
     if C.o:
         from . import fem_speed5 as S5
         S5.ov_install()
+    if C.r:
+        r_install()
     _counters()
     frame_install(out)
-    print(f"[절 CM65] speed6 켬 겹치기 {C.o} 가벼운 판 {C.lean} 프로파일 {C.prof} 시뮬 스트림 {torch.cuda.current_stream()}", flush=True)
+    print(f"[절 CM65] speed6 켬 겹치기 {C.o} 가벼운 판 {C.lean} 백업 한 번 {C.b} 렌더 밖으로 {C.r} 벽시계 렌더 몫 {C.rw} 프로파일 {C.prof} 시뮬 스트림 {torch.cuda.current_stream()}", flush=True)

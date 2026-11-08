@@ -60,6 +60,14 @@ def mean(v):
     return stt.mean(v) if v else None
 
 
+def load(n):
+    try:
+        L = open(os.path.join(O, n, "apps_at_start.txt")).read().strip().split("\n")
+        return L[-1].split()[0]
+    except Exception:
+        return "-"
+
+
 def frames(n):
     rr = {q["t"]: q for q in (jl(n, "rr.jsonl") or [])}
     s6 = {q["t"]: q for q in (jl(n, "s6.jsonl") or [])}
@@ -115,18 +123,21 @@ for st, n, s, md, x in spec:
 
 print("# 절 CM65 speed6 표\n")
 print("## (1) 렌더 포함 프레임 시간: GPU 합 a+b+c 대 벽시계 W (평균 / 최악 / > 16.7 프레임 수, 프레임 3~; ms)\n")
-print("| 단계 | 판 | 씬 | 플래그 | 결과 | 오차 % | **GPU 합 a+b+c** | **벽시계 W** | per (GPU 시각) 평균 | 호스트 안 host 평균 | 프레임 사이 gap 평균 | 지연 lat 평균 | 시작 늦음 lag 평균 | 그래프 재생 ng | 동기화 nsync |")
-print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+print("| 단계 | 판 | 씬 | 플래그 | 결과 | 오차 % | **GPU 합 a+b+c** | **벽시계 W** | 시뮬 a 평균 | 예산 시계 T 평균 | W − T 평균 | per (GPU 시각) 평균 | 호스트 안 host 평균 | 프레임 사이 gap 평균 | 지연 lat 평균 | 래스터 GPU craw | 시작 늦음 lag 평균 | 그래프 재생 ng | 동기화 nsync | 백업 재사용 | 부하 |")
+print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 for st, n, s, md, x in runs:
     if md == "h":
         continue
     F = frames(n)
     if not F:
-        print(f"| {st} | {n} | {SCN.get(s, s)} | {x} | {res(n)} | {fmt(err(n))} | - | - | - | - | - | - | - | - | - |")
+        print(f"| {st} | {n} | {SCN.get(s, s)} | {x} | {res(n)} | {fmt(err(n))} |" + " - |" * 15)
         continue
     tot = [q.get("a", float("nan")) + q.get("b", 0.0) + q.get("c", 0.0) if "b" in q else None for q in F]
-    print(f"| {st} | {n} | {SCN.get(s, s)} | {x} | {res(n)} | {fmt(err(n))} | {stat(tot)} | {stat([q.get('W') for q in F])} | {fmt(mean([q.get('per') for q in F]))} | {fmt(mean([q.get('host') for q in F]))} | "
-          f"{fmt(mean([q.get('gap') for q in F]))} | {fmt(mean([q.get('lat') for q in F]))} | {fmt(mean([q.get('lag') for q in F]), 3)} | {fmt(mean([q.get('ng') for q in F]), 1)} | {fmt(mean([q.get('nsync') for q in F]), 1)} |")
+    wt = [q["W"] - q["T"] for q in F if q.get("W") is not None and q.get("T") is not None]
+    print(f"| {st} | {n} | {SCN.get(s, s)} | {x} | {res(n)} | {fmt(err(n))} | {stat(tot)} | {stat([q.get('W') for q in F])} | {fmt(mean([q.get('a') for q in F]))} | {fmt(mean([q.get('T') for q in F]))} | {fmt(mean(wt))} | "
+          f"{fmt(mean([q.get('per') for q in F]))} | {fmt(mean([q.get('host') for q in F]))} | "
+          f"{fmt(mean([q.get('gap') for q in F]))} | {fmt(mean([q.get('lat') for q in F]))} | {fmt(mean([q.get('craw') for q in F]))} | {fmt(mean([q.get('lag') for q in F]), 3)} | {fmt(mean([q.get('ng') for q in F]), 1)} | {fmt(mean([q.get('nsync') for q in F]), 1)} | "
+          f"{sum(q.get('bkhit', 0) or 0 for q in F)} | {load(n)} |")
 
 H = [r for r in runs if r[3] == "h"]
 if H:

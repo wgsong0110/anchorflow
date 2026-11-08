@@ -5,6 +5,7 @@
   --s6o 1      + 시뮬 (비차단 스트림) · 래스터화 (기본 스트림) 겹치기 O (절 CM62 fem_speed5.ov_install 그대로)
   --s6l 1      + 가벼운 판: 기록 전용 프레임 훅을 장치 일만 하는 판으로 (다른 감싸개 설치 전에 바꿈; 실행기는 stab 이 exe/s6/ 사본으로)
   --s6prof a,b 프레임 a ~ b−1 을 torch.profiler 로 -> trace.json.gz + s6prof.json
+  --s6b 1      백업 한 번 (결과 불변) · --s6r 1 렌더를 시뮬 스트림 밖으로 (O 위, 풀이 결과 불변·Rf 몫만 바뀜) · --s6rw 1 벽시계 렌더 몫 (Rf 의 벽시계 판, 결과 바뀜)
 설치: 가벼운 판 바꾸기는 지금 (다른 감싸개 앞), 벽시계 기록·O 는 실행기를 runpy 로 띄우는 순간 (다른 감싸개가 모두 설치된 뒤 = 가장 바깥).
 """
 import os
@@ -17,7 +18,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 argv = sys.argv[1:]
 out = argv[argv.index("--out") + 1] if "--out" in argv else "."
 os.makedirs(out, exist_ok=True)
-OPT = dict(s6w="0", s6o="0", s6l="0", s6prof="")
+OPT = dict(s6w="0", s6o="0", s6l="0", s6prof="", s6b="0", s6r="0", s6rw="0")
 while argv and argv[0].startswith("--s6"):
     OPT[argv[0][2:]] = argv[1]
     del argv[:2]
@@ -35,7 +36,8 @@ def run_path(path, *a, **kw):
     if ON and not _done[0] and os.path.basename(path) in ("fem_an_rt_sim.py", "fem_ao_rt_sim.py"):
         _done[0] = True
         from anchorflow import fem_speed6 as S6
-        S6.install(out, o=int(float(OPT["s6o"])), lean=int(float(OPT["s6l"])), prof=OPT["s6prof"] or None)
+        S6.install(out, o=int(float(OPT["s6o"])), lean=int(float(OPT["s6l"])), prof=OPT["s6prof"] or None,
+                   b=int(float(OPT["s6b"])), r=int(float(OPT["s6r"])), rw=int(float(OPT["s6rw"])))
     return _orig(path, *a, **kw)
 
 
