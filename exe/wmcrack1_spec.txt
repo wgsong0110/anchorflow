@@ -67,3 +67,12 @@ s2 zdP M3 z P1X
 s2 zN M3 z P1X @wc1k 2 --ksplit 4
 s2 zNP M3 z P1X @wc1k 2 --ksplit 4 --wsh_pl 1
 s2 zNV M3 z P1X @wc1k 2 --ksplit 4 --wsh_pl 1 --ws3 2 --ws3_lj 1
+# s3: V2 (= C + 덜 풀린 걸음은 손상 변수 확정 안 함; s1 2 판에서 정답 IoU f5 0.22 로 가장 높음) 를 8 판으로 + 단독, 영상 판 (stab_wmcrack1_vid.sh, 목록 wmcrack1_vid.txt)
+s3 V2_3 M3 r P1X @wc1k 1 --ksplit 4 --ws3 2 --ws3_lj 1
+s3 V2_4 M3 r P1X @wc1k 1 --ksplit 4 --ws3 2 --ws3_lj 1
+s3 V2_5 M3 r P1X @wc1k 1 --ksplit 4 --ws3 2 --ws3_lj 1
+s3 V2_6 M3 r P1X @wc1k 1 --ksplit 4 --ws3 2 --ws3_lj 1
+s3 V2_7 M3 r P1X @wc1k 1 --ksplit 4 --ws3 2 --ws3_lj 1
+s3 V2_8 M3 r P1X @wc1k 1 --ksplit 4 --ws3 2 --ws3_lj 1
+s3 zV2 M3 z P1X @wc1k 1 --ksplit 4 --ws3 2 --ws3_lj 1
+s3 zC M3 z P1X @wc1k 1 --ksplit 4

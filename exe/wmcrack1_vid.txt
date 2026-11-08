@@ -1,0 +1,3 @@
+# 절 CM59 영상 판 (덤프 판으로 다시 돌림; 정답 칸 = R2 lbours/fem_cm/wmJd/gt_lj.mp4·gt_new_plain.mp4, P1X 칸 = 절 CM53 R2 lbours/ghost4/vid/P1X_a): 후보 N (접촉 CFL 새로 닿는 입자) · V2 (C + 덜 풀린 걸음 손상 변수 고정); 비결정
+N_v run P1X @wc1k 2 --ksplit 4
+V2_v run P1X @wc1k 1 --ksplit 4 --ws3 2 --ws3_lj 1
