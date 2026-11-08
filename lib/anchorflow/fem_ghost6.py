@@ -1259,11 +1259,12 @@ def _kernel_u0(s, x, X0, F, m, A):
     num = torch.zeros(nn * 3, device=dev); den = torch.zeros(nn, device=dev); u0 = torch.zeros(nn * 3, device=dev)
     nbad = torch.zeros(1, device=dev, dtype=torch.int32)
     N = int(x.shape[0])
+    xk, X0k, Fk, mk = x.float().contiguous(), X0.float().contiguous(), F.float().reshape(-1, 9).contiguous(), m.float().contiguous()   # 참조를 잡아 둠 (임시 텐서 포인터만 넘기면 해제·재사용됨)
     s.k("g6_zero", nn, (P(IPt), P(num), P(den), P(nbad)), 256)
-    s.k("g6_p2g", N, (np.int32(N), P(IPt), P(A), P(pb), P(fx), P(x.float().contiguous()), P(X0.float().contiguous()), P(F.float().reshape(-1, 9).contiguous()), P(m.float().contiguous()),
-                      P(num), P(den), P(nbad)), 128)
+    s.k("g6_p2g", N, (np.int32(N), P(IPt), P(A), P(pb), P(fx), P(xk), P(X0k), P(Fk), P(mk), P(num), P(den), P(nbad)), 128)
     s.k("g6_fin", nn, (P(IPt), P(num), P(den), P(u0)), 256)
     torch.cuda.synchronize()
+    del xk, X0k, Fk, mk
     return u0.view(nn, 3), den, IP0.tolist(), nb.tolist()
 
 

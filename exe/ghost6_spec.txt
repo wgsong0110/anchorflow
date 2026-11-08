@@ -13,6 +13,10 @@ s0k kFA F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6c 1 @g4fd 5 @g6fd 
 s0k kLA L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6c 1 @g4fd 5 @g6fd 1,5 --frames 8
 s0k kWA W nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6c 1 @g4fd 5 @g6fd 1,5 --frames 8
 s0k kBA B nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 4 @g4x 1 @g6c 1 @g4fd 5 @g6fd 1,5 --frames 8
+# s0k2 검사 다시 (6d4cbb8 의 합성 아핀 운동 검사가 임시 텐서 포인터를 넘겨 틀림 -- 검사 코드만 고침, 결과 불변): 수박·ficus·레고 보존 판 0x
+s0k2 kM0b M3 g E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g6c 1 @g6fd 1,4 --frames 4
+s0k2 kF0b F nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g6c 1 @g6fd 1,3 --frames 3
+s0k2 kL0b L nd E @e3w 1 @e5r 2 @e5a 2 @g4 1e-1 @g4t 0 @g4x 1 @g6c 1 @g6fd 1,3 --frames 3
 # s1 (1) ficus 자유 진동 에너지: 대조 F (γ̄ 0 = 커널만, 참고 k 로 벌점 일 잼) · 증분 판 0x (주기 비 1.67 재현)·Ax·P1X (@g4t 1) · 보존 판 0x·Ax, 모두 @g6en 1 (결과 불변)
 # s1 (2) 보존 판 ficus 주기 (0x·Ax 각 4 판 = 에너지 판 1 + 3) · 수박 (0x·Ax 각 4 판, 진단 D1·D2·D5)
 s1 eF_ctl F nd E @e3w 1 @e5r 2 @e5a 2 @g4 0 @g4t 0 @g4x 1 @g6en 1
