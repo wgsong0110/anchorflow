@@ -1,0 +1,33 @@
+# 절 CM62 묶음 speed5 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_speed5.sh)
+# G = 공통 후보 G = F (E + W̄ @e3w 1 + R2 @e5r 2 + A2 @e5a 2) + P1X (@g4 1e-1 @g4t 1 @g4x 1) + A3 (@s4w 1 @s4y 1 @s4x 2) + H4 (@hc 4) + Rf (@tc 8), 렌더 포함 (@rr 1: PG 갱신 1 · 수박 갱신 2).
+# @s5m 1 = 프레임 시각만 (결과 불변) · @s5p 1 = + 단계 시간 표식 (결과 불변, 표식 몫만큼 느림) · @s5o 1 = 시뮬 (비차단 스트림) / 래스터화 (기본 스트림) 겹치기.
+# 방식: p·z = 단독 (계산 프로세스 0 인 카드 하나에 a · b 차례로, 연기 단계는 a 만) · h = 결정적 끝 해시 (D 바탕 @tb 1000 = 예산 안 걸림, 새 실행기 --det --fhash; 렌더 켬)
+# s0k 연기 (8 프레임)
+s0k kpM M3 p G @s5p 1 --frames 8
+s0k kpW W p G @s5p 1 --frames 8
+s0k koM M3 p G @s5o 1 --frames 8
+s0k koL L p G @s5o 1 --frames 8
+s0k khL L h D @tb 1000 @tb_m 0.8 @tb_w 2 @rr 1 @s5o 1 --frames 8
+# s1 (1) G 단계 기록 (수박·wolf + 레고) + (2) 겹치기 결과 불변 확인 (결정적 끝 해시: 겹치기 끔 / 켬)
+s1 hL0 L h D @tb 1000 @tb_m 0.8 @tb_w 2 @rr 1 @s5m 1
+s1 hL1 L h D @tb 1000 @tb_m 0.8 @tb_w 2 @rr 1 @s5o 1
+s1 hW0 W h D @tb 1000 @tb_m 0.8 @tb_w 2 @rr 1 @s5m 1
+s1 hW1 W h D @tb 1000 @tb_m 0.8 @tb_w 2 @rr 1 @s5o 1
+s1 hF0 F h D @tb 1000 @tb_m 0.8 @tb_w 2 @rr 1 @s5m 1
+s1 hF1 F h D @tb 1000 @tb_m 0.8 @tb_w 2 @rr 1 @s5o 1
+s1 hB0 B h D @tb 1000 @tb_m 0.8 @tb_w 2 @rr 1 @s5m 1
+s1 hB1 B h D @tb 1000 @tb_m 0.8 @tb_w 2 @rr 1 @s5o 1
+s1 pM M3 p G @s5p 1
+s1 pW W p G @s5p 1
+s1 pL L p G @s5p 1
+# s2 다섯 씬 렌더 포함 단독 a · b: G (프레임 시각만) / G + 겹치기 O
+s2 zGM M3 z G @s5m 1
+s2 zOM M3 z G @s5o 1
+s2 zGW W z G @s5m 1
+s2 zOW W z G @s5o 1
+s2 zGL L z G @s5m 1
+s2 zOL L z G @s5o 1
+s2 zGF F z G @s5m 1
+s2 zOF F z G @s5o 1
+s2 zGB B z G @s5m 1
+s2 zOB B z G @s5o 1
