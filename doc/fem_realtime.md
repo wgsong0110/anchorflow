@@ -8986,3 +8986,25 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 ### CM89.4 출력·실행
 - R2 lbours/wolfh10/ (판마다 cmd·log·summary·fem.jsonl·w10info·w10.jsonl·bbox·rr·e1·pred.pt (A_1·B_1 은 F 포함), vA·vB/vj/fem_wolf.mp4, wolfh10_s*.log, stab_*.out, go_*.log·END, boot.log, wolfh10_heap_table.md, heap_rows_s1.json, wolfh10_table.md (노드 스크립트가 wolfh9 판 목록을 읽어 이름표가 틀림) · wolfh10_table_local.md (바로잡은 표), wolfh10_last.png, code/ (tar·boot·launch·spec·launch.txt (stop))).
 - 실행: SSH 1 번 (05:48 UTC, 로그인 노드 -> ece-a6gpu9 에서 R2 의 wolfh10_launch.sh 를 /dev/shm/dkta 에 받아 `pbs_attach -j 133077.ECE-util1` 로 떼어 띄움; qstat 안 부름). 상주 시작점이 804bfaa s0k,s1,s2a,s2b,v (14:48~15:07 노드 시각) 뒤 stop. 노드 / ·/tmp 안 씀, 카드는 공용 표식 디렉토리로 계산 프로세스 0 인 카드만. 표·그림은 로컬.
+## CM91. wolf 부피 붕괴 -- 뒤집힘 막기를 몸 전체 보폭 대신 노드별 보폭으로 (옛 실행기 --ws_bar 4 --ws_fi 정의 재사용) H8N · H5KN (사용자 11-09 위임; 절 CM89 다음 수: H8L 은 뒤집힘 0 이나 전역 필터가 뉴턴 반복 94 중 67 번 몸 전체 보폭을 잘라 탑) -- 가지 k1new, 커밋 3c3bae6 (s0k·s1), 묶음 wolfh11 (PBS 잡 133077 ece-a6gpu9 상주 시작점 exe/wolfh11_boot.sh·wolfh11_launch.sh, lib/anchorflow/fem_wolfh11.py, exe/wolfh11_wrap.py·stab_wolfh11.sh·go_wolfh11.sh·wolfh11_spec.txt·wolfh11_tab.py, 표 R2 lbours/wolfh11/wolfh11_heap_table.md (exe/wolfh10_heap.py 로 로컬))
+### CM91.0 정의 (lib/anchorflow/fem_wolfh11.py; 감싸개 exe/wolfh11_wrap.py `--w11 1` -> exe/wolfh9_wrap.py (H8 사슬); 커널은 옛 실행기 fem_wmsparse WS_SRC·_inv_q 글자 그대로 (ws_cand·ws_inv_q·ws_nk·ws_bk·ws_merge·ws_fb), 라운드 순서는 fem_wmfrac2.newton (fi) 그대로; 새 문턱·클램프 없음)
+- N = 뉴턴 갱신 rt_lsup 자리에서: 노드 k 시작 = 원래 보폭 (에너지 선탐색·장벽, s_o = 2^-k_o) -- 옛 fi 의 '온 보폭' 자리 (옛 수박 실행기에는 선탐색이 없어 0). 라운드 5 번 (fi 첫 라운드 + 확인 4): 후보 ŷ + T (η + 2^-kn δ) 에서 뒤집힘 판정 (aw_inv_q 식, 걸음 끝 변위 포함) 을 어기는 가우스 점의 27 노드에 kn + k_q, 관통할 장벽 표본점의 27 노드에도 kn + k_q, 노드마다 최대 -> 각 노드 보폭 = 걸친 가우스 점이 뒤집히지 않는 최대 2^-k. 최종 확인에서도 어기면 그 반복은 전역 보폭 min(s_o, 전역 필터) (= 절 CM89 L) 로 되돌림 (옛 정의). 갱신은 rt_lsup 식에 노드별 보폭, SC[14] = 노드 보폭 최소 (덜 풀린 걸음 판정). 노드 k 의 60 상한은 옛 커널 글자 그대로.
+- 시작점은 옛 정의대로 절 CM89 (나) 전역 β 그대로 (옛 실행기의 노드별 보폭은 뉴턴 갱신만).
+- H8N = H8 + N. H5KN = H5n + `@w8k 1` (P1X 강성 × κ, 절 CM77 (K); 확장 T1E2 없음) + N.
+- 연기 s0k (wolf H8N·H5KN, 레고 H8N (장벽 판), ficus H8N (장벽 없는 판, ws_bk 는 #ifdef AF_BAR 로 빠짐) 8 프레임): 모두 완주, 훅 수 (뉴턴 12~18, 시작점 2~3, 장벽 판 nbar = 뉴턴 수, ficus 0) OK.
+### CM91.1 결과 (wolf 비결정 4 판씩; 표 R2 lbours/wolfh11/wolfh11_heap_table.md; 높이 = z − 0.48; 절 CM89 heap 표 형식)
+| 판 | 판 수 | 발산 | 오차 % | 바닥 위 질량중심 f50 mm | 꼭대기 f50 99 % · 최대 mm | 안식각 ° | 면적 f50 cm² | 입자 밀도 f50 /cm³ | det F 중앙 f30 · f50 (det ≤ 0 수) | 이탈 판 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 정답 | - | - | - | 53 | 159 · 181 | 26.6 | 12402 | 2.23 | 1 | - |
+| H8L (절 CM89) | 4 | 0 | 6.97 | 120 | 601 · 655 | 63.5 | 4872 | 4.08 | 0.97 · 0.31 (0) | 0/4 |
+| H5L (절 CM89) | 4 | 0 | 5.10 | 140 | 374 · 395 | 41.4 | 9564 | 2.09 | 1.00 · 1.00 (0) | 0/4 |
+| **H8N** | 4 | 0 | 7.00 [6.92~7.05] | 120 [116~126] | 596 · 652 | 64.8 [63.2~66.7] | 4942 | 4.03 | 0.97 · 0.28 (0) | 0/4 (최대 3 개) |
+| **H5KN** | 4 | 0 | 5.17 [4.40~7.31] | 168 [118~277] | 463 · 517 | 46.5 [43.8~50.5] | 10470 | 1.99 | 1.00 · 1.00 (0) | 0/4 (최대 4 개) |
+- f50 높이 프로파일 (첫 판, 5 cm 띠 꼭대기 mm): 정답 156·155·154·…·39, H8N 553·532·503·405·110·37·…·29 (H8L 과 같은 탑), H5KN 382·375·377·…·172.
+- 노드별 보폭 작동 (w11.jsonl): H8N 뉴턴 반복 94 중 전역 필터였다면 자를 반복 69~71 (H8L 67 과 같은 꼴), 되돌림 0, 최대 노드 k 5, 시작점 β 자름 13 프레임. H5KN 은 전역이었다면 자를 반복 0~4, 되돌림 0, 시작점 2~5 프레임. (이 기록은 노드별로 자른 노드 수를 k_o 기준으로 세지 않아 (ws_fb 의 st[3] 은 전역 k 초과 노드) 몇 노드가 잘렸는지는 모른다.)
+### CM91.2 결론
+- **통과 판 없음** (기준: 바닥 위 질량중심 53±15 mm, det F 중앙 ≈ 1, 안식각 26.6±5°, 이탈·발산 0, 오차 ≤ 4.5 %). H8N 은 되돌림 없이 노드별로만 잘랐는데도 H8L 과 거의 같은 탑 (120 mm, 안식각 65°, det F f50 0.28, 7.0 %) -- 몸 전체 보폭 자름만으로는 탑을 설명 못 함. 무엇이 탑을 만드는지 (노드별로도 잘리는 바닥 층, 시작점 전역 β 13 프레임, 뒤집힘 없는 부피 감소) 는 모른다. H5KN 은 부피는 맞으나 (det F 1.00, 밀도 1.99) 더 높이 쌓임 (168 mm, 46.5°), 판마다 흩어짐 (오차 4.40~7.31 %).
+- 규칙대로 회귀 (s2a·s2b 명세는 둠)·렌더 포함 단독·정답 | 최선 영상은 안 만듦. 공통 후보는 H8 그대로.
+### CM91.3 출력·실행
+- R2 lbours/wolfh11/ (판마다 cmd·log·summary·fem.jsonl·w11info·w11.jsonl·bbox·rr·e1·pred.pt (A_1·B_1 은 F 포함), kA·kB·kL·kF 연기, wolfh11_s0k·s1.log, stab_*.out, go_s0k,s1.log·END, boot.log, wolfh11_heap_table.md, heap_rows_s1.json, wolfh11_table.md (노드 스크립트 수박 형식 표, wolf 칸 비어 있음), code/ (tar·boot·launch·launch.txt (stop))).
+- 실행: SSH 1 번 (06:16 UTC, 로그인 노드 -> ece-a6gpu9 에서 R2 의 wolfh11_launch.sh 를 /dev/shm/dkta 에 받아 `pbs_attach -j 133077.ECE-util1` 로 떼어 띄움; qstat 안 부름). 상주 시작점이 3c3bae6 s0k,s1 (15:16~15:20 노드 시각) 뒤 stop. 노드 / ·/tmp 안 씀, 카드는 공용 표식 디렉토리로 계산 프로세스 0 인 카드만 (speed14·wmjitter 것 안 건드림). 표는 로컬 (R2 덤프 내려받아 numpy).
