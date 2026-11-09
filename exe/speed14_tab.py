@@ -23,6 +23,16 @@ for _l in open(os.path.join(HERE, "speed14_spec.txt")):
             if "=" in _t:
                 _k, _v = _t.split("=", 1); VAR[_k.strip()] = _v.strip()
 
+VARG = {"dD": "H9 진단", "dE": "H10 진단", "dS": "H11 진단", "dP": "H9np 진단", "dC": "H9 진단 PCG 15 · 예산 끔", "dT": "H9 진단 예산 끔",
+        "gF": "H10", "gR": "H11", "gC": "H9 PCG 8 (수박)", "gE": "H9 PCG 15 (수박)", "xFM": "H10", "xFM2": "H10", "xRM": "H11", "xRM2": "H11",
+        "xHM": "H9 (같은 날 대조)", "xHM2": "H9 (같은 날 대조)", "xHW": "H9 (같은 날 대조)", "xCM": "H9 PCG 8 (수박)", "xCM2": "H9 PCG 8 (수박)",
+        "xEM": "H9 PCG 15 (수박)", "xEM2": "H9 PCG 15 (수박)"}   # 묶음 이름 전체로 (둘째 글자가 겹쳐서)
+
+
+def lab(g, x):
+    b = g.rsplit("_", 1)[0] if re.search(r"_[ab0-9]+$", g) else g
+    return VARG.get(g) or VARG.get(b) or VAR.get(g[1:2], x)
+
 
 def jl(n, f):
     p = os.path.join(O, n, f)
@@ -242,7 +252,7 @@ for st, n, s, md, x in runs:
         continue
     G.setdefault((st, grp(n), s, x), []).append(n)
 
-print("# 절 CM88 speed14 표 -- 바탕 H9 (절 CM86); 가속도 기억의 벌점 몫 진단 + 고침 A (H10a = 가벼움 몫 빼기, H10b = 벌점 강성 전체 빼기)\n")
+print("# 절 CM88 speed14 표 -- 바탕 H9 (절 CM86); 가속도 기억 경로 진단 + 고침 H10 (M: 기억 G2P 질량 가중) · H11 (R: 기억에서 덜 풀린 몫 D⁻¹r 걷기) · PCG 8·15\n")
 print("## (1) 수박 비결정 (절 CM78.4 형식; 정답 손상 f5 4.41 · f6 6.94 · f8 7.08 · 끝 6.51 %; 이탈 판 = 4 칸 밖 > 20 개)\n")
 print("| 묶음 | 판 | 판 수 | 발산 | 오차 % 평균 [범위] | 손상 f5 · f6 · f8 % | 끝 손상 평균 [범위] % | 이탈 판 · 최대 수 · 거리 m | 두 시도 (X3c) 프레임 (판당) · 그중 X3g | 두 시도 프레임 시뮬 ms 평균 / 최대 |")
 print("|---|---|---|---|---|---|---|---|---|---|")
@@ -254,7 +264,7 @@ for (st, g, s, x), ns in G.items():
     d3 = [mean([100 * d[0][i] for d in D if d[0][i] is not None]) for i in range(3)]
     fa = [far(n) for n in ns]
     ms = [x3ms(n) for n in ns]
-    print(f"| {g} | {VAR.get(g[1:2], x)} | {len(ns)} | {nd}/{len(ns)} | {rng([err(n) for n in ns])} | {' · '.join(fmt(v) for v in d3)} | {rng([100 * d[1] if d[1] is not None else None for d in D])} | "
+    print(f"| {g} | {lab(g, x)} | {len(ns)} | {nd}/{len(ns)} | {rng([err(n) for n in ns])} | {' · '.join(fmt(v) for v in d3)} | {rng([100 * d[1] if d[1] is not None else None for d in D])} | "
           f"{sum(1 for f in fa if (f[0] or 0) > 20)} · {max((f[0] or 0) for f in fa)} · {fmt(max((f[1] or 0) for f in fa))} | {fmt(mean([x3c(n) for n in ns]), 1)} · {fmt(mean([x3g(n) for n in ns]), 1)} | "
           f"{fmt(mean([m[0] for m in ms]), 1)} / {fmt(max([m[1] for m in ms if m[1] is not None], default=None), 1)} |")
 print()
@@ -277,13 +287,13 @@ for (st, g, s, x), ns in G.items():
         ec = f"{sum(1 for f in fa if (f[0] or 0) > 20)} · {max((f[0] or 0) for f in fa)} · {fmt(max((f[1] or 0) for f in fa))}"
     W = [w8(n) for n in ns]; W = [w for w in W if w]
     ws = f"{fmt(mean([100 * w['mfo'] for w in W]), 1)} ({fmt(max([100 * w['mfo_max'] for w in W], default=None), 1)}) · {fmt(mean([100 * w['mfi'] for w in W]), 1)}" if W else "-"
-    print(f"| {g} | {SCN.get(s, s)} | {VAR.get(g[1:2], x)} | {len(ns)} | {nd}/{len(ns)} | {rng([err(n) for n in ns])} | {sm} | {ec} | {ws} |")
+    print(f"| {g} | {SCN.get(s, s)} | {lab(g, x)} | {len(ns)} | {nd}/{len(ns)} | {rng([err(n) for n in ns])} | {sm} | {ec} | {ws} |")
 for (st, g, s, x), ns in G.items():
     if s != "M3":
         continue
     W = [w8(n) for n in ns]; W = [w for w in W if w]
     if W:
-        print(f"| {g} | 수박 | {VAR.get(g[1:2], x)} | {len(ns)} | (위 (1)) | - | - | - | {fmt(mean([100 * w['mfo'] for w in W]), 1)} ({fmt(max([100 * w['mfo_max'] for w in W], default=None), 1)}) · {fmt(mean([100 * w['mfi'] for w in W]), 1)} |")
+        print(f"| {g} | 수박 | {lab(g, x)} | {len(ns)} | (위 (1)) | - | - | - | {fmt(mean([100 * w['mfo'] for w in W]), 1)} ({fmt(max([100 * w['mfo_max'] for w in W], default=None), 1)}) · {fmt(mean([100 * w['mfi'] for w in W]), 1)} |")
 print()
 
 print("## (3) wolf 절 CM81 형식 (정답 f10 860 · f20 758 · f30 573 · f50 533)\n")
@@ -312,7 +322,7 @@ for (st, g, s, x), ns in G.items():
         q = [x_["ms"] for x_ in (jl(n, "fem.jsonl") or []) if x_.get("t", 0) >= 2 and x_.get("ms") is not None and math.isfinite(x_["ms"])]
         if q:
             mx.append(max(q))
-    print(f"| {g} ({VAR.get(g[1:2], x)}) | {len(ns)} | {nd} | {rng(f10, 0)} · {rng(f20, 0)} | {rng(f30, 0)} | {rng(f50, 0)} | {rng(er)} | {rng(R1)} · {rng(R4)} · {rng(R6)} | {rng(a30, 0)} · {rng(a50, 0)} | {rng(rg, 0)} | "
+    print(f"| {g} ({lab(g, x)}) | {len(ns)} | {nd} | {rng(f10, 0)} · {rng(f20, 0)} | {rng(f30, 0)} | {rng(f50, 0)} | {rng(er)} | {rng(R1)} · {rng(R4)} · {rng(R6)} | {rng(a30, 0)} · {rng(a50, 0)} | {rng(rg, 0)} | "
           f"{ne}/{len(ns)} · {fmt(max(dm) if dm else None)} | {fmt(max(mx) if mx else None, 1)} |")
 print()
 
@@ -327,7 +337,7 @@ for st, n, s, md, x in runs:
     W = [q.get("W") for q in F]
     Wv = [w for w in W if w is not None]
     xm = x3ms(n)
-    print(f"| {n} | {SCN.get(s, s)} | {VAR.get(n[1:2], x)} | {stat(tot)} | **{stat(W)}** | {fmt(stt.median(Wv) if Wv else None)} | {fmt(err(n))} | {x3c(n)} · {fmt(xm[0], 1)} / {fmt(xm[1], 1)} | {res(n)} | {load(n)} |")
+    print(f"| {n} | {SCN.get(s, s)} | {lab(n, x)} | {stat(tot)} | **{stat(W)}** | {fmt(stt.median(Wv) if Wv else None)} | {fmt(err(n))} | {x3c(n)} · {fmt(xm[0], 1)} / {fmt(xm[1], 1)} | {res(n)} | {load(n)} |")
 print()
 
 print("## (5) 옛 실행기 이식 검사 (x1ck.jsonl; 그래프 밖 데움 record = 첫 프레임 K 1 과 처음 캡처되는 쪼갠 걸음·X3c 그래프의 프레임; 값은 최대 [중앙])\n")
