@@ -29,3 +29,8 @@ s1 H5_1 M3 r H5n
 s1 H5_2 M3 r H5n
 s1 H5_3 M3 r H5n
 s1 H5_4 M3 r H5n
+# s0kc K 64 비유한 가르기 (8 프레임): 사슬을 줄여 가며 -- P1X 바탕 (절 CM53, 절 CM59 N 바탕과 같은 낱말) · G'' · G'' + 가벼움 벌점 × κ (절 CM75) · H4 (= H5 − C·Y)
+s0kc cKP1X M3 r F P1X @wmkk 64 --ksplit 6 --frames 8
+s0kc cKGpp M3 r Gpp @wmkk 64 --ksplit 6 --frames 8
+s0kc cKGk M3 r Gk @wmkk 64 --ksplit 6 --frames 8
+s0kc cKH4 M3 r H4n @wmkk 64 --ksplit 6 --frames 8
