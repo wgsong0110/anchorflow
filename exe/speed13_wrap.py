@@ -8,6 +8,7 @@ import runpy
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.setrecursionlimit(20000)                                                          # 감싸개 사슬이 깊어 (판마다 바깥 훅을 모두 거침) 한 겹 더하면 기본 1000 을 넘음
 sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 
 argv = sys.argv[1:]
