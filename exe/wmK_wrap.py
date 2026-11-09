@@ -144,6 +144,13 @@ if KF > 0:
             f = int(getattr(s, "_wmK", 0) or 0)
             return o_setK(s, f if f else K, *a, **kw)
         AORT.set_K_ga = set_K_ga
+        from anchorflow import fem_common3 as C3
+        o_nf = C3.nfail
+
+        def nfail(s, fl, g2, K):                                                          # 사슬 안 이름표 K 1 -> 실제 K 걸음 모두로 무너짐 판정 (절 CM59 N 과 같음; s0ke 까지는 걸음 0 만 봐 X3c 다시 하기가 안 걸렸음)
+            f = int(getattr(s, "_wmK", 0) or 0)
+            return o_nf(s, fl, g2, f if f else K)
+        C3.nfail = nfail
         o_col = WRX.split_col
 
         def split_col(s, t, h, sub_dt, depth, fn=None):

@@ -45,3 +45,10 @@ s0ke eKmf M3 r F P1X @mf2 1 @wmkk 64 --ksplit 6 --frames 5
 s0ke eKH5 M3 r H5n @wmkk 64 --ksplit 6 --frames 5
 s0ke eKP1X M3 r F P1X @wmkk 64 --ksplit 6 --frames 5
 s0ke eK32H5 M3 r H5n @wmkk 32 --ksplit 5 --frames 5
+# s0kf 무너짐 판정을 실제 K 걸음 모두로 고친 뒤 (C3.nfail; s0ke 까지는 이름표 K 1 이라 걸음 0 만 봐 X3c 다시 하기 안 걸림): H5 K 64·128 각 2 판 + P1X K 128 (5 프레임)
+s0kf fKH5_64a M3 r H5n @wmkk 64 --ksplit 6 --frames 5
+s0kf fKH5_64b M3 r H5n @wmkk 64 --ksplit 6 --frames 5
+s0kf fKH5_128a M3 r H5n @wmkk 128 --ksplit 7 --frames 5
+s0kf fKH5_128b M3 r H5n @wmkk 128 --ksplit 7 --frames 5
+s0kf fKP1X_128 M3 r F P1X @wmkk 128 --ksplit 7 --frames 5
+s0kf fKH5_16 M3 r H5n @wmkk 16 --ksplit 4 --frames 5
