@@ -41,35 +41,27 @@ s0b dL_2 M3 r H3 @s11dg 1
 s2k kE M3 r H5e --frames 20
 s2k kZ3 M3 r H5 @s11z 3 @s11dg 1 --frames 20
 s2k kEZ M3 r H5e @s11z 3 --frames 20
-s2 gE_1 M3 g H5e
-s2 gE_2 M3 g H5e
-s2 gE_3 M3 g H5e
-s2 gE_4 M3 g H5e
-s2 gE_5 M3 g H5e
-s2 gE_6 M3 g H5e
-s2 gE_7 M3 g H5e
-s2 gE_8 M3 g H5e
-s2 gZ3_1 M3 g H5 @s11z 3
-s2 gZ3_2 M3 g H5 @s11z 3
-s2 gZ3_3 M3 g H5 @s11z 3
-s2 gZ3_4 M3 g H5 @s11z 3
-s2 gZ3_5 M3 g H5 @s11z 3
-s2 gZ3_6 M3 g H5 @s11z 3
-s2 gZ3_7 M3 g H5 @s11z 3
-s2 gZ3_8 M3 g H5 @s11z 3
-s2 gEZ_1 M3 g H5e @s11z 3
-s2 gEZ_2 M3 g H5e @s11z 3
-s2 gEZ_3 M3 g H5e @s11z 3
-s2 gEZ_4 M3 g H5e @s11z 3
-s2 gEZ_5 M3 g H5e @s11z 3
-s2 gEZ_6 M3 g H5e @s11z 3
-s2 gEZ_7 M3 g H5e @s11z 3
-s2 gEZ_8 M3 g H5e @s11z 3
-s2 oEL_1 L nd H5e @s11z 3
-s2 oEL_2 L nd H5e @s11z 3
-s2 oEW_1 W nd H5e @s11z 3
-s2 oEW_2 W nd H5e @s11z 3
-s2 oEF_1 F nd H5e @s11z 3
-s2 oEF_2 F nd H5e @s11z 3
-s2 oEB_1 B nd H5e @s11z 3
-s2 oEB_2 B nd H5e @s11z 3
+# s2k 결과: kE 통과 (20 프레임 완주), Z3·EZ 는 Z1 과 같이 f3 부터 바닥 뚫음 (오차 86 %, f14 발산) -> 버림 (Z 갈래 전부: 아주 작은 √k 노드의 무너짐이 곧 X2 켬의 계기라 막으면 첫 접촉을 못 받음). s2 는 안 돌림.
+# s3: E 수박 8 + 다른 씬 2 판씩 + 렌더 포함 단독 (수박 a·b 두 번 = 4 회, 다른 씬 a·b)
+s3 gE_1 M3 g H5e
+s3 gE_2 M3 g H5e
+s3 gE_3 M3 g H5e
+s3 gE_4 M3 g H5e
+s3 gE_5 M3 g H5e
+s3 gE_6 M3 g H5e
+s3 gE_7 M3 g H5e
+s3 gE_8 M3 g H5e
+s3 oEL_1 L nd H5e
+s3 oEL_2 L nd H5e
+s3 oEW_1 W nd H5e
+s3 oEW_2 W nd H5e
+s3 oEF_1 F nd H5e
+s3 oEF_2 F nd H5e
+s3 oEB_1 B nd H5e
+s3 oEB_2 B nd H5e
+s3 xEM M3 z H5e
+s3 xEM2 M3 z H5e
+s3 xEL L z H5e
+s3 xEW W z H5e
+s3 xEF F z H5e
+s3 xEB B z H5e
