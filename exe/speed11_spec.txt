@@ -28,3 +28,10 @@ s0 eL1_1 M3 g H5l1
 s0 eL1_2 M3 g H5l1
 s0 eL1_3 M3 g H5l1
 s0 eL1_4 M3 g H5l1
+# s0b: 진단 더 (관성 몫 Mi η 대 힘 몫 · 고착 sk · 바닥 노드 pm 별 잔차 몫)
+s0b dJ_1 M3 r H5 @s11dg 1
+s0b dJ_2 M3 r H5 @s11dg 1
+s0b dJ_3 M3 r H5 @s11dg 1
+s0b dJ_4 M3 r H5 @s11dg 1
+s0b dL_1 M3 r H3 @s11dg 1
+s0b dL_2 M3 r H3 @s11dg 1

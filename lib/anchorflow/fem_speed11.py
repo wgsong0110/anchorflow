@@ -100,6 +100,20 @@ def rdiag(s, trig):
             cut = kn > kg
             r.update(kg=kg, kb=kb, kmax=int(kn.max()) if nn else 0, ncut=int(cut.sum()), gsh_cut=float(g2[cut].sum()) / G if G > 0 else None)
         i = int(torch.argmax(g2)) if nn else 0
+        it2_ = float(getattr(s, "_g3it2", 0.0))
+        eta = s.eta.reshape(-1)[:nn * 3].double().reshape(nn, 3) * act
+        gi = mn[:, None] * it2_ * eta                                                       # 관성 몫 Mi η (g = Mi η + T f)
+        r["gsh_in"] = float(((gi) ** 2).sum()) / G if G > 0 else None
+        r["gsh_f"] = float(((g - gi) ** 2).sum()) / G if G > 0 else None
+        skv = s.sk.reshape(-1)[:nn].double(); pmv = s.pm.reshape(-1)[:nn]
+        top10 = torch.topk(g2, min(10, nn)).indices if nn else None
+        if top10 is not None:
+            dy = (s.y.reshape(-1)[:nn * 3] - s.yh.reshape(-1)[:nn * 3]).double().reshape(nn, 3)
+            r["top10"] = dict(g2sh=float(g2[top10].sum()) / G if G > 0 else None, sk=[float(q) for q in skv[top10]], pm=[int(q) for q in pmv[top10]],
+                              eta=[float(q) for q in eta[top10].norm(dim=1)], dy=[float(q) for q in dy[top10].norm(dim=1)], m_mb=[float(q) / mb if mb > 0 else None for q in mn[top10]],
+                              ginsh=float((gi[top10] ** 2).sum()) / max(float(g2[top10].sum()), 1e-300))
+            r["n_pm"] = [int((pmv == c).sum()) for c in range(4)]
+            r["gsh_pm"] = [float(g2[pmv == c].sum()) / G if G > 0 else None for c in range(4)]
         r["top"] = dict(g2sh=float(g2[i]) / G if G > 0 else None, m_mb=float(mn[i]) / mb if mb > 0 else None, pm=int(s.pm.reshape(-1)[i]), kn=int(kn[i]) if kn is not None else None)
         fw = getattr(s, "g5w", None)
         idv = getattr(s, "l3id", None)
