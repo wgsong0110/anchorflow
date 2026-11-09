@@ -1,0 +1,21 @@
+# 절 CM81 묶음 wolfh8 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_wolfh8.sh; 낱말 H5n 은 stab 의 dfl 이 펼침 = 절 CM79 H5)
+# SC = 절 CM70 S_구속 + C '@w5s 1 @w5c 1'. K = 절 CM77 (K) P1X 강성 × 재질 응집 몫 κ '@w8k 1' (wolf κ 0 -> 강성 0, 나머지 κ 1).
+# E = 확장 B-스플라인 '@w8e 1 @w8d 차수' (lib/anchorflow/fem_wolfh8.py; 내부 칸 = 팔분 8 개 점유, 외부 노드 = 받침에 내부 칸 없는 활성 노드, 뉴턴 증분 아핀 확장).
+# s0k 연기 (8 프레임): wolf E2 · wolf E0 · bread E2 · 레고 E2 (재질·탄성 실행기 둘 다 컴파일·훅)
+s0k kE2W W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 --frames 8
+s0k kE0W W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 0 --frames 8
+s0k kE2B B nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 --frames 8
+s0k kE2L L nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 --frames 8
+# s1 wolf 4 판씩: H5 + SC + K + E 차수 2 (기본) · 차수 1 · 차수 0 (대조)
+s1 E2_1 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2
+s1 E2_2 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2
+s1 E2_3 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2
+s1 E2_4 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2
+s1 E1_1 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 1
+s1 E1_2 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 1
+s1 E1_3 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 1
+s1 E1_4 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 1
+s1 E0_1 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 0
+s1 E0_2 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 0
+s1 E0_3 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 0
+s1 E0_4 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 0
