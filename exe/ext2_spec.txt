@@ -1,0 +1,39 @@
+# 절 CM84 묶음 ext2 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_ext2.sh). H7 = H5 (절 CM79) + S_구속·C + [κ 0 노드만 확장 T1E2 + P1X 강성 × κ] (플래그 글자 = 절 CM83 H6, 감싸개 ext2 가 κ 로 고름).
+# 수박 판정·단독과 다른 씬 단독은 가벼운 판 '@s6l 1' (절 CM78·CM82·CM83 과 같음), 다른 씬 판정은 진단 판.
+# s0k 연기: 다섯 씬 8 프레임 -- κ 1 씬은 확장 커널 0 (x1info·w8info 수 0, w8.jsonl 0 줄), wolf 는 확장 켬
+s0k kgA M3 g H7 @s6l 1 --frames 8
+s0k kL L nd H7 --frames 8
+s0k kW W nd H7 --frames 8
+s0k kF F nd H7 --frames 8
+s0k kB B nd H7 --frames 8
+# s1: 판정 (수박 8 · 레고 4 · wolf 8 · ficus 2 · bread 2) + 렌더 포함 단독 (수박 a·b 두 번 = 4 회, 나머지 a·b = 2 회)
+s1 gA_1 M3 g H7 @s6l 1
+s1 gA_2 M3 g H7 @s6l 1
+s1 gA_3 M3 g H7 @s6l 1
+s1 gA_4 M3 g H7 @s6l 1
+s1 gA_5 M3 g H7 @s6l 1
+s1 gA_6 M3 g H7 @s6l 1
+s1 gA_7 M3 g H7 @s6l 1
+s1 gA_8 M3 g H7 @s6l 1
+s1 oAL_1 L nd H7
+s1 oAL_2 L nd H7
+s1 oAL_3 L nd H7
+s1 oAL_4 L nd H7
+s1 oAW_1 W nd H7
+s1 oAW_2 W nd H7
+s1 oAW_3 W nd H7
+s1 oAW_4 W nd H7
+s1 oAW_5 W nd H7
+s1 oAW_6 W nd H7
+s1 oAW_7 W nd H7
+s1 oAW_8 W nd H7
+s1 oAF_1 F nd H7
+s1 oAF_2 F nd H7
+s1 oAB_1 B nd H7
+s1 oAB_2 B nd H7
+s1 xAM M3 z H7 @s6l 1
+s1 xAM2 M3 z H7 @s6l 1
+s1 xAL L z H7 @s6l 1
+s1 xAW W z H7 @s6l 1
+s1 xAF F z H7 @s6l 1
+s1 xAB B z H7 @s6l 1
