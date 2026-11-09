@@ -1,0 +1,14 @@
+# 절 CM94 묶음 wolfh13 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_wolfh13.sh). '@w13 1' = 확장 반영 MG 전처리기 (lib/anchorflow/fem_wolfh13.py; 층 0 + 거친 층), '@w13 2' = 층 0 만 (가르기).
+# 바탕 H8 (공통 후보, 새 실행기 wolf 계산은 H9 와 같음), 반복 상한 그대로 (뉴턴 6 · PCG 5). '@w12 0 @fi 0' = 절 CM93·CM92 진단 (결과 같음).
+# s0k 연기: wolf 8 프레임 (H8 · 모드 1 · 모드 2), 레고 8 프레임 (κ 1 -> 할당·커널 0), 수렴 판 (예산 끔 + xit 문 끔 + 뉴턴 20 · PCG 40 · tolP 1e-2) 20 프레임 옛·새 전처리 (같은 해·반복 수 비교)
+s0k kH W nd H8 @w12 0 @fi 0 --frames 8
+s0k kX1 W nd H8 @w13 1 @w12 0 @fi 0 --frames 8
+s0k kX2 W nd H8 @w13 2 @w12 0 @fi 0 --frames 8
+s0k kL L nd H8 @w13 1 --frames 8
+s0k kAC W nd H8 @w12 0 @fi 0 @tb 1000 @nxit 1 --newton 20 --cg 40 --tolP 1e-2 --frames 20
+s0k kXC W nd H8 @w13 1 @w12 0 @fi 0 @tb 1000 @nxit 1 --newton 20 --cg 40 --tolP 1e-2 --frames 20
+# s1: wolf 4 판 (모드 1, 반복 상한 그대로, 모두 입자 F 덤프) -- 절 CM93 표 형식으로 H8 (h8_1·2) 과 비교
+s1 x1 W nd H8 @w13 1 @w12 0 @fi 0 --dump_F
+s1 x2 W nd H8 @w13 1 @w12 0 @fi 0 --dump_F
+s1 x3 W nd H8 @w13 1 @w12 0 @fi 0 --dump_F
+s1 x4 W nd H8 @w13 1 @w12 0 @fi 0 --dump_F
