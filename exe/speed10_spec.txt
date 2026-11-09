@@ -35,6 +35,15 @@ s1 gN_5 M3 g H6
 s1 gN_6 M3 g H6
 s1 gN_7 M3 g H6
 s1 gN_8 M3 g H6
+# H3 (절 CM76 바탕, 이탈로 상자가 커져 다시 할당이 잦음) + 첫 할당 상자 배수 K 만 -- 넘침 프레임이 없어지는지
+s1 gK_1 M3 g H3 @s10cap 8
+s1 gK_2 M3 g H3 @s10cap 8
+s1 gK_3 M3 g H3 @s10cap 8
+s1 gK_4 M3 g H3 @s10cap 8
+s1 gK_5 M3 g H3 @s10cap 8
+s1 gK_6 M3 g H3 @s10cap 8
+s1 gK_7 M3 g H3 @s10cap 8
+s1 gK_8 M3 g H3 @s10cap 8
 s1 pH M3 q H5 @s7kp 3,100
 s1 pN M3 q H6 @s7kp 3,100
 # s2: 다섯 씬 렌더 포함 벽시계 단독 (카드 하나에 a 다 돌고 b). 수박 H5 · H6 두 이름씩 (= 4 판씩), 네 씬은 H5 (N·K 는 옛 실행기 = 수박만) 2 판
