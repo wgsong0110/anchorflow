@@ -35,3 +35,40 @@ s0b dJ_3 M3 r H5 @s11dg 1
 s0b dJ_4 M3 r H5 @s11dg 1
 s0b dL_1 M3 r H3 @s11dg 1
 s0b dL_2 M3 r H3 @s11dg 1
+# s1k: 고침 후보 Z 연기 (20 프레임). Z1 = '@s11z 1' (옛 실행기 시작점 섞기 기준 aw_y0z_a 의 1/s -> s), Z2 = '@s11z 2' (+ 걸음 시작 위치 시작점 ao_floor_n --y0u · rt_ga_y0, 모든 씬)
+s1k kZ1 M3 r H5 @s11z 1 @s11dg 1 --frames 20
+s1k kZ2 M3 r H5 @s11z 2 --frames 20
+s1k kZ2L L nd H5 @s11z 2 --frames 20
+# s1: 수박 8 판씩 + 다른 씬 2 판씩 (판정 판)
+s1 gZ1_1 M3 g H5 @s11z 1
+s1 gZ1_2 M3 g H5 @s11z 1
+s1 gZ1_3 M3 g H5 @s11z 1
+s1 gZ1_4 M3 g H5 @s11z 1
+s1 gZ1_5 M3 g H5 @s11z 1
+s1 gZ1_6 M3 g H5 @s11z 1
+s1 gZ1_7 M3 g H5 @s11z 1
+s1 gZ1_8 M3 g H5 @s11z 1
+s1 gZ2_1 M3 g H5 @s11z 2
+s1 gZ2_2 M3 g H5 @s11z 2
+s1 gZ2_3 M3 g H5 @s11z 2
+s1 gZ2_4 M3 g H5 @s11z 2
+s1 gZ2_5 M3 g H5 @s11z 2
+s1 gZ2_6 M3 g H5 @s11z 2
+s1 gZ2_7 M3 g H5 @s11z 2
+s1 gZ2_8 M3 g H5 @s11z 2
+s1 oZ1L_1 L nd H5 @s11z 1
+s1 oZ1L_2 L nd H5 @s11z 1
+s1 oZ1W_1 W nd H5 @s11z 1
+s1 oZ1W_2 W nd H5 @s11z 1
+s1 oZ1F_1 F nd H5 @s11z 1
+s1 oZ1F_2 F nd H5 @s11z 1
+s1 oZ1B_1 B nd H5 @s11z 1
+s1 oZ1B_2 B nd H5 @s11z 1
+s1 oZ2L_1 L nd H5 @s11z 2
+s1 oZ2L_2 L nd H5 @s11z 2
+s1 oZ2W_1 W nd H5 @s11z 2
+s1 oZ2W_2 W nd H5 @s11z 2
+s1 oZ2F_1 F nd H5 @s11z 2
+s1 oZ2F_2 F nd H5 @s11z 2
+s1 oZ2B_1 B nd H5 @s11z 2
+s1 oZ2B_2 B nd H5 @s11z 2

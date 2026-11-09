@@ -9,6 +9,13 @@
     - 벌점 몫: ghost6 gq_force 를 따로 둔 버퍼에 (같은 커널·같은 k·cm·y·ŷ) 면 가중 (가) 가벼움 몫 fw − 1[P1X] (lightg3 의 l3id), (나) P1X 몫 1[P1X]
       -> ‖T f_L‖²/F², ‖T f_P‖²/F², ‖g1 − T f_L‖²/‖g1‖², 블록 대각 몫 tr B_L / (3 M/τ² + tr B) (B = 반복 1 기울기 때 실행기 블록 대각, 벌점 포함)
     -> <out>/s11.jsonl (걸음마다 한 줄, 'trig' = X3g 로 넘어갔는지).
+
+(Z) 시작점 고착 역사상 고침 (--s11z 1|2, 결과 바뀜 -- 후보): 진단 결과 무너진 걸음은 걸음 시작부터 ‖g0‖²/F² ~ 1e24 이고 그 잔차의 100 % 가 바닥 고착 노드 (pm 1)
+    의 관성 몫 Mi η -- 고착 몫 √k = s 가 0 이 아닌 아주 작은 값 (1e-19, k = (1 − r)^kex 가 f32 바닥 근처) 인 노드에서 시작점 기준 η_z = T⁻¹ (z0 − ŷ) 가
+    (1/s) dd 로 1e15 m 가 됨 (aw_y0z_a 의 1/s, s = 0 일 때만 0 -- s → 0 에서 불연속). 시작점 섞기 β < 1 이면 η = η_z + β (η − η_z) 로 그대로 들어감.
+    고침 = 시작점 기준의 고착 방향 성분을 1/s 대신 s 로: T η_z = k P (z0 − ŷ) (물리 변위 = 고착 몫 k 만큼 영속도 위치 쪽, k = 1 이면 원래와 같고 k → 0 이면 연속으로 ŷ).
+    ao_floor_n 의 목표 h = Ũ + (1 − k) P d (고착 몫 1 − k 만큼 묶음) 와 같은 k 섞기. 문턱 없음.
+    1 = aw_y0z_a (옛 실행기 시작점 섞기 기준) 만 · 2 = 1 + 걸음 시작 위치 시작점 (옛 ao_floor_n --y0u · 새 rt_ga_y0 의 (s > 1e-6) ? 1/s : 0 도 s 로; 모든 씬).
 """
 import json
 import math
@@ -21,6 +28,7 @@ import torch
 class C:
     out = "."
     dg = 0
+    z = 0
     log = None
     said = False
     nerr = 0
@@ -167,6 +175,40 @@ def rdiag(s, trig):
         torch.cuda.synchronize()
 
 
+ZP = [("aw_y0z_a", "    float isk = (s > 0.f) ? 1.f/s : 0.f;\n    float dd[3]; for (int a=0;a<3;a++) dd[a] = z0[n*3+a] - yh[n*3+a];",
+       "    float isk = s;   // 절 CM82 Z: T η_z = k P dd (1/s 대신)\n    float dd[3]; for (int a=0;a<3;a++) dd[a] = z0[n*3+a] - yh[n*3+a];", 1),
+      ("ao_floor_n y0uk", "        float isk = (s > 1e-6f) ? 1.f/s : 0.f;\n        float dd[3]; for (int a=0;a<3;a++) dd[a] = U[n*3+a] - h[a];",
+       "        float isk = s;   // 절 CM82 Z2\n        float dd[3]; for (int a=0;a<3;a++) dd[a] = U[n*3+a] - h[a];", 2),
+      ("rt_ga_y0", "    float isk = (s > 1e-6f) ? 1.f/s : 0.f;\n    float dd[3]; for (int a=0;a<3;a++) dd[a] = U[n*3+a] - yh[n*3+a];",
+       "    float isk = s;   // 절 CM82 Z2\n    float dd[3]; for (int a=0;a<3;a++) dd[a] = U[n*3+a] - yh[n*3+a];", 2)]
+ZST = dict(done=set(), said=set())
+
+
+def _zpatch(src):
+    for nm, a, b, lv in ZP:
+        if C.z >= lv and a in src:
+            src = src.replace(a, b)
+            ZST["done"].add(nm)
+    return src
+
+
+def _install_z():
+    from . import fem_an_rt as ART
+    from . import fem_ao_rt as AORT
+    ob, oa = ART.build_src, AORT._src
+
+    def bs(*a, **kw):
+        r = ob(*a, **kw)
+        return _zpatch(r) if isinstance(r, str) else r
+
+    def az(*a, **kw):
+        r = oa(*a, **kw)
+        r2 = _zpatch(r) if isinstance(r, str) else r
+        print(f"[절 CM82] Z 고침 {sorted(ZST['done'])}", flush=True)
+        return r2
+    ART.build_src, AORT._src = bs, az
+
+
 class _XBN:
     """s._xbn (고정 호스트 int32 4 칸의 numpy 보기) 를 감쌈: replay 의 'r' 경계 판정 읽기 (int(s._xbn[3])) 순간 진단."""
     def __init__(self, s, a):
@@ -196,10 +238,12 @@ def _install_dg():
     S4._xb_buf = _xb_buf
 
 
-def install(out, dg=0):
+def install(out, dg=0, z=0):
     """실행기를 runpy 로 띄우는 순간 (speed6~10 설치 뒤 = 가장 바깥) 에 부름."""
-    C.out, C.dg = out, int(dg)
+    C.out, C.dg, C.z = out, int(dg), int(z)
+    if C.z:
+        _install_z()
     if C.dg:
         C.log = open(os.path.join(out, "s11.jsonl"), "w")
         _install_dg()
-    print(f"[절 CM82] speed11 켬 진단 {C.dg}", flush=True)
+    print(f"[절 CM82] speed11 켬 진단 {C.dg} 시작점 고착 고침 Z {C.z}", flush=True)

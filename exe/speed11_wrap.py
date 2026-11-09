@@ -1,6 +1,6 @@
 """절 CM82 묶음 speed11 감싸개: 진단·고침 후보 (lib/anchorflow/fem_speed11.py) 를 단 뒤 exe/speed10_wrap.py 로 넘김 (그쪽 인자 그대로).
 
-사용: python exe/speed11_wrap.py [--s11dg 1] <speed10_wrap 인자...> <실행기.py> <실행기 인자...>
+사용: python exe/speed11_wrap.py [--s11dg 1] [--s11z 1|2] <speed10_wrap 인자...> <실행기.py> <실행기 인자...>
 설치: 실행기를 runpy 로 띄우는 순간 (안쪽 감싸개들 설치 뒤 = 가장 바깥). 인자가 없거나 0 이면 모듈을 안 부름.
 """
 import os
@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 argv = sys.argv[1:]
 out = argv[argv.index("--out") + 1] if "--out" in argv else "."
 os.makedirs(out, exist_ok=True)
-O = dict(s11dg="0")
+O = dict(s11dg="0", s11z="0")
 while argv and argv[0].startswith("--s11"):
     O[argv[0][2:]] = argv[1]
     del argv[:2]
@@ -27,7 +27,7 @@ def run_path(path, *a, **kw):
     if ON and not _done[0] and os.path.basename(path) in ("fem_an_rt_sim.py", "fem_ao_rt_sim.py"):
         _done[0] = True
         from anchorflow import fem_speed11 as S11
-        S11.install(out, dg=int(float(O["s11dg"])))
+        S11.install(out, dg=int(float(O["s11dg"])), z=int(float(O["s11z"])))
     return _orig(path, *a, **kw)
 
 
