@@ -1,0 +1,27 @@
+# 절 CM80 묶음 wmK 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_wmK.sh; 낱말 H5n 은 stab 의 dfl 이 펼침 = exe/stab_wolfh7.sh 와 같은 글자)
+# H5n = 공통 H5 (H4 + 결과 불변 가속 C·Y, 절 CM79) -- 수박 셀 3 + --sp2 31 + @inv 1 + --gq_mass. 방식 r = 기록 판 (wsh 30 + wsh_sv + 탄성 F 특이값 + D1·D2·D5·E1·G1; 결과 불변).
+# K 판 = H5n + '@wmkk K' (exe/wmK_wrap.py: 절 CM59 N 판정으로 첫 충돌 프레임 하나만 K 걸음, 나머지 H5 그대로) + --ksplit log2 K (버퍼 상한만; 다른 프레임 쪼개기 깊이는 3 그대로).
+# s0k 연기 (8 프레임): H5 · K 128 (가장 큰 그래프·버퍼)
+s0k kH5 M3 r H5n --frames 8
+s0k kK128 M3 r H5n @wmkk 128 --ksplit 7 --frames 8
+# s1 K 마다 4 판 + H5 대조 4 판 (비결정), 큰 K 먼저
+s1 K128_1 M3 r H5n @wmkk 128 --ksplit 7
+s1 K128_2 M3 r H5n @wmkk 128 --ksplit 7
+s1 K128_3 M3 r H5n @wmkk 128 --ksplit 7
+s1 K128_4 M3 r H5n @wmkk 128 --ksplit 7
+s1 K64_1 M3 r H5n @wmkk 64 --ksplit 6
+s1 K64_2 M3 r H5n @wmkk 64 --ksplit 6
+s1 K64_3 M3 r H5n @wmkk 64 --ksplit 6
+s1 K64_4 M3 r H5n @wmkk 64 --ksplit 6
+s1 K32_1 M3 r H5n @wmkk 32 --ksplit 5
+s1 K32_2 M3 r H5n @wmkk 32 --ksplit 5
+s1 K32_3 M3 r H5n @wmkk 32 --ksplit 5
+s1 K32_4 M3 r H5n @wmkk 32 --ksplit 5
+s1 K16_1 M3 r H5n @wmkk 16 --ksplit 4
+s1 K16_2 M3 r H5n @wmkk 16 --ksplit 4
+s1 K16_3 M3 r H5n @wmkk 16 --ksplit 4
+s1 K16_4 M3 r H5n @wmkk 16 --ksplit 4
+s1 H5_1 M3 r H5n
+s1 H5_2 M3 r H5n
+s1 H5_3 M3 r H5n
+s1 H5_4 M3 r H5n
