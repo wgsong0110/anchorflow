@@ -114,43 +114,11 @@ def _wm(v, w):
     return float((v * w).sum() / w.sum())
 
 
-def install(out, mode=0, dg=0):
-    from . import fem_an_rt as ART
-    from . import fem_ao_rt as AORT
-    ST.update(mode=int(mode), dg=int(dg), out=out)
-    if ST["dg"]:
-        LOG[0] = open(os.path.join(out, "fi.jsonl"), "w")
-    cpm = ART.cp
-    orm = cpm.RawModule
-
-    def RawModule(*a, **kw):                                                           # 최종 글자 (다른 묶음 고침 모두 뒤) 에서 fpi_p 만
-        if "code" in kw:
-            kw["code"] = patch(kw["code"])
-        elif a:
-            a = (patch(a[0]),) + tuple(a[1:])
-        return orm(*a, **kw)
-    cpm.RawModule = RawModule
-
-    def fa(s):                                                                         # --fp_interp 판만 (Fe 있음), 용량 바뀌면 다시
-        if getattr(s, "Fe", None) is None:
-            return
-        capQ = s.Fe.shape[0]; NP = s.F.numel() // 9
-        if getattr(s, "fiJ0", None) is not None and s.fiJ0.numel() == capQ and s.fiJp0.numel() == NP:
-            return
-        Z = lambda *sh: torch.zeros(*sh, device=s.dev, dtype=torch.float32)
-        s.fiJ0 = Z(capQ); s.fiJX = Z(capQ); s.fiJp0 = Z(NP)
-        s.fiD = Z(NP * 8) if ST["dg"] else None
-        ST["nalloc"] += 1
-    R = ART.RTSolver
+def _hook(R, fa):
     oa, ok, os_ = R.alloc, R.k, R.step
-    oao = AORT.AORTSolver.alloc
 
     def alloc(s, need):
         r = oa(s, need); fa(s)
-        return r
-
-    def alloc_ao(s, need):                                                             # 옛 실행기: Fe 는 RTSolver.alloc 뒤에 생김
-        r = oao(s, need); fa(s)
         return r
 
     def on(s):
@@ -201,6 +169,44 @@ def install(out, mode=0, dg=0):
         return r
 
     R.alloc, R.k, R.step = alloc, k, step
+
+
+def install(out, mode=0, dg=0):
+    from . import fem_an_rt as ART
+    from . import fem_ao_rt as AORT
+    ST.update(mode=int(mode), dg=int(dg), out=out)
+    if ST["dg"]:
+        LOG[0] = open(os.path.join(out, "fi.jsonl"), "w")
+    cpm = ART.cp
+    orm = cpm.RawModule
+
+    def RawModule(*a, **kw):                                                           # 최종 글자 (다른 묶음 고침 모두 뒤) 에서 fpi_p 만
+        if "code" in kw:
+            kw["code"] = patch(kw["code"])
+        elif a:
+            a = (patch(a[0]),) + tuple(a[1:])
+        return orm(*a, **kw)
+    cpm.RawModule = RawModule
+
+    def fa(s):                                                                         # --fp_interp 판만 (Fe 있음), 용량 바뀌면 다시
+        if getattr(s, "Fe", None) is None:
+            return
+        capQ = s.Fe.shape[0]; NP = s.F.numel() // 9
+        if getattr(s, "fiJ0", None) is not None and s.fiJ0.numel() == capQ and s.fiJp0.numel() == NP:
+            return
+        Z = lambda *sh: torch.zeros(*sh, device=s.dev, dtype=torch.float32)
+        s.fiJ0 = Z(capQ); s.fiJX = Z(capQ); s.fiJp0 = Z(NP)
+        s.fiD = Z(NP * 8) if ST["dg"] else None
+        ST["nalloc"] += 1
+    from . import fem_an_rt_v0 as ART0                                                # 옛 실행기 (수박) 의 바탕 RTSolver 는 fem_an_rt_v0 (fem_ao_rt·fem_det_rt)
+    for R in (ART.RTSolver, ART0.RTSolver):
+        _hook(R, fa)
+    oao = AORT.AORTSolver.alloc
+
+    def alloc_ao(s, need):                                                             # 옛 실행기: Fe 는 RTSolver.alloc 뒤에 생김
+        r = oao(s, need); fa(s)
+        return r
+
     AORT.AORTSolver.alloc = alloc_ao
     print(f"[절 CM92] finterp 켬 -- 모드 {ST['mode']} (0 지금 정의, 1 J 산술, 2 J 증분), 진단 {ST['dg']}", flush=True)
     _dump()
