@@ -8962,3 +8962,27 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 ### CM87.5 출력·실행
 - R2 lbours/wolfh9/ (판마다 cmd·log·summary·fem.jsonl·w9info·x2info·bbox·an·relfall·pred.pt (dH8·A_1·B_1·K8_1·Kb_1·T8_1 은 F 포함), wolfh9_s0k·s1·s3b·v.log, stab_*.out, go_*.log·END, boot.log, wolfh9_heap_table.md, heap_rows_s3b.json, wolfh9_last.png, vA·vB (렌더 vj/fem_wolf.mp4), code/ (tar 다섯·boot·launch·spec·launch.txt (stop))). wolfh9.FAIL 은 첫 연기 (f2eacb4) 의 남은 표식 (R2 삭제 금지라 둠; 0bd2cb9 연기는 OK). wolfh9_table.md 는 묶음 표 스크립트 (speed12 복사) 의 수박 형식 표라 wolf 칸은 비어 있음 -- 이 절 표는 wolfh9_heap_table.md.
 - 실행: SSH 1 번 (05:18 UTC, 로그인 노드 -> ece-a6gpu9 에서 R2 의 wolfh9_launch.sh 를 /dev/shm/dkta 에 받아 `pbs_attach -j 133077.ECE-util1` 로 떼어 띄움; ssh 는 120 초에 끊고 띄움은 R2 boot.log 로 확인; qstat 안 부름). 상주 시작점이 R2 launch.txt 로 f2eacb4 s0k,s1 (연기 실패) -> 0bd2cb9 s0k,s1 -> 8d73a64 s3b -> 8d73a64 v (14:18~14:38 노드 시각) 뒤 stop. 코드는 R2 tar 로만, 노드 / ·/tmp 안 씀 (/dev/shm/dkta 29 %), 카드는 공용 표식 디렉토리로 계산 프로세스 0 인 카드만 (speed13 것 안 건드림). 분석·그림은 로컬 (R2 덤프 내려받아 numpy, torch 없음).
+## CM89. wolf 부피 붕괴 -- 옛 실행기 뒤집힘 없는 보폭 필터 (--ls_inv) 를 새 실행기에 이식 (사용자 11-09 위임; 절 CM87 다음 수: H8 wolf 납작 = 바닥 접촉 층 가우스 점 뒤집힘·입자 det F 중앙 0.03, 새 실행기에는 필터가 없음) -- 가지 k1new, 커밋 804bfaa (s0k·s1·s2a·s2b·v 한 번에), 묶음 wolfh10 (PBS 잡 133077 ece-a6gpu9 상주 시작점 exe/wolfh10_boot.sh·wolfh10_launch.sh, lib/anchorflow/fem_wolfh10.py, exe/wolfh10_wrap.py·stab_wolfh10.sh·go_wolfh10.sh·wolfh10_spec.txt·wolfh10_heap.py·wolfh10_tab.py·wolfh10_compose.py, 표 R2 lbours/wolfh10/wolfh10_heap_table.md·wolfh10_table_local.md, 그림 wolfh10_last.png)
+### CM89.0 정의 (lib/anchorflow/fem_wolfh10.py; 감싸개 exe/wolfh10_wrap.py `--w10 1` -> exe/wolfh9_wrap.py (H8 사슬); 커널은 옛 실행기 fem_ao_rt.AW_SRC 글자 그대로, 새 문턱·클램프 없음)
+- L = 수박 공통 글자 `--ls_inv --ls_end --y0u --y0l` 의 정의를 새 실행기 (RTSolver·MatRT) 에: (가) 뉴턴 갱신 rt_lsup 직전 방향 T δ 로 가우스 점 (V_q > 0) 마다 J(y + α T δ) 와 걸음 끝 변위 U_e = e1 y + e0 U (HHT, 두 실행기 같은 꼴) 의 J 가 [0, 2^-k] 에서 > 0 인 가장 작은 k, 전역 최대 -> 보폭 = min(필터, 원래 보폭 (장벽 실현 가능·에너지 선탐색)), 원래 온 걸음이면 필터 보폭; 시작에서 J ≤ 0 인 점은 셈만. (나) 시작점: s.ctl(1) 직전 기준 U 쪽 (aw_y0z_a, 고착 노드는 H8 의 √k 꼴) 에서 시작점 쪽 같은 규칙 β.
+- 옮기지 않음: 수박의 국소화 (--ws_bar·--ws_fi) 와 X2 신호. H8L = H8 + L, H5L = H5n + L. 연기 s0k: wolf·레고 8 프레임, 훅 수 (뉴턴 12~18, 시작점 2~3) 확인 OK.
+### CM89.1 할 일 2 -- 뒤집힌 점의 부피 응력 정의
+- PG 원본 sand_return_mapping (mpm_utils.py): ε = log(max(|σ|, 1e-14)), 같은 δγ, tr > 0 이면 U Vᵀ -- ao_dpf 와 같은 식. 바꿀 근거 없음 (안 바꿈). L 판은 입자 det ≤ 0 이 0 이라 이 경로는 안 씀.
+### CM89.2 결과 (wolf 비결정 4 판씩; 표 R2 lbours/wolfh10/wolfh10_heap_table.md; 높이 = z − 0.48)
+| 판 | 판 수 | 발산 | 오차 % | 바닥 위 질량중심 f50 mm | 꼭대기 f50 99 % · 최대 mm | 안식각 ° | 면적 f50 cm² | 입자 밀도 f50 /cm³ | det F 중앙 f30 · f50 (det ≤ 0 수) | 이탈 판 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 정답 | - | - | - | 53 | 159 · 181 | 26.6 | 12402 | 2.23 | 1 | - |
+| 이전 H5 (절 CM87) | 4 | 0 | 4.41 | 121 | 313 · 332 | 43.6 | 10806 | 2.05 | - | 0/4 |
+| H8 (dH8) | 1 | 0 | 4.33 | 28 | 52 · 89 | 18.2 | 5221 | 10.17 | 0.09 · 0.03 (12173) | 0/1 |
+| H8L | 4 | 0 | 6.97 [6.88~7.03] | 120 [117~128] | 601 · 655 | 63.5 | 4872 | 4.08 | 0.97 · 0.31 (0) | 0/4 (최대 8 개) |
+| H5L | 4 | 0 | 5.10 [4.52~5.67] | 140 [132~157] | 374 · 395 | 41.4 | 9564 | 2.09 | 1.00 · 1.00 (0) | 0/4 |
+- 필터 작동 (w10.jsonl 첫 판): H8L 뉴턴 반복 94 중 67 번 보폭을 자름 (k 최대 7), 시작점 13 프레임; H5L 뉴턴 0 번, 시작점 3 번.
+- 회귀 (각 2 판, 발산 0): 레고 5.69 (H8L) · 5.21 (H5L) % (H7 5.84), ficus 3.76 % 주기 비 1.07, bread 2.04 % -- 모두 H7 와 같은 범위.
+- 렌더 포함 벽시계 단독 (W 평균 / 최악 / > 16.7 프레임, ms): 레고 13.25 / 16.1 / 0 (H7 12.8), ficus 9.4 / 11.7 / 0, bread 15.5 / 19.0~25.7 / 15 (H7 14.2 / 1~2), wolf 15.4~15.7 / 17.7 / 12~17 (H8L) · 15.9~16.3 / 17.9 / 9~17 (H5L) -- 필터 몫 약 +0.5~1.3 ms.
+- 그림 R2 lbours/wolfh10/wolfh10_last.png: f50 정답 | 이전 H5 | H8 | H5L.
+### CM89.3 결론
+- **통과 판 없음** (기준: 바닥 위 질량중심 53±15 mm, det F ≈ 1, 이탈·발산 0, 오차 ≤ 4.4 %). 필터는 가우스 점·입자 뒤집힘을 0 으로 만듦. 그러나 H8L 은 전역 보폭 자름으로 모래가 내려오지 않아 탑 (꼭대기 600 mm, 질량중심 120 mm, 오차 7 %) 이 되고, 뒤집힘 없이도 det F 가 f50 0.31 까지 줄어 부피 붕괴가 남음. H5L 은 det F 1.00·밀도 2.09 로 부피는 맞으나 필터가 거의 안 걸려 이전 H5 처럼 높게 쌓임 (140 mm, 오차 5.1 %).
+- 그래서 정답 | 최선 영상은 안 만듦. 공통 후보는 H8 그대로. H8L 의 뒤집힘 없는 부피 감소 경로는 확인 안 함.
+### CM89.4 출력·실행
+- R2 lbours/wolfh10/ (판마다 cmd·log·summary·fem.jsonl·w10info·w10.jsonl·bbox·rr·e1·pred.pt (A_1·B_1 은 F 포함), vA·vB/vj/fem_wolf.mp4, wolfh10_s*.log, stab_*.out, go_*.log·END, boot.log, wolfh10_heap_table.md, heap_rows_s1.json, wolfh10_table.md (노드 스크립트가 wolfh9 판 목록을 읽어 이름표가 틀림) · wolfh10_table_local.md (바로잡은 표), wolfh10_last.png, code/ (tar·boot·launch·spec·launch.txt (stop))).
+- 실행: SSH 1 번 (05:48 UTC, 로그인 노드 -> ece-a6gpu9 에서 R2 의 wolfh10_launch.sh 를 /dev/shm/dkta 에 받아 `pbs_attach -j 133077.ECE-util1` 로 떼어 띄움; qstat 안 부름). 상주 시작점이 804bfaa s0k,s1,s2a,s2b,v (14:48~15:07 노드 시각) 뒤 stop. 노드 / ·/tmp 안 씀, 카드는 공용 표식 디렉토리로 계산 프로세스 0 인 카드만. 표·그림은 로컬.
