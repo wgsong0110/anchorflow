@@ -1,0 +1,39 @@
+# 절 CM85 묶음 speed12 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_speed12.sh). H8 = H7 (절 CM84) + '@s12z 1' (lib/anchorflow/fem_speed12.py: 시작점 기준 1/√k 안 나눔 + X2 신호 따로, 옛 실행기 (수박) 만 바뀜).
+# 진단 '@s12dg 1' (결과 불변): 'r' 경계마다 S/F²·‖g0‖²/F²·β·판정 + 바닥 노드 고착 몫 분포 -> s12.jsonl. H7 진단 = 지금 판정 (X3g) 과 '‖g0‖² + S' 대조 + 벌점 있음, H7np = 벌점 뺌.
+# s0k 연기: 수박 20 프레임 (첫 접촉 f3 포함) H8 진단 · H7 진단, 레고 8 프레임 H8
+s0k kZ M3 g H8 @s6l 1 @s12dg 1 --frames 20
+s0k kN M3 g H7 @s6l 1 @s12dg 1 --frames 20
+s0k kL L nd H8 --frames 8
+# s1: 할 일 1 진단 (수박 H7 · H7np · H8 진단 각 2 판) + 판정 (수박 8 · 레고 4 · wolf 4 · ficus 2 · bread 2) + 렌더 포함 단독 (수박 a·b 두 번 = 4 회, 나머지 a·b = 2 회)
+s1 dN_1 M3 g H7 @s6l 1 @s12dg 1
+s1 dN_2 M3 g H7 @s6l 1 @s12dg 1
+s1 dP_1 M3 g H7np @s6l 1 @s12dg 1
+s1 dP_2 M3 g H7np @s6l 1 @s12dg 1
+s1 dQ_1 M3 g H8 @s6l 1 @s12dg 1
+s1 dQ_2 M3 g H8 @s6l 1 @s12dg 1
+s1 gZ_1 M3 g H8 @s6l 1
+s1 gZ_2 M3 g H8 @s6l 1
+s1 gZ_3 M3 g H8 @s6l 1
+s1 gZ_4 M3 g H8 @s6l 1
+s1 gZ_5 M3 g H8 @s6l 1
+s1 gZ_6 M3 g H8 @s6l 1
+s1 gZ_7 M3 g H8 @s6l 1
+s1 gZ_8 M3 g H8 @s6l 1
+s1 oZL_1 L nd H8
+s1 oZL_2 L nd H8
+s1 oZL_3 L nd H8
+s1 oZL_4 L nd H8
+s1 oZW_1 W nd H8
+s1 oZW_2 W nd H8
+s1 oZW_3 W nd H8
+s1 oZW_4 W nd H8
+s1 oZF_1 F nd H8
+s1 oZF_2 F nd H8
+s1 oZB_1 B nd H8
+s1 oZB_2 B nd H8
+s1 xZM M3 z H8 @s6l 1
+s1 xZM2 M3 z H8 @s6l 1
+s1 xZL L z H8 @s6l 1
+s1 xZW W z H8 @s6l 1
+s1 xZF F z H8 @s6l 1
+s1 xZB B z H8 @s6l 1
