@@ -9,3 +9,37 @@ s1 dP_1 M3 g H8np @s6l 1 @s13dg 1
 s1 dP_2 M3 g H8np @s6l 1 @s13dg 1
 s1 dM_1 M3 g H8 @g4m 0 @s6l 1 @s13dg 1
 s1 dM_2 M3 g H8 @g4m 0 @s6l 1 @s13dg 1
+# VAR X=H9
+# s2k 연기: H9 = H8 + X (X2 신호를 시작점 필터를 자른 칸의 노드로 국소화, '@s13x 1') -- 수박 20 프레임 H9 진단 + H9, 레고 8 프레임
+s2k kX M3 g H9 @s6l 1 @s13dg 1 --frames 20
+s2k kY M3 g H9 @s6l 1 --frames 20
+s2k kL L nd H9 --frames 8
+# s3: 진단 (수박 H9 2 판) + 판정 (수박 8 · 레고 4 · wolf 4 · ficus 2 · bread 2) + 렌더 포함 단독 (수박 a·b 두 번 = 4 회, 나머지 a·b = 2 회)
+s3 dX_1 M3 g H9 @s6l 1 @s13dg 1
+s3 dX_2 M3 g H9 @s6l 1 @s13dg 1
+s3 gX_1 M3 g H9 @s6l 1
+s3 gX_2 M3 g H9 @s6l 1
+s3 gX_3 M3 g H9 @s6l 1
+s3 gX_4 M3 g H9 @s6l 1
+s3 gX_5 M3 g H9 @s6l 1
+s3 gX_6 M3 g H9 @s6l 1
+s3 gX_7 M3 g H9 @s6l 1
+s3 gX_8 M3 g H9 @s6l 1
+s3 oXL_1 L nd H9
+s3 oXL_2 L nd H9
+s3 oXL_3 L nd H9
+s3 oXL_4 L nd H9
+s3 oXW_1 W nd H9
+s3 oXW_2 W nd H9
+s3 oXW_3 W nd H9
+s3 oXW_4 W nd H9
+s3 oXF_1 F nd H9
+s3 oXF_2 F nd H9
+s3 oXB_1 B nd H9
+s3 oXB_2 B nd H9
+s3 xXM M3 z H9 @s6l 1
+s3 xXM2 M3 z H9 @s6l 1
+s3 xXL L z H9 @s6l 1
+s3 xXW W z H9 @s6l 1
+s3 xXF F z H9 @s6l 1
+s3 xXB B z H9 @s6l 1

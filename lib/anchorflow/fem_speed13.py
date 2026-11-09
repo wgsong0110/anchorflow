@@ -10,6 +10,14 @@
     점마다 27 노드 중 벌점 면 노드 있음 · 바닥 띠 노드 (an > 0) 있음 · 0 < √k ≤ 1e-6 노드 있음 · 최소 노드 질량 / m̄ · 노드 가속도 몫 |Ut − Yn| 최대 · 속도 몫 |(1 − α_f) dt v| 최대.
     노드 요약: 벌점 면 노드 대 나머지 활성 노드의 |Ut − Yn| · |(1 − α_f) dt v| 중앙·평균.
     -> <out>/s13.jsonl (걸음마다 한 줄; k > 0 점 표본 최대 24 개).
+(X) --s13x 1 (결과 바뀜; H9 = H8 + X): X2 신호 S 를 '시작점 필터를 자른 칸의 노드' 로 국소화.
+    H8 (절 CM85 (나)): S = (1 − β)² Σ_{√k > 0} (M/τ²)² |T⁻¹ P (U − ŷ)|² -- 몸 전체 √k > 0 노드 합. β 가 전역이라 몸 안 어느 칸이든 (바닥과 먼 무거운 칸의
+      관성 예측 압축 포함) 필터를 자르면 멀리 있는 √k ≈ 0 바닥 노드의 1/k 몫이 S 로 들어와 X2 를 켬 (절 CM86.1: 벌점 판의 늘어난 β < 1 걸음은
+      √k ≈ 0 노드가 없는 칸에서 잘림).
+    X: S = (1 − β)² Σ_{n ∈ N_cut, √k > 0} (같은 몫),  N_cut = 이 걸음 시작점 필터 (aw_inv_q, --ls_end 끝 외삽 포함) 에서 k_q > 0 인 가우스 점의 27 노드.
+      = 옛 판 (H7) 에서 '자른 칸에 걸친 노드의 시작점 몫' 만 판정에 넣음. 시작점·β·문턱 (1e6) 그대로, 새 값 없음.
+    구현: aw_y0z_a 의 노드 몫을 S12A 원자 합 대신 노드 버퍼 S13Q[n] 에, aw_inv_q (시작점 호출) 가 k > 0 점의 27 노드를 S13M 에 표시
+      (aw_y0z_a 가 걸음마다 둘 다 비움), 반복 0 'r' 판정 (speed12 s12_r) 바로 앞에 s13_sum 이 Σ_{S13M} S13Q 를 S12A 에 모음.
 """
 import json
 import os
@@ -21,6 +29,8 @@ import torch
 class C:
     out = "."
     dg = 0
+    x = 0
+    sum_fn = None
     log = None
     fn = {}
     nrec = 0
@@ -103,12 +113,45 @@ def _inv_src():
     return b.replace(o1, n1).replace(o2, n2)
 
 
-def _patch(src):
-    if not isinstance(src, str) or "aw_y0z_a(" not in src or "s13_q(" in src:
-        return src
+X_SIG_O = "atomicAdd(&S12A, m_*m_*q_/(s_*s_)); }"
+X_SIG_N = "if (S13Q) S13Q[n] = m_*m_*q_/(s_*s_); }   // 절 CM86 X: 노드 버퍼 (합은 s13_sum 이 자른 칸 노드만)"
+X_A_O = "    float s = sk[n]; int p = pm[n];\n    if (p == 2 && yl && mn[n] < mthr)"
+X_A_N = "    if (S13Q) S13Q[n] = 0.0; if (S13M) S13M[n] = 0;   // 절 CM86 X: 걸음마다 비움\n" + X_A_O
+X_I_O = "    if (k > 0) atomicMax(&kk[0], k);\n"
+X_I_N = "    if (k > 0) { atomicMax(&kk[0], k); if (S13M) for (int o_=0;o_<27;o_++) S13M[ids[o_]] = 1; }   // 절 CM86 X: 자른 점의 27 노드 표시\n"
+X_SUM = r"""
+// ---- 절 CM86 X: S12A = Σ_{표시 노드} S13Q (반복 0 'r' 판정 s12_r 바로 앞; S12A 는 ao_floor_n 이 걸음마다 0)
+S13_G void s13_sum(const int* IP) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9] || !S13M || !S13Q) return;
+    if (S13M[n]) { double v = S13Q[n]; if (v != 0.0) atomicAdd(&S12A, v); }
+}
+"""
+
+
+def _patch_x(src):
+    assert src.count(X_SIG_O) == 1 and src.count(X_A_O) == 1, ("절 CM86 X 패치 자리 (speed12 z 1 위)", src.count(X_SIG_O), src.count(X_A_O))
+    i = src.index("void aw_inv_q(")
+    j = src.index(X_I_O, i)
+    assert j < src.index("\n}\n", i)
+    src = src[:j] + X_I_N + src[j + len(X_I_O):]
+    src = src.replace(X_SIG_O, X_SIG_N).replace(X_A_O, X_A_N)
+    src = src.replace('extern "C" {', 'extern "C" {\n#define S13_G __global__\n__device__ double* S13Q;\n__device__ int* S13M;', 1)
     i = src.rstrip().rfind("}")
-    src = src[:i] + S13_SRC + _inv_src() + "\n}\n"
-    C.done.add("진단 커널")
+    src = src[:i] + X_SUM + "\n}\n"
+    C.done.add("X 신호 국소화")
+    return src
+
+
+def _patch(src):
+    if not isinstance(src, str) or "aw_y0z_a(" not in src or "s13_" in src:
+        return src
+    if C.x:
+        src = _patch_x(src)
+    if C.dg:
+        i = src.rstrip().rfind("}")
+        src = src[:i] + (S13_SRC.replace("#define S13_G __global__\n", "") if C.x else S13_SRC) + _inv_src() + "\n}\n"
+        C.done.add("진단 커널")
     return src
 
 
@@ -254,13 +297,73 @@ def _install_dg():
     S4._xb_buf = _xb_buf
 
 
-def install(out, dg=0):
+def _glob(s, name):
+    mods = [s.mod] + (list(s._mods()) if hasattr(s, "_mods") else [])
+    for m in mods:
+        try:
+            return m.get_global(name)
+        except Exception:
+            continue
+    raise RuntimeError(f"{name} 없음")
+
+
+def _bind_x(s):
+    """캡처 밖: 노드 버퍼 (용량 바뀌면 새로) 와 장치 포인터 S13Q·S13M, s13_sum 손잡이."""
+    import cupy as cp
+    cap = int(s.capN)
+    if getattr(s, "_s13Qb", None) is None or s._s13Qb.numel() < cap:
+        s._s13Qb = torch.zeros(cap, device=s.dev, dtype=torch.float64)
+        s._s13Mb = torch.zeros(cap, device=s.dev, dtype=torch.int32)
+    key = (id(s.mod), int(s._s13Qb.data_ptr()), int(s._s13Mb.data_ptr()))
+    if getattr(s, "_s13key", None) != key:
+        torch.cuda.synchronize()
+        cp.ndarray((1,), dtype=cp.uint64, memptr=_glob(s, "S13Q"))[0] = int(s._s13Qb.data_ptr())
+        cp.ndarray((1,), dtype=cp.uint64, memptr=_glob(s, "S13M"))[0] = int(s._s13Mb.data_ptr())
+        cp.cuda.runtime.deviceSynchronize()
+        s._s13sum = _fn(s, "s13_sum")
+        s._s13key = key
+        C.nbind = getattr(C, "nbind", 0) + 1
+
+
+def _install_ctl():
+    from . import fem_ao_rt as AORT
+    from . import fem_rt_cuda as RTC
+    cls = AORT.AORTSolver
+    o_ctl = cls.ctl
+
+    def ctl(s, op, it=0):
+        cap = getattr(s, "_c3cap", None) is not None
+        if not cap and getattr(s, "mod", None) is not None:
+            try:
+                _bind_x(s)
+            except Exception as e:                                                     # 모듈이 아직 없을 때 (첫 컴파일 앞) 는 다음 부름에서
+                C.berr = repr(e)[:300]
+        if C.x and op == 3 and it == 0 and cap and getattr(s, "_x1K", 0) == 1 and getattr(s, "_xbd", None) is not None and getattr(s, "awb", None) is not None:
+            assert getattr(s, "_s13key", None) is not None, "절 CM86 X: S13Q·S13M 포인터를 캡처 앞에 못 묶음 " + str(getattr(C, "berr", ""))
+            with RTC._Stream():
+                s._s13sum((((int(s.capN) + 255) // 256),), (256,), (_P(s.IP),))
+            C.nsum = getattr(C, "nsum", 0) + 1
+        return o_ctl(s, op, it)
+    cls.ctl = ctl
+
+
+def install(out, dg=0, x=0):
     """실행기를 runpy 로 띄우는 순간 (speed12 설치 뒤 = 가장 바깥) 에 부름."""
-    C.out, C.dg = out, int(dg)
-    if C.dg:
+    C.out, C.dg, C.x = out, int(dg), int(x)
+    if C.dg or C.x:
         _install_src()
+    if C.x:
+        from . import fem_speed12 as S12
+        assert S12.C.z == 1, "--s13x 는 H8 (speed12 z 1) 위"
+        _install_ctl()
+    if C.dg:
         C.log = open(os.path.join(out, "s13.jsonl"), "w")
         _install_dg()
-    with open(os.path.join(out, "s13info.json"), "w") as f_:
-        json.dump(dict(dg=C.dg), f_)
-    print(f"[절 CM86] speed13 켬 진단 {C.dg}", flush=True)
+    import atexit
+
+    def _fin():
+        with open(os.path.join(out, "s13info.json"), "w") as f_:
+            json.dump(dict(dg=C.dg, x=C.x, done=sorted(C.done), nbind=getattr(C, "nbind", 0), nsum=getattr(C, "nsum", 0), berr=getattr(C, "berr", None), nrec=C.nrec, nerr=C.nerr), f_)
+    _fin()
+    atexit.register(_fin)
+    print(f"[절 CM86] speed13 켬 진단 {C.dg} X {C.x}", flush=True)
