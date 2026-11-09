@@ -1,0 +1,15 @@
+# 절 CM90 묶음 wmjitter 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_wmjitter.sh). 바탕 H9 (절 CM86, 가벼운 판 '@s6l 1' 그대로). '@wj 1' = 진단 기록 (exe/wmjitter_wrap.py, 결과 불변).
+# A = H9 그대로; C = 수렴 판 = H9 + 예산 끔 (@tb 1000) + 반복 xit 문 끔 (@nxit 1) + 뉴턴 20 · PCG 40 · tolP 1e-2 (εN 1e-2 그대로)
+# 한 요인 판 (각 1): T = H9 + 예산 끔; X = T + xit 문 끔 (뉴턴 6 · PCG 5 그대로); N = T + 뉴턴 20 · PCG 40 · tolP 1e-2 (xit 문 그대로)
+# s0k 연기: 수박 20 프레임 A · C
+s0k kA M3 g H9 @s6l 1 @wj 1 --frames 20
+s0k kC M3 g H9 @s6l 1 @wj 1 @tb 1000 @nxit 1 --newton 20 --cg 40 --tolP 1e-2 --frames 20
+# s1: 정답 지표 + A 2 판 + C 2 판 + 한 요인 T · X · N (수박 100 프레임)
+s1 gt M3 gt
+s1 jA_1 M3 g H9 @s6l 1 @wj 1
+s1 jA_2 M3 g H9 @s6l 1 @wj 1
+s1 jC_1 M3 g H9 @s6l 1 @wj 1 @tb 1000 @nxit 1 --newton 20 --cg 40 --tolP 1e-2
+s1 jC_2 M3 g H9 @s6l 1 @wj 1 @tb 1000 @nxit 1 --newton 20 --cg 40 --tolP 1e-2
+s1 jT M3 g H9 @s6l 1 @wj 1 @tb 1000
+s1 jX M3 g H9 @s6l 1 @wj 1 @tb 1000 @nxit 1
+s1 jN M3 g H9 @s6l 1 @wj 1 @tb 1000 --newton 20 --cg 40 --tolP 1e-2
