@@ -1,0 +1,6 @@
+# v 영상 (사용자 11-09): 다섯 씬 H7 덤프 판 하나씩 (--dump_F; 수박은 옛 실행기 덤프 = F 포함 + --dump_lj) -> 같은 카드에서 3DGS 렌더 (stab_ext2.sh vid). 짧은 씬부터
+v vW W v H7
+v vL L v H7
+v vF F v H7
+v vB B v H7
+v vM M3 v H7
