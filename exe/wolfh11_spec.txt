@@ -1,0 +1,40 @@
+# 절 CM91 묶음 wolfh11 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_wolfh11.sh). N = '@w11 1' 새 실행기 노드별 뒤집힘 보폭 (옛 실행기 --ws_bar 4 --ws_fi 정의, lib/anchorflow/fem_wolfh11.py).
+# H8N = H8 (절 CM85·CM87) + N, H5KN = H5n (절 CM81 H5) + P1X 강성 × κ ('@w8k 1', 확장 없음) + N. 수박 (옛 실행기) 은 손대지 않음.
+# s0k 연기: wolf 8 프레임 H8N · H5KN, 레고 (장벽 판) · ficus (장벽 없는 판) 8 프레임 H8N
+s0k kA W nd H8N --frames 8
+s0k kB W nd H5KN --frames 8
+s0k kL L nd H8N --frames 8
+s0k kF F nd H8N --frames 8
+# s1: wolf 4 판씩 (첫 판 입자 F 덤프·가우스 점 J)
+s1 A_1 W nd H8N --dump_F --qjd
+s1 A_2 W nd H8N
+s1 A_3 W nd H8N
+s1 A_4 W nd H8N
+s1 B_1 W nd H5KN --dump_F --qjd
+s1 B_2 W nd H5KN
+s1 B_3 W nd H5KN
+s1 B_4 W nd H5KN
+# s2a·s2b: 통과 판만 -- 회귀 (새 실행기 레고·ficus·bread 각 2 판) + 렌더 포함 벽시계 단독 (레고·ficus·bread·wolf, 한 카드에 a · b 두 회)
+s2a oAL_1 L nd H8N
+s2a oAL_2 L nd H8N
+s2a oAF_1 F nd H8N
+s2a oAF_2 F nd H8N
+s2a oAB_1 B nd H8N
+s2a oAB_2 B nd H8N
+s2a xAL L z H8N @s6l 1
+s2a xAF F z H8N @s6l 1
+s2a xAB B z H8N @s6l 1
+s2a xAW W z H8N @s6l 1
+s2b oBL_1 L nd H5KN
+s2b oBL_2 L nd H5KN
+s2b oBF_1 F nd H5KN
+s2b oBF_2 F nd H5KN
+s2b oBB_1 B nd H5KN
+s2b oBB_2 B nd H5KN
+s2b xBL L z H5KN @s6l 1
+s2b xBF F z H5KN @s6l 1
+s2b xBB B z H5KN @s6l 1
+s2b xBW W z H5KN @s6l 1
+# v: 영상 판 (덤프 + F -> 3DGS 렌더): 통과 판만
+v vA W v H8N
+v vB W v H5KN
