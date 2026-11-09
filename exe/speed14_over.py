@@ -33,7 +33,7 @@ SCN = {"L": "레고", "W": "wolf", "F": "ficus", "B": "bread", "M": "수박"}
 rows, summ = [], []
 for n in sorted(os.listdir(O)):
     d = os.path.join(O, n)
-    if not (n.startswith("x") and os.path.exists(os.path.join(d, "s6.jsonl")) and os.path.exists(os.path.join(d, "rr.jsonl"))):
+    if not (n[:1] in "xy" and os.path.exists(os.path.join(d, "s6.jsonl")) and os.path.exists(os.path.join(d, "rr.jsonl"))):
         continue
     rr = {q["t"]: q for q in jl(os.path.join(d, "rr.jsonl")) if "t" in q}
     s6 = {q["t"]: q for q in jl(os.path.join(d, "s6.jsonl")) if "t" in q}
