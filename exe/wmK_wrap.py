@@ -52,6 +52,31 @@ if int(float(C["sv"])):                                                         
     from anchorflow import fem_wmshape as WSHM
     o_frame = WSHM.Rec.frame
 
+    def _det3(F):
+        """3x3 행렬식 (원소 식; torch.linalg 안 씀 -- 렌더 모듈이 linalg 백엔드를 바꿔 묶음 SVD 가 프레임 3 에서 멈췄음 (s0k 첫 판))."""
+        return (F[:, 0, 0] * (F[:, 1, 1] * F[:, 2, 2] - F[:, 1, 2] * F[:, 2, 1]) - F[:, 0, 1] * (F[:, 1, 0] * F[:, 2, 2] - F[:, 1, 2] * F[:, 2, 0])
+                + F[:, 0, 2] * (F[:, 1, 0] * F[:, 2, 1] - F[:, 1, 1] * F[:, 2, 0]))
+
+    def _svd3(F):
+        """특이값 (큰 것부터) = √(FᵀF 고윳값), 대칭 3x3 고윳값 닫힌 식 (삼각 함수 방법, f64)."""
+        A = F.transpose(1, 2) @ F
+        p1 = A[:, 0, 1] ** 2 + A[:, 0, 2] ** 2 + A[:, 1, 2] ** 2
+        q = (A[:, 0, 0] + A[:, 1, 1] + A[:, 2, 2]) / 3
+        p2 = (A[:, 0, 0] - q) ** 2 + (A[:, 1, 1] - q) ** 2 + (A[:, 2, 2] - q) ** 2 + 2 * p1
+        p = torch.sqrt(p2 / 6)
+        I3 = torch.eye(3, device=F.device, dtype=F.dtype)
+        ps = torch.where(p > 0, p, torch.ones_like(p))
+        B = (A - q[:, None, None] * I3) / ps[:, None, None]
+        r = torch.clamp(_det3(B) / 2, -1.0, 1.0)
+        phi = torch.acos(r) / 3
+        e1 = q + 2 * p * torch.cos(phi)
+        e3 = q + 2 * p * torch.cos(phi + 2 * math.pi / 3)
+        e2 = 3 * q - e1 - e3
+        e = torch.stack([e1, e2, e3], 1)
+        e = torch.where((p > 0)[:, None], e, q[:, None].expand(-1, 3))
+        return torch.sqrt(torch.clamp(e, min=0.0))
+
+
     def frame(s, fi):
         r = o_frame(s, fi)
         t = fi + 1
@@ -65,8 +90,8 @@ if int(float(C["sv"])):                                                         
                     Fi = Fo[i:i + (1 << 20)].double()
                     ok = torch.isfinite(Fi).flatten(1).all(1)
                     Fz = torch.where(ok[:, None, None], Fi, torch.eye(3, device=Fi.device, dtype=Fi.dtype).expand_as(Fi))
-                    sv[i:i + Fi.shape[0]] = torch.where(ok[:, None], torch.linalg.svdvals(Fz), torch.full_like(Fz[:, 0], float("nan"))).float()
-                    dt_[i:i + Fi.shape[0]] = torch.where(ok, torch.linalg.det(Fz), torch.full_like(Fz[:, 0, 0], float("nan"))).float()
+                    sv[i:i + Fi.shape[0]] = torch.where(ok[:, None], _svd3(Fz), torch.full_like(Fz[:, 0], float("nan"))).float()
+                    dt_[i:i + Fi.shape[0]] = torch.where(ok, _det3(Fz), torch.full_like(Fz[:, 0, 0], float("nan"))).float()
                 np.savez_compressed(os.path.join(s.out, "wsh", f"fs_{t:03d}.npz"), sv=sv.cpu().numpy(), det=dt_.cpu().numpy())
         except Exception as e_:
             err(f"wmKsv f{t}", e_)
