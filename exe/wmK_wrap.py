@@ -174,7 +174,20 @@ if KF > 0:
             except Exception as e_:
                 err("nonfinite", e_)
                 nf_ = None
-            wlog(t=fi, kreq=r, nC=nC, K=KF, sK=int(s.K), tries=[[float(v) if isinstance(v, float) else v for v in q] for q in tries], gpu_ms=float(s.last_ms), wall_ms=wall, nonfin=nf_)
+            st_ = {}
+            try:                                                                          # 걸음별 판정 값 (진단, 읽기만): 덜 풀림 표시·잔차 비·보폭 최소, 넘침 IP[13], 노드 값 비유한 수
+                for k in ("ufl", "ufg", "ufs", "y0k"):
+                    a_ = getattr(s, k, None)
+                    if a_ is not None:
+                        st_[k] = [float(q) for q in a_.reshape(-1)[:KF].double().cpu().tolist()]
+                st_["IP13"] = int(s.IP[13]); st_["nn"] = int(s.IP[9])
+                for k in ("U", "y", "vk", "z0"):
+                    a_ = getattr(s, k, None)
+                    if a_ is not None:
+                        st_["nf_" + k] = int((~torch.isfinite(a_.reshape(-1)[:3 * int(s.IP[9])])).sum())
+            except Exception as e_:
+                err("steprec", e_)
+            wlog(t=fi, kreq=r, nC=nC, K=KF, sK=int(s.K), st=st_, tries=[[float(v) if isinstance(v, float) else v for v in q] for q in tries], gpu_ms=float(s.last_ms), wall_ms=wall, nonfin=nf_)
             print(f"[절 CM80 wmK] 첫 충돌 프레임 t {fi} (f{fi + 1}): 새로 닿는 입자 {nC} · K_req {r:.2f} -> K {KF} 고정, 시도 {tries}, GPU {float(s.last_ms):.1f} ms · 벽시계 {wall:.1f} ms, 끝 비유한 입자 {nf_}", flush=True)
             return redo, KF, tries
         WRX.split_col = split_col

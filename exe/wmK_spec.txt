@@ -40,3 +40,8 @@ s0kd dKA3 M3 r F P1X A3 @wmkk 64 --ksplit 6 --frames 8
 s0kd dKmf M3 r F P1X @mf2 1 @wmkk 64 --ksplit 6 --frames 8
 s0kd dKrr M3 r F P1X @rr 1 @tc 8 @wmkk 64 --ksplit 6 --frames 8
 s0kd dKnohc M3 r F P1X A3 @rr 1 @tc 8 @mf2 1 @wmkk 64 --ksplit 6 --frames 8
+# s0ke 걸음별 판정 값 기록 (wmk.jsonl st) 으로 K 64 비유한이 어느 걸음에서 나는지: P1X + mfix · H5
+s0ke eKmf M3 r F P1X @mf2 1 @wmkk 64 --ksplit 6 --frames 5
+s0ke eKH5 M3 r H5n @wmkk 64 --ksplit 6 --frames 5
+s0ke eKP1X M3 r F P1X @wmkk 64 --ksplit 6 --frames 5
+s0ke eK32H5 M3 r H5n @wmkk 32 --ksplit 5 --frames 5
