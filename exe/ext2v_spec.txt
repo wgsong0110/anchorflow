@@ -4,3 +4,5 @@ v vL L v H7
 v vF F v H7
 v vB B v H7
 v vM M3 v H7
+# v5 (조정자 11-09): wolf 이전 공통 H5 (절 CM79 wolfh7 H5_1 과 같은 글자; 그 덤프는 F 가 없어 렌더 못 함) 덤프 판 + 렌더 -- wolf 영상 정답 | H5 | H8 칸
+v5 vW5 W v H5n
