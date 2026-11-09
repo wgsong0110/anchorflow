@@ -41,3 +41,14 @@ s3 T1E2_5 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 1
 s3 T1E2_6 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 1
 s3 T1E2_7 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 1
 s3 T1E2_8 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 1
+# s3 결과: T1E2 8 판 발산 0, f50 507, 오차 4.34, 이탈 2/8 (47·78 개); T2E2 3/4 발산 (면 이웃 정의는 가벼운 노드가 내부로 남음).
+# s4: x 1 = 고립 노드 (반경 2 안 내부 칸 없음) 를 가장 가까운 내부 칸 (칸 거리 껍질 3, 4, ...) 의 가장 가까운 블록 노드에 0 차 확장 (평행 이동) -- T1E2X · T0E2X 각 4 판
+s4k kXW W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 1 @w8x 1 --frames 8
+s4 T1E2X_1 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 1 @w8x 1
+s4 T1E2X_2 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 1 @w8x 1
+s4 T1E2X_3 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 1 @w8x 1
+s4 T1E2X_4 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 1 @w8x 1
+s4 T0E2X_1 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 0 @w8x 1
+s4 T0E2X_2 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 0 @w8x 1
+s4 T0E2X_3 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 0 @w8x 1
+s4 T0E2X_4 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 0 @w8x 1

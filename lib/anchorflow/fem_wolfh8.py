@@ -31,14 +31,14 @@ import os
 import numpy as np
 import torch
 
-ST = dict(D=2, T=0, out=".", nsrc=0, nclass=0, nfold=0, nexp=0, ngg=0, nalloc=0, nstep=0, said=False, err=None)
+ST = dict(D=2, T=0, X=0, out=".", nsrc=0, nclass=0, nfold=0, nexp=0, ngg=0, nalloc=0, nstep=0, said=False, err=None)
 MARK = "// ---- 절 CM81 wolfh8"
 
 W8_SRC = r'''
 // ---- 절 CM81 wolfh8: 확장 B-스플라인 (lib/anchorflow/fem_wolfh8.py)
 __device__ __forceinline__ void w8_wts(int x, int deg, float* w) {          // 블록 가운데에서 축 거리 x 인 노드의 블록 노드 (−1, 0, 1) 가중
     w[0] = 0.f; w[1] = 0.f; w[2] = 0.f;
-    if (x >= -1 && x <= 1) { w[x+1] = 1.f; return; }
+    if (x >= -1 && x <= 1) { w[x+1] = 1.f; return; }                          // (차수 0 은 |x| > 2 에도 끝 노드 하나)
     float t = (float)x;
     if (deg >= 2) { w[0] = 0.5f*t*(t - 1.f); w[1] = (1.f - t)*(1.f + t); w[2] = 0.5f*t*(t + 1.f); }
     else if (deg == 1) { if (x > 0) { w[1] = 1.f - t; w[2] = t; } else { w[0] = -t; w[1] = 1.f + t; } }
@@ -64,7 +64,7 @@ __global__ void w8_icell2(const int* IP, const int* cb, const int* occ, int* ic,
     ic[(a0*n1 + b0)*n2 + c0_] = 1;
     atomicAdd(&cnt[3], 1);
 }
-__global__ void w8_class(const int* IP, const float* mn, const int* ic, int deg, int* base, float* w, int* cnt, float* cf) {
+__global__ void w8_class(const int* IP, const float* mn, const int* ic, int deg, int* base, float* w, int* cnt, float* cf, int xiso) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= IP[9]) return;
     base[n] = -1;
@@ -85,13 +85,27 @@ __global__ void w8_class(const int* IP, const float* mn, const int* ic, int deg,
           if (!ic[cd]) continue;
           int x = i-a-1, y = j-b-1, z = k-c-1, d = x*x + y*y + z*z;
           if (d < bd || (d == bd && cd < best)) { bd = d; best = cd; ba = a; bb = b; bc = c; } } } }
+    int dg = deg;
+    if (best < 0 && xiso) {                                                            // 절 CM81 x 1: 고립 노드 = 가장 가까운 내부 칸 (칸 거리 껍질 3, 4, ... 차례) 의 가장 가까운 블록 노드에 0 차 (평행 이동)
+        int R = c0 > c1 ? c0 : c1; R = R > c2 ? R : c2;
+        for (int d=3; d<=R+1 && best < 0; d++) {
+          for (int a=i-1-d;a<=i-1+d;a++) { if (a < 0 || a >= c0) continue;
+            for (int b=j-1-d;b<=j-1+d;b++) { if (b < 0 || b >= c1) continue;
+              int ea = (a == i-1-d || a == i-1+d || b == j-1-d || b == j-1+d);
+              for (int c=k-1-d;c<=k-1+d;c += (ea ? 1 : 2*d)) { if (c < 0 || c >= c2) continue;
+                int cd = (a*c1 + b)*c2 + c;
+                if (!ic[cd]) continue;
+                int x = i-a-1, y = j-b-1, z = k-c-1, dd = x*x + y*y + z*z;
+                if (dd < bd || (dd == bd && cd < best)) { bd = dd; best = cd; ba = a; bb = b; bc = c; } } } } }
+        if (best >= 0) { dg = 0; atomicAdd(&cnt[8], 1); atomicAdd(&cf[3], m); }
+    }
     if (best < 0) { atomicAdd(&cnt[2], 1); atomicAdd(&cf[2], m); return; }           // 고립 (가까운 내부 칸 없음) -- 그대로
     atomicAdd(&cnt[1], 1); atomicAdd(&cf[1], m);
     int xs[3] = {i-ba-1, j-bb-1, k-bc-1}, ne = 0;
     for (int a=0;a<3;a++) if (xs[a] < -1 || xs[a] > 1) ne++;
     atomicAdd(&cnt[4 + ne], 1);                                                       // 외삽 축 수 1·2·3 -> cnt[5..7]
     base[n] = (ba*nb1 + bb)*nb2 + bc;
-    w8_wts(xs[0], deg, w + n*9); w8_wts(xs[1], deg, w + n*9 + 3); w8_wts(xs[2], deg, w + n*9 + 6);
+    w8_wts(xs[0], dg, w + n*9); w8_wts(xs[1], dg, w + n*9 + 3); w8_wts(xs[2], dg, w + n*9 + 6);
 }
 __global__ void w8_free(const int* IP, const int* base, float* sk, int* pm, const float* yh, const float* y, float* eta) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
@@ -174,9 +188,9 @@ def _on(s):
     return getattr(s, "_w8on", None) is not None and getattr(s, "w8b", None) is not None
 
 
-def install(out, D=2, T=0):
+def install(out, D=2, T=0, X=0):
     from . import fem_an_rt as ART
-    ST.update(D=int(D), T=int(T), out=out)
+    ST.update(D=int(D), T=int(T), X=int(X), out=out)
     ob = ART.build_src
     ART.build_src = lambda *a, **kw: add_src(ob(*a, **kw))
     R = ART.RTSolver
@@ -231,7 +245,7 @@ def install(out, D=2, T=0):
                 ok(s, "w8_icell2", s.capQc, (P(s.IP), P(s.cb), P(s.occ), P(s.w8ic), P(s.w8cnt), i32(1 if ST["T"] == 2 else 0)), 128)
             else:
                 ok(s, "w8_icell", s.capQc, (P(s.IP), P(s.cb), P(s.Aacc), P(s.w8ic), P(s.w8cnt)), 128)
-            ok(s, "w8_class", s.capN, (P(s.IP), P(s.mn), P(s.w8ic), i32(ST["D"]), P(s.w8b), P(s.w8w), P(s.w8cnt), P(s.w8cf)), 256)
+            ok(s, "w8_class", s.capN, (P(s.IP), P(s.mn), P(s.w8ic), i32(ST["D"]), P(s.w8b), P(s.w8w), P(s.w8cnt), P(s.w8cf), i32(ST["X"])), 256)
             ok(s, "w8_free", s.capN, (P(s.IP), P(s.w8b), P(s.sk), P(s.pm), P(s.yh), P(s.y), P(s.eta)), 256)
             ST["nclass"] += 1
             if not ST["said"]:
@@ -250,7 +264,7 @@ def install(out, D=2, T=0):
                 c = s.w8cnt.tolist(); m = s.w8cf.tolist()
                 mt = sum(m[:3])
                 with open(os.path.join(ST["out"], "w8.jsonl"), "a") as f_:
-                    f_.write(json.dumps(dict(f=ST["nstep"], icell=c[3], ncell=int(s.IP[11]), inner=c[0], outer=c[1], iso=c[2], ax1=c[5], ax2=c[6], ax3=c[7],
+                    f_.write(json.dumps(dict(f=ST["nstep"], icell=c[3], ncell=int(s.IP[11]), inner=c[0], outer=c[1], iso=c[2], ax1=c[5], ax2=c[6], ax3=c[7], xiso=c[8], m_xiso=m[3],
                                              m_inner=m[0], m_outer=m[1], m_iso=m[2], mf_outer=(m[1] / mt if mt > 0 else None), mf_iso=(m[2] / mt if mt > 0 else None), redo=bool(r))) + "\n")
             except Exception as e_:
                 ST["err"] = f"{type(e_).__name__}: {e_}"
