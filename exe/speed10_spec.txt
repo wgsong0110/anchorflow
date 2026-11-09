@@ -1,0 +1,43 @@
+# 절 CM78 묶음 speed10 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_speed10.sh). H5 = H3 + '@l4 1 @l3 10 @l3sc 1 @l3fr 1' (가벼움 벌점 x κ, 절 CM75) + '@s9c 1 @s9y 1' (C·Y, 절 CM76) (+ 새 실행기 --cap_mul 4).
+# 노드 상자 압축 N = '@s10n 1 @s10k 목록' (확인 판 '@s10n 2'; 목록 all = 후보 전부, KL = exe/speed10_klist.txt), 첫 할당 상자 배수 K = '@s10cap 8'. H6 = H5 + N (KL) + K.
+# s0k 연기 (20 프레임)
+s0k kH M3 r H5 --frames 20
+s0k kN2 M3 r H5 @s10n 2 @s10k all --frames 20
+s0k kN1 M3 r H5 @s10n 1 @s10k all @s10cap 8 --frames 20
+# s0: 후보 전부 확인 판 4 (100 프레임) + H5 비결정 8 (넘침 기록 @s7ovf)
+s0 vA_1 M3 r H5 @s10n 2 @s10k all
+s0 vA_2 M3 r H5 @s10n 2 @s10k all
+s0 vA_3 M3 r H5 @s10n 2 @s10k all
+s0 vA_4 M3 r H5 @s10n 2 @s10k all
+s0 gH_1 M3 g H5 @s7ovf 1
+s0 gH_2 M3 g H5 @s7ovf 1
+s0 gH_3 M3 g H5 @s7ovf 1
+s0 gH_4 M3 g H5 @s7ovf 1
+s0 gH_5 M3 g H5 @s7ovf 1
+s0 gH_6 M3 g H5 @s7ovf 1
+s0 gH_7 M3 g H5 @s7ovf 1
+s0 gH_8 M3 g H5 @s7ovf 1
+# s1: 고른 목록 확인 판 4 + H6 비결정 8 + 커널 프로파일 (H5 · H6, 단독 카드 a 만)
+s1 vK_1 M3 r H5 @s10n 2 @s10k KL @s10cap 8
+s1 vK_2 M3 r H5 @s10n 2 @s10k KL @s10cap 8
+s1 vK_3 M3 r H5 @s10n 2 @s10k KL @s10cap 8
+s1 vK_4 M3 r H5 @s10n 2 @s10k KL @s10cap 8
+s1 gN_1 M3 g H6
+s1 gN_2 M3 g H6
+s1 gN_3 M3 g H6
+s1 gN_4 M3 g H6
+s1 gN_5 M3 g H6
+s1 gN_6 M3 g H6
+s1 gN_7 M3 g H6
+s1 gN_8 M3 g H6
+s1 pH M3 q H5 @s7kp 3,100
+s1 pN M3 q H6 @s7kp 3,100
+# s2: 다섯 씬 렌더 포함 벽시계 단독 (카드 하나에 a 다 돌고 b). 수박 H5 · H6 두 이름씩 (= 4 판씩), 네 씬은 H5 (N·K 는 옛 실행기 = 수박만) 2 판
+s2 xHM M3 z H5
+s2 xNM M3 z H6
+s2 xHM2 M3 z H5
+s2 xNM2 M3 z H6
+s2 xHL L z H5
+s2 xHW W z H5
+s2 xHF F z H5
+s2 xHB B z H5
