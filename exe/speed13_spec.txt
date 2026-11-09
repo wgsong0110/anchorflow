@@ -1,0 +1,11 @@
+# 절 CM86 묶음 speed13 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_speed13.sh). 바탕 H8 (절 CM85). H8np = H8 − 가벼움 벌점 × κ. 진단 '@s13dg 1' (결과 불변) -> s13.jsonl.
+# VAR Q=H8 진단; P=H8np 진단; M=H8 고스트 질량 끔 (@g4m 0) 진단
+# s0k 연기: 수박 20 프레임 H8 진단
+s0k kQ M3 g H8 @s6l 1 @s13dg 1 --frames 20
+# s1: 할 일 1 진단 (수박 100 프레임 각 2 판): H8 · H8np · H8 고스트 질량 끔
+s1 dQ_1 M3 g H8 @s6l 1 @s13dg 1
+s1 dQ_2 M3 g H8 @s6l 1 @s13dg 1
+s1 dP_1 M3 g H8np @s6l 1 @s13dg 1
+s1 dP_2 M3 g H8np @s6l 1 @s13dg 1
+s1 dM_1 M3 g H8 @g4m 0 @s6l 1 @s13dg 1
+s1 dM_2 M3 g H8 @g4m 0 @s6l 1 @s13dg 1
