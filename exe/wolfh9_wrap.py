@@ -9,6 +9,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "lib"))
+sys.setrecursionlimit(max(sys.getrecursionlimit(), 6000))                                 # 감싸개 한 겹 더 (첫 연기 f2eacb4: 기본 1000 에서 RecursionError)
 
 argv = sys.argv[1:]
 out = argv[argv.index("--out") + 1] if "--out" in argv else "."
