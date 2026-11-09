@@ -9034,3 +9034,27 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 ### CM91.3 출력·실행
 - R2 lbours/wolfh11/ (판마다 cmd·log·summary·fem.jsonl·w11info·w11.jsonl·bbox·rr·e1·pred.pt (A_1·B_1 은 F 포함), kA·kB·kL·kF 연기, wolfh11_s0k·s1.log, stab_*.out, go_s0k,s1.log·END, boot.log, wolfh11_heap_table.md, heap_rows_s1.json, wolfh11_table.md (노드 스크립트 수박 형식 표, wolf 칸 비어 있음), code/ (tar·boot·launch·launch.txt (stop))).
 - 실행: SSH 1 번 (06:16 UTC, 로그인 노드 -> ece-a6gpu9 에서 R2 의 wolfh11_launch.sh 를 /dev/shm/dkta 에 받아 `pbs_attach -j 133077.ECE-util1` 로 떼어 띄움; qstat 안 부름). 상주 시작점이 3c3bae6 s0k,s1 (15:16~15:20 노드 시각) 뒤 stop. 노드 / ·/tmp 안 씀, 카드는 공용 표식 디렉토리로 계산 프로세스 0 인 카드만 (speed14·wmjitter 것 안 건드림). 표는 로컬 (R2 덤프 내려받아 numpy).
+## CM92. wolf 부피 붕괴 -- 보간 교체 (--fp_interp) 가 부피를 잃는가 확인 (사용자 11-09 위임; 가설: 회전이 다른 F 들의 평균이라 det(평균 F) < 평균 det F) -- 가지 k1new, 커밋 cc167cb (첫 연기: 수박 rc 139) · a5ad1f6 (옛 실행기 바탕 fem_an_rt_v0 에도 훅) · 5f220d3 (연기 검사 글자, s0k·s1), 묶음 finterp (PBS 잡 133077 ece-a6gpu9 상주 시작점 exe/finterp_boot.sh·finterp_launch.sh, lib/anchorflow/fem_finterp.py, exe/finterp_wrap.py·stab_finterp.sh·go_finterp.sh·finterp_spec.txt·finterp_tab.py·finterp_fi.py (로컬 표), 표 R2 lbours/finterp/finterp_fi_s1.md)
+### CM92.0 지금 정의와 잰 것 (lib/anchorflow/fem_finterp.py; 감싸개 exe/finterp_wrap.py `--fi 0 --fidg 1` -> exe/wolfh11_wrap.py (H8 사슬); 모드 0 은 결과 같음, 읽기만)
+- 지금 보간 (fem_fpi.fpi_p, 절 CM20) 은 이미 유클리드 평균이 아님: X_q = U S Vᵀ, R = U Vᵀ, L = V log S Vᵀ, F_p = polar(Σ w R) · exp(Σ w L) -- 곧 '극분해 뒤 U 는 로그 공간, R 은 회전 평균' 판 (예시 1). det F_p = exp(Σ w log J_q) = 기하 평균 ≤ 산술 평균. 기여 점에 뒤집힌 점이 있으면 유클리드 Σ w X (rl 규칙).
+- 진단 fi.jsonl (프레임마다, 가우스 점은 m_q 가중·입자는 m_p 가중 평균): 입자 J_p0 (프레임 시작) -[P2G]-> J_q0 (rt_gauss) -[풀이]-> J_qX (마지막 커밋 RM 앞 A F_q) -[RM]-> J_qE (보간 원천) -[보간]-> 입자 J_pA. 보간 규칙만의 몫 = J_pA − J_ar (J_ar = 같은 입자·같은 가중의 Σ w J_q). fpi_p 글자는 cupy RawModule 직전 최종 글자에서 고침 (다른 묶음 고침 뒤).
+- 부피 보존 판 두 개도 같은 모듈에 넣음 (가설이 아니어서 돌리지 않음): 모드 1 J 산술 F_p = polar(Σ w R) · exp(dev Σ w L) · (Σ w J_q)^{1/3}, 모드 2 J 증분 = (J_p0 · Σ w J_q / J_q0)^{1/3}. 둘 다 뒤집힌 점이 낀 입자·유클리드 대체 입자는 지금 정의 그대로, 문턱·클램프 없음.
+### CM92.1 결과 -- 할 일 1 (진단, 지금 정의; 합 = 프레임마다 질량 평균 J 변화의 합; 표 R2 lbours/finterp/finterp_fi_s1.md)
+| 판 | 입자 J 평균 f1 → 끝 (중앙) | P2G | 풀이 | RM | **보간** | 그중 보간 규칙 몫 (기하 대 산술) | 유클리드 대체 질량 % 평균 (최대) |
+|---|---|---|---|---|---|---|---|
+| wolf H8 dW8_1 | 1.000 → 0.034 (0.021) | −0.042 | **−0.758** | −0.130 | −0.042 | −0.047 | 6.7 (14.3) |
+| wolf H8 dW8_2 | 1.000 → 0.034 (0.020) | −0.040 | **−0.756** | −0.129 | −0.041 | −0.045 | 8.0 (17.0) |
+| wolf H5n dW5_1 | 1.000 → 0.989 (1.000) | −0.001 | +0.610 | −0.617 | −0.003 | −0.002 | 0.0 |
+| 수박 H8 dM_1 | 1.000 → 0.965 (0.974) | −0.006 | −0.116 | +0.097 | −0.010 | −0.009 | 0 |
+| 수박 H8 dM_2 | 1.000 → 0.956 (0.972) | −0.005 | −0.129 | +0.099 | −0.009 | −0.007 | 0 |
+| bread H8 dB_1 | 1.000 → 1.012 (1.003) | +0.001 | +0.004 | −0.000 | +0.007 | −0.002 | 0 |
+| 레고 dL_1 · ficus dF_1 | 0.999 · 1.000 | 0 | (풀이+RM) +0.002 · 0 | - | −0.003 · 0 | −0.001 · 0 | 0 |
+- wolf H8 프레임별 비 (dW8_1, f15·20·25·30·35): 풀이 J_qX/J_q0 0.989·0.973·0.932·0.866·0.829, RM 0.995·0.991·0.987·0.989·0.992, 보간 J_pA/J_qE 0.9995·0.998·0.997·0.993·0.988; 뒤집힌 가우스 점 873·2161·4204·4559·2326.
+- 오차 (진단 판, 결과는 H8 와 같음): wolf H8 4.33 %, H5n 4.48 %, 수박 11.8~12.0 %, bread 2.02 %, 레고 5.64 %, ficus 3.76 %.
+### CM92.2 결론
+- **가설 기각**. wolf H8 의 부피 손실 (질량 평균 J 1 -> 0.034) 중 보간 몫은 약 4 % (−0.04), 대부분은 풀이 걸음 자체 (가우스 점 J 가 한 프레임 풀이에서 f25~35 에 7~17 % 씩 줄어듦, 합 −0.76) 와 RM (−0.13). 보간 규칙의 기하 평균 몫 (−0.047) 은 그 전부를 산술로 바꿔도 끝 J 0.03 을 1 로 못 돌림. 수박·bread·레고·ficus 도 보간 몫 ≤ 0.01.
+- H5n 은 풀이가 오히려 부풀리고 (J_qX 1.08 까지) RM 이 1 로 되돌려 부피 보존 -- H8 과 갈리는 곳은 풀이 걸음 (H8 = H5n + S_구속·C + κ 0 확장 T1E2·P1X 강성 0 + 시작점 기준 고침). 무엇이 풀이를 압축으로 받아들이게 하는지 (모래 Hencky 압력이 J 0.03 을 막아야 함) 는 모른다.
+- 그래서 할 일 2~5 (부피 보존 보간 다섯 씬 판정·단독·영상) 는 안 함 (조건 '맞으면' 불충족). 모드 1·2 코드는 남김 (spec s2·s3 줄 있음, 안 돌림). 공통 후보는 H8 그대로.
+### CM92.3 출력·실행
+- R2 lbours/finterp/ (판마다 cmd·log·summary·fem.jsonl·fi.jsonl·fiinfo·bbox·e1·pred.pt (dW8_1·dW5_1 은 F 포함), 연기 kW0·kW1·kW2·kL1·kF2·kB1·kM0·kM1·kM2, finterp_s0k·s1.log, stab_*.out, go_*.log·END, boot.log, finterp_fi_s1.md, finterp_table.md, code/ (tar 셋·boot·launch·launch.txt (stop))). finterp.FAIL 은 첫 두 연기 (cc167cb 수박 훅 빠짐, a5ad1f6 검사 글자) 의 남은 표식 (R2 삭제 금지라 둠; 5f220d3 연기는 OK=1).
+- 실행: SSH 1 번 (06:33 UTC, 로그인 노드 -> ece-a6gpu9 에서 R2 의 finterp_launch.sh 를 /dev/shm/dkta 에 받아 `pbs_attach -j 133077.ECE-util1` 로 떼어 띄움; qstat 안 부름). 상주 시작점이 cc167cb s0k,s1 -> a5ad1f6 s0k,s1 -> 5f220d3 s0k,s1 (15:33~15:43 노드 시각) 뒤 stop. 노드 / ·/tmp 안 씀, 카드는 공용 표식 디렉토리로 계산 프로세스 0 인 카드만 (speed14·wmjitter 것 안 건드림). 표는 로컬.
