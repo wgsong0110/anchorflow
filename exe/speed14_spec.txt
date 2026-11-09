@@ -1,0 +1,48 @@
+# 절 CM88 묶음 speed14 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_speed14.sh). 바탕 H9 (절 CM86). H10a = H9 + A1 ('@s14a 1' 가속도 기억에서 가벼움 벌점 몫 빼기), H10b = H9 + A2 ('@s14a 2' 벌점 강성 전체 몫 빼기). 진단 '@s14dg 1' (결과 불변, '@s13dg 1' 위) -> s14.jsonl.
+# VAR F=H10a
+# s0k 연기: 수박 20 프레임 H9 진단 · H10a · H10b, 레고 8 프레임, 수박 단독 a (셈 T)
+s0k kD M3 g H9 @s6l 1 @s13dg 1 @s14dg 1 --frames 20
+s0k kA M3 g H10a @s6l 1 --frames 20
+s0k kB M3 g H10b @s6l 1 --frames 20
+s0k kL L nd H10a --frames 8
+s0k xT M3 z H10a @s6l 1 @s14ct 1 --frames 20
+# s1: 할 일 1 진단 (수박 100 프레임: H9 2 판 · H10a·H10b 진단 각 1 판) + 고침 고르기 (H10a·H10b 각 4 판)
+s1 dD_1 M3 g H9 @s6l 1 @s13dg 1 @s14dg 1
+s1 dD_2 M3 g H9 @s6l 1 @s13dg 1 @s14dg 1
+s1 dE_1 M3 g H10a @s6l 1 @s13dg 1 @s14dg 1
+s1 dG_1 M3 g H10b @s6l 1 @s13dg 1 @s14dg 1
+s1 gA_1 M3 g H10a @s6l 1
+s1 gA_2 M3 g H10a @s6l 1
+s1 gA_3 M3 g H10a @s6l 1
+s1 gA_4 M3 g H10a @s6l 1
+s1 gB_1 M3 g H10b @s6l 1
+s1 gB_2 M3 g H10b @s6l 1
+s1 gB_3 M3 g H10b @s6l 1
+s1 gB_4 M3 g H10b @s6l 1
+# s2: 고른 고침 F 판정 (수박 8 · 레고 4 · wolf 4 · ficus 2 · bread 2) + 렌더 포함 단독 (수박 a·b 두 번 = 4 회, 나머지 a·b = 2 회; 수박은 셈 T)
+s2 gF_1 M3 g H10a @s6l 1
+s2 gF_2 M3 g H10a @s6l 1
+s2 gF_3 M3 g H10a @s6l 1
+s2 gF_4 M3 g H10a @s6l 1
+s2 gF_5 M3 g H10a @s6l 1
+s2 gF_6 M3 g H10a @s6l 1
+s2 gF_7 M3 g H10a @s6l 1
+s2 gF_8 M3 g H10a @s6l 1
+s2 oFL_1 L nd H10a
+s2 oFL_2 L nd H10a
+s2 oFL_3 L nd H10a
+s2 oFL_4 L nd H10a
+s2 oFW_1 W nd H10a
+s2 oFW_2 W nd H10a
+s2 oFW_3 W nd H10a
+s2 oFW_4 W nd H10a
+s2 oFF_1 F nd H10a
+s2 oFF_2 F nd H10a
+s2 oFB_1 B nd H10a
+s2 oFB_2 B nd H10a
+s2 xFM M3 z H10a @s6l 1 @s14ct 1
+s2 xFM2 M3 z H10a @s6l 1 @s14ct 1
+s2 xFL L z H10a @s6l 1
+s2 xFW W z H10a @s6l 1
+s2 xFF F z H10a @s6l 1
+s2 xFB B z H10a @s6l 1
