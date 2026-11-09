@@ -1,0 +1,56 @@
+# 절 CM87 묶음 wolfh9 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_wolfh9.sh). H8 = 절 CM85 공통 후보 (H7 + '@s12z 1').
+# H9a = H8 + '@w9 1' (κ 0 씬 P1X 강성 그대로, 확장 T1E2 는 켬), H9b = H8 + '@w9 2' (κ 0 씬 P1X 강성 × α_DP); κ > 0 씬은 H8 과 같은 계산 (lib/anchorflow/fem_wolfh9.py).
+# s0k 연기: wolf 8 프레임 H9a · H9b
+s0k kA W nd H9a --frames 8
+s0k kB W nd H9b --frames 8
+# s1: 진단 (H8 입자 F 덤프 + 가우스 점 J) + wolf 4 판씩 (첫 판은 F 덤프·가우스 점 J)
+s1 dH8 W nd H8 --dump_F --qjd
+s1 A_1 W nd H9a --dump_F --qjd
+s1 A_2 W nd H9a
+s1 A_3 W nd H9a
+s1 A_4 W nd H9a
+s1 B_1 W nd H9b --dump_F --qjd
+s1 B_2 W nd H9b
+s1 B_3 W nd H9b
+s1 B_4 W nd H9b
+# s2a·s2b: 통과 판 다섯 씬 회귀 (수박 8 · 레고 4 · ficus 2 · bread 2; wolf 는 s1 4 판 + 4 판 더)
+s2a gA_1 M3 g H9a @s6l 1
+s2a gA_2 M3 g H9a @s6l 1
+s2a gA_3 M3 g H9a @s6l 1
+s2a gA_4 M3 g H9a @s6l 1
+s2a gA_5 M3 g H9a @s6l 1
+s2a gA_6 M3 g H9a @s6l 1
+s2a gA_7 M3 g H9a @s6l 1
+s2a gA_8 M3 g H9a @s6l 1
+s2a oAL_1 L nd H9a
+s2a oAL_2 L nd H9a
+s2a oAL_3 L nd H9a
+s2a oAL_4 L nd H9a
+s2a A_5 W nd H9a
+s2a A_6 W nd H9a
+s2a A_7 W nd H9a
+s2a A_8 W nd H9a
+s2a oAF_1 F nd H9a
+s2a oAF_2 F nd H9a
+s2a oAB_1 B nd H9a
+s2a oAB_2 B nd H9a
+s2b gB_1 M3 g H9b @s6l 1
+s2b gB_2 M3 g H9b @s6l 1
+s2b gB_3 M3 g H9b @s6l 1
+s2b gB_4 M3 g H9b @s6l 1
+s2b gB_5 M3 g H9b @s6l 1
+s2b gB_6 M3 g H9b @s6l 1
+s2b gB_7 M3 g H9b @s6l 1
+s2b gB_8 M3 g H9b @s6l 1
+s2b oBL_1 L nd H9b
+s2b oBL_2 L nd H9b
+s2b oBL_3 L nd H9b
+s2b oBL_4 L nd H9b
+s2b B_5 W nd H9b
+s2b B_6 W nd H9b
+s2b B_7 W nd H9b
+s2b B_8 W nd H9b
+s2b oBF_1 F nd H9b
+s2b oBF_2 F nd H9b
+s2b oBB_1 B nd H9b
+s2b oBB_2 B nd H9b
