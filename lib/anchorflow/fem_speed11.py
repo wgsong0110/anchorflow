@@ -84,42 +84,44 @@ def rdiag(s, trig):
         r = dict(f=int(S6.W.fr), trig=int(trig), g0F=float(CD[0]) / F2 if F2 > 0 else None, g1F=float(SC[1]) / F2 if F2 > 0 else None,
                  rz1F=float(SC[0]) / F2 if F2 > 0 else None, F=math.sqrt(F2) if F2 > 0 else None,
                  pcg=int(CT[3]), pcap=int(CT[5]), nsol=int(CT[7]), st=float(SC[14]), nn=nn)
-        g = -s.g0buf[:nn * 3].double().reshape(nn, 3)
+        mn = s.mn.reshape(-1)[:nn].double()
+        act = (mn > 0).double()[:, None]                                                     # 압축 판 (rt_grad_c) 은 질량 있는 노드만 씀 -- 빈 노드 값은 지난 것
+        g = -s.g0buf.reshape(-1)[:nn * 3].double().reshape(nn, 3) * act
         g2 = (g * g).sum(1)
         G = float(g2.sum())
-        mn = s.mn[:nn].double()
         mb = float(getattr(s, "mthr", 0.0) or 0.0)
         cls = torch.where(mn < mb, 0, torch.where(mn < 50 * mb, 1, 2))
         r["gsh_m"] = [float(g2[cls == c].sum()) / G if G > 0 else None for c in range(3)]
         r["n_m"] = [int((cls == c).sum()) for c in range(3)]
         kn = getattr(s, "wskn", None)
         if kn is not None:
-            kn = kn[:nn].long()
+            kn = kn.reshape(-1)[:nn].long()
             kg = int(s.wskg[0]); kb = int(s.kk[0]) if getattr(s, "kk", None) is not None else -1
             cut = kn > kg
             r.update(kg=kg, kb=kb, kmax=int(kn.max()) if nn else 0, ncut=int(cut.sum()), gsh_cut=float(g2[cut].sum()) / G if G > 0 else None)
         i = int(torch.argmax(g2)) if nn else 0
-        r["top"] = dict(g2sh=float(g2[i]) / G if G > 0 else None, m_mb=float(mn[i]) / mb if mb > 0 else None, pm=int(s.pm[i]), kn=int(kn[i]) if kn is not None else None)
+        r["top"] = dict(g2sh=float(g2[i]) / G if G > 0 else None, m_mb=float(mn[i]) / mb if mb > 0 else None, pm=int(s.pm.reshape(-1)[i]), kn=int(kn[i]) if kn is not None else None)
         fw = getattr(s, "g5w", None)
         idv = getattr(s, "l3id", None)
         if fw is not None and idv is not None and getattr(s, "_gpk", None) is not None:
             nrm = torch.tensor(s.floor["NR"] if getattr(s, "floor", None) else [0.0, 0.0, 1.0], device=s.dev, dtype=torch.float64)
-            sk = s.sk[:nn].double(); pm = s.pm[:nn]
-            fwL = (fw - idv[:fw.numel()]).contiguous()
-            fwP = idv[:fw.numel()].contiguous()
+            sk = s.sk.reshape(-1)[:nn].double(); pm = s.pm.reshape(-1)[:nn]
+            fw = fw.reshape(-1); idv = idv.reshape(-1)[:fw.numel()]
+            fwL = (fw - idv).contiguous()
+            fwP = idv.contiguous()
             out = {}
             for nm_, w_ in (("L", fwL), ("P", fwP)):
                 f_, B_ = _pen(s, w_, G6)
                 torch.cuda.synchronize()
-                Tf = G2._T(f_[:nn * 3].reshape(nn, 3), sk, pm, nrm)
-                out[nm_] = (Tf, B_[:nn * 9].double().reshape(nn, 9))
+                Tf = G2._T(f_[:nn * 3].reshape(nn, 3), sk, pm, nrm) * act
+                out[nm_] = (Tf, B_[:nn * 9].double().reshape(nn, 9) * act)
             TfL, BL = out["L"]; TfP, BP = out["P"]
             r["fL2F"] = float((TfL * TfL).sum()) / F2 if F2 > 0 else None
             r["fP2F"] = float((TfP * TfP).sum()) / F2 if F2 > 0 else None
             r["g_noL"] = float(((g - TfL) ** 2).sum()) / G if G > 0 else None
             r["g_noP"] = float(((g - TfP) ** 2).sum()) / G if G > 0 else None
             it2 = float(getattr(s, "_g3it2", 0.0))
-            Bt = s.B[:nn * 9].double().reshape(nn, 9)
+            Bt = s.B.reshape(-1)[:nn * 9].double().reshape(nn, 9) * act
             trT = 3.0 * mn * it2 + Bt[:, 0] + Bt[:, 4] + Bt[:, 8]
             trL = BL[:, 0] + BL[:, 4] + BL[:, 8]
             trP = BP[:, 0] + BP[:, 4] + BP[:, 8]

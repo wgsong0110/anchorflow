@@ -2,7 +2,7 @@
 # 변형 낱말: H5np = H5 에서 벌점 x κ 뺌 (= H3 + C·Y) · H5g0 = H5 에서 X3g ('@s8g') 뺌 (무너짐 판정은 걸음 끝 X2 만) · H5l1 = γ̄_L 1.
 # 진단: '@s9dg 1' (절 CM76 D: 뉴턴 반복 시작 ‖g‖²/F² · PCG 반복 r²/rf) + '@s11dg 1' (X3g 경계 진단, lib/anchorflow/fem_speed11.py).
 # s0k 연기 (20 프레임)
-s0k kD M3 r H5 @s9dg 1 @s11dg 1 --frames 20
+s0k kD2 M3 r H5 @s9dg 1 @s11dg 1 --frames 20
 s0k kG0 M3 r H5g0 --frames 20
 s0k kNP M3 r H5np --frames 20
 # s0: 진단 (H5 4 · H3 2) + 원인 가르기 판 (각 4, 100 프레임)
