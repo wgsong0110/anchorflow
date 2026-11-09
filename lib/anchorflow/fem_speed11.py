@@ -16,6 +16,8 @@
     고침 = 시작점 기준의 고착 방향 성분을 1/s 대신 s 로: T η_z = k P (z0 − ŷ) (물리 변위 = 고착 몫 k 만큼 영속도 위치 쪽, k = 1 이면 원래와 같고 k → 0 이면 연속으로 ŷ).
     ao_floor_n 의 목표 h = Ũ + (1 − k) P d (고착 몫 1 − k 만큼 묶음) 와 같은 k 섞기. 문턱 없음.
     1 = aw_y0z_a (옛 실행기 시작점 섞기 기준) 만 · 2 = 1 + 걸음 시작 위치 시작점 (옛 ao_floor_n --y0u · 새 rt_ga_y0 의 (s > 1e-6) ? 1/s : 0 도 s 로; 모든 씬).
+    (s1k: 1·2 는 수박 첫 접촉 f3 부터 바닥을 뚫음 (부분 고착 노드의 법선 시작점이 z0 에 못 닿아 장벽 밖) -> 버림.)
+    3 = aw_y0z_a 의 고착 판정을 걸음 시작 위치 시작점 두 커널 (ao_floor_n --y0u, rt_ga_y0) 이 이미 쓰는 정의 (√k > 1e-6 이면 1/√k, 아니면 그 성분 0 = ŷ, 절 AN.err3 처치 (a)) 와 같게 -- 새 값 아님.
 """
 import json
 import math
@@ -181,12 +183,14 @@ ZP = [("aw_y0z_a", "    float isk = (s > 0.f) ? 1.f/s : 0.f;\n    float dd[3]; f
        "        float isk = s;   // 절 CM82 Z2\n        float dd[3]; for (int a=0;a<3;a++) dd[a] = U[n*3+a] - h[a];", 2),
       ("rt_ga_y0", "    float isk = (s > 1e-6f) ? 1.f/s : 0.f;\n    float dd[3]; for (int a=0;a<3;a++) dd[a] = U[n*3+a] - yh[n*3+a];",
        "    float isk = s;   // 절 CM82 Z2\n    float dd[3]; for (int a=0;a<3;a++) dd[a] = U[n*3+a] - yh[n*3+a];", 2)]
+ZP.append(("aw_y0z_a 3", "    float isk = (s > 0.f) ? 1.f/s : 0.f;\n    float dd[3]; for (int a=0;a<3;a++) dd[a] = z0[n*3+a] - yh[n*3+a];",
+           "    float isk = (s > 1e-6f) ? 1.f/s : 0.f;   // 절 CM82 Z3: ao_floor_n --y0u · rt_ga_y0 와 같은 고착 판정 (√k ≤ 1e-6 이면 그 성분 0 = ŷ)\n    float dd[3]; for (int a=0;a<3;a++) dd[a] = z0[n*3+a] - yh[n*3+a];", 3))
 ZST = dict(done=set(), said=set())
 
 
 def _zpatch(src):
     for nm, a, b, lv in ZP:
-        if C.z >= lv and a in src:
+        if ((C.z == 3 and lv == 3) or (C.z < 3 and C.z >= lv)) and a in src:
             src = src.replace(a, b)
             ZST["done"].add(nm)
     return src
@@ -199,7 +203,9 @@ def _install_z():
 
     def bs(*a, **kw):
         r = ob(*a, **kw)
-        return _zpatch(r) if isinstance(r, str) else r
+        r2 = _zpatch(r) if isinstance(r, str) else r
+        print(f"[절 CM82] Z 고침 (새 실행기) {sorted(ZST['done'])}", flush=True)
+        return r2
 
     def az(*a, **kw):
         r = oa(*a, **kw)

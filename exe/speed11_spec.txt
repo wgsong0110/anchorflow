@@ -35,40 +35,41 @@ s0b dJ_3 M3 r H5 @s11dg 1
 s0b dJ_4 M3 r H5 @s11dg 1
 s0b dL_1 M3 r H3 @s11dg 1
 s0b dL_2 M3 r H3 @s11dg 1
-# s1k: 고침 후보 Z 연기 (20 프레임). Z1 = '@s11z 1' (옛 실행기 시작점 섞기 기준 aw_y0z_a 의 1/s -> s), Z2 = '@s11z 2' (+ 걸음 시작 위치 시작점 ao_floor_n --y0u · rt_ga_y0, 모든 씬)
-s1k kZ1 M3 r H5 @s11z 1 @s11dg 1 --frames 20
-s1k kZ2 M3 r H5 @s11z 2 --frames 20
-s1k kZ2L L nd H5 @s11z 2 --frames 20
-# s1: 수박 8 판씩 + 다른 씬 2 판씩 (판정 판)
-s1 gZ1_1 M3 g H5 @s11z 1
-s1 gZ1_2 M3 g H5 @s11z 1
-s1 gZ1_3 M3 g H5 @s11z 1
-s1 gZ1_4 M3 g H5 @s11z 1
-s1 gZ1_5 M3 g H5 @s11z 1
-s1 gZ1_6 M3 g H5 @s11z 1
-s1 gZ1_7 M3 g H5 @s11z 1
-s1 gZ1_8 M3 g H5 @s11z 1
-s1 gZ2_1 M3 g H5 @s11z 2
-s1 gZ2_2 M3 g H5 @s11z 2
-s1 gZ2_3 M3 g H5 @s11z 2
-s1 gZ2_4 M3 g H5 @s11z 2
-s1 gZ2_5 M3 g H5 @s11z 2
-s1 gZ2_6 M3 g H5 @s11z 2
-s1 gZ2_7 M3 g H5 @s11z 2
-s1 gZ2_8 M3 g H5 @s11z 2
-s1 oZ1L_1 L nd H5 @s11z 1
-s1 oZ1L_2 L nd H5 @s11z 1
-s1 oZ1W_1 W nd H5 @s11z 1
-s1 oZ1W_2 W nd H5 @s11z 1
-s1 oZ1F_1 F nd H5 @s11z 1
-s1 oZ1F_2 F nd H5 @s11z 1
-s1 oZ1B_1 B nd H5 @s11z 1
-s1 oZ1B_2 B nd H5 @s11z 1
-s1 oZ2L_1 L nd H5 @s11z 2
-s1 oZ2L_2 L nd H5 @s11z 2
-s1 oZ2W_1 W nd H5 @s11z 2
-s1 oZ2W_2 W nd H5 @s11z 2
-s1 oZ2F_1 F nd H5 @s11z 2
-s1 oZ2F_2 F nd H5 @s11z 2
-s1 oZ2B_1 B nd H5 @s11z 2
-s1 oZ2B_2 B nd H5 @s11z 2
+# s1k (첫 판, 커밋 5584d1d): Z1 '@s11z 1'·Z2 '@s11z 2' (시작점 고착 역사상 1/s -> s) 는 수박 f3 부터 바닥 뚫음 (오차 86 %, f14 발산) -> 버림. 판 kZ1·kZ2·kZ2L 은 R2 에 남김.
+# s2k: 고침 후보 -- E = X3g 판정을 반복 0 시작으로 (H5e: '@s8g' 대신 X3e4 '@s4e 1e6'; s0 진단 1,200 걸음에서 반복 0 판정 = 반복 1 판정 236/236, 어긋남 0)
+#      Z3 = '@s11z 3' (aw_y0z_a 고착 판정을 걸음 시작 위치 시작점 두 커널과 같게), EZ = 둘 다
+s2k kE M3 r H5e --frames 20
+s2k kZ3 M3 r H5 @s11z 3 @s11dg 1 --frames 20
+s2k kEZ M3 r H5e @s11z 3 --frames 20
+s2 gE_1 M3 g H5e
+s2 gE_2 M3 g H5e
+s2 gE_3 M3 g H5e
+s2 gE_4 M3 g H5e
+s2 gE_5 M3 g H5e
+s2 gE_6 M3 g H5e
+s2 gE_7 M3 g H5e
+s2 gE_8 M3 g H5e
+s2 gZ3_1 M3 g H5 @s11z 3
+s2 gZ3_2 M3 g H5 @s11z 3
+s2 gZ3_3 M3 g H5 @s11z 3
+s2 gZ3_4 M3 g H5 @s11z 3
+s2 gZ3_5 M3 g H5 @s11z 3
+s2 gZ3_6 M3 g H5 @s11z 3
+s2 gZ3_7 M3 g H5 @s11z 3
+s2 gZ3_8 M3 g H5 @s11z 3
+s2 gEZ_1 M3 g H5e @s11z 3
+s2 gEZ_2 M3 g H5e @s11z 3
+s2 gEZ_3 M3 g H5e @s11z 3
+s2 gEZ_4 M3 g H5e @s11z 3
+s2 gEZ_5 M3 g H5e @s11z 3
+s2 gEZ_6 M3 g H5e @s11z 3
+s2 gEZ_7 M3 g H5e @s11z 3
+s2 gEZ_8 M3 g H5e @s11z 3
+s2 oEL_1 L nd H5e @s11z 3
+s2 oEL_2 L nd H5e @s11z 3
+s2 oEW_1 W nd H5e @s11z 3
+s2 oEW_2 W nd H5e @s11z 3
+s2 oEF_1 F nd H5e @s11z 3
+s2 oEF_2 F nd H5e @s11z 3
+s2 oEB_1 B nd H5e @s11z 3
+s2 oEB_2 B nd H5e @s11z 3

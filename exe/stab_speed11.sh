@@ -35,7 +35,7 @@ dfl() { local s=$1 x=" $2 "
   case $s in M*) ;; *) [[ "$x" == *" H5 "* ]] && x="$x --cap_mul 4";; esac                     # 새 실행기 첫 할당 배수 4 (절 CM72 H2)
   local KL; KL="$(tr -d ' \n' < exe/speed10_klist.txt 2>/dev/null)"                      # 압축 목록 (s0 확인 판에서 다름 0 인 커널; exe/speed10_klist.txt)
   x="${x// H6 / H5 @s10n 1 @s10k $KL @s10cap 8 }"; x="${x// KL / $KL }"                     # H6 = H5 + 노드 상자 압축 N + 첫 할당 상자 배수 8
-  x="${x// H5np / H3 @s9c 1 @s9y 1 }"; x="${x// H5l1 / H3 @l4 1 @l3 1 @l3sc 1 @l3fr 1 @s9c 1 @s9y 1 }"
+  x="${x// H5e / Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s4e 1e6 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @s9c 1 @s9y 1 }"; x="${x// H5np / H3 @s9c 1 @s9y 1 }"; x="${x// H5l1 / H3 @l4 1 @l3 1 @l3sc 1 @l3fr 1 @s9c 1 @s9y 1 }"
   x="${x// H5g0 / Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @s9c 1 @s9y 1 }"
   x="${x// H5 / H3 @l4 1 @l3 10 @l3sc 1 @l3fr 1 @s9c 1 @s9y 1 }"
   x="${x// H3 / Hc @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s8g 1e6 }"; x="${x// Hc / Gpp @s6o 1 @s6l 1 @s6b 1 @s6rw 1 }"; x="${x// Gpp / Gp @mf2 1 }"; x="${x// Gp / F P1X A3 @hc 5 @rr 1 @tc 8 }"; x="${x// G / F P1X A3 @hc 4 @rr 1 @tc 8 }"; x="${x// P1X / @g4 1e-1 @g4t 1 @g4x 1 }"; x="${x// A3 / @s4w 1 @s4y 1 @s4x 2 }"; x="${x// F / E @e3w 1 @e5r 2 @e5a 2 }"
@@ -154,7 +154,7 @@ case $STG in *k)                                                                
     case " $x " in *" @s10n "*|*" @s10cap "*) grep -q "절 CM78\] speed10 켬" $O/$n/log.txt && $PY -c "import json,sys; L=[json.loads(l) for l in open('$O/$n/s10.jsonl')]; t=next((q['tx'] for q in L if 'tx' in q), None); print('$n s10', len(L), t, next((q['skip'] for q in L if 'skip' in q), None), L[-1]); sys.exit(0 if len(L) >= 5 and (' @s10n ' not in ' $x ' or t) else 1)" >> $O/speed11_$STG.log 2>&1 || { OK=0; log "[연기] $n CM78 줄·s10.jsonl·고친 커널 없음"; };; esac
     case " $x " in *" @s10n 2"*) $PY -c "import json,sys; L=[json.loads(l) for l in open('$O/$n/s10.jsonl')]; c=[q['chk'] for q in L if q.get('chk')]; n=sum(v[0] for d in c for v in d.values()); print('$n s10 확인', n, sum(v[1] for d in c for v in d.values())); sys.exit(0 if n > 0 else 1)" >> $O/speed11_$STG.log 2>&1 || { OK=0; log "[연기] $n s10 확인 셈 없음"; };; esac
     case " $x " in *" @s11z "*) grep -q "절 CM82\] Z 고침" $O/$n/log.txt || { OK=0; log "[연기] $n Z 고침 줄 없음"; }
-        case $s in M3) grep -q "절 CM82\] Z 고침 .*aw_y0z_a" $O/$n/log.txt || { OK=0; log "[연기] $n 수박인데 aw_y0z_a 안 고침"; };; esac
+        case $s in M3) grep -q "절 CM82\] Z 고침 \[.*aw_y0z_a" $O/$n/log.txt || { OK=0; log "[연기] $n 수박인데 aw_y0z_a 안 고침"; };; esac
         case " $x " in *" @s11z 2"*) grep -q "절 CM82\] Z 고침 .*\(ao_floor_n y0uk\|rt_ga_y0\)" $O/$n/log.txt || { OK=0; log "[연기] $n Z2 시작점 고침 없음"; };; esac;; esac
     case " $x " in *" @s11dg 1"*) grep -q "절 CM82\] speed11 켬" $O/$n/log.txt && [ -s $O/$n/s11.jsonl ] && [ ! -s $O/$n/s11_err.txt ] && $PY -c "import json,sys; L=[json.loads(l) for l in open('$O/$n/s11.jsonl')]; print('$n s11', len(L), L[-1]); sys.exit(0 if len(L) >= 3 and 'fL2F' in L[-1] else 1)" >> $O/speed11_$STG.log 2>&1 || { OK=0; log "[연기] $n s11 진단 없음/오류 $(head -c 600 $O/$n/s11_err.txt 2>/dev/null)"; };; esac
     case " $x " in *" @s9r 1"*) grep -q "절 CM76\] 이어 하기 경계" $O/$n/log.txt || { OK=0; log "[연기] $n 이어 하기 경계 줄 없음"; };; esac
