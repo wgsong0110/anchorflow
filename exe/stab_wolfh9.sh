@@ -42,7 +42,8 @@ dfl() { local s=$1 x=" $2 "
   x="${x// H4n / Gpp @s6o 1 @s6b 1 @s6rw 1 @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s8g 1e6 @l4 1 @l3 10 @l3sc 1 @l3fr 1 }"; x="${x// Gpp / Gp @mf2 1 }"; x="${x// Gp / F P1X A3 @hc 5 @rr 1 @tc 8 }"
   x="${x// P1X / @g4 1e-1 @g4t 1 @g4x 1 }"; x="${x// A3 / @s4w 1 @s4y 1 @s4x 2 }"; x="${x// F / E @e3w 1 @e5r 2 @e5a 2 }"
   case $s in M*) x="${x// E / D @tb 16.7 @tb_m 0.8 @tb_w 2 @inv 1 }";; *) x="${x// E / D @tb 16.7 @tb_m 0.8 @tb_w 2 }";; esac
-  x="${x// D / $DFL }"; case $s in M*) [[ "$x" == *" $DFL "* ]] && x="$x --sp2 31";; esac; echo "$x"; }
+  x="${x// D / $DFL }"; case "$x " in *" @nks 1 "*) x="${x/--ksplit 3 --ks_big/}"; x="${x// @nks 1 / }";; esac   # 절 CM87 s3 진단: 걸음 쪼개기 끔 (--K 2 고정은 --ksplit 이 K 1 을 요구)
+  case $s in M*) [[ "$x" == *" $DFL "* ]] && x="$x --sp2 31";; esac; echo "$x"; }
 dg_of() { local s=$1 md=$2 x
   case $s in M*) case $md in g|r|z) echo "--erec";; v) echo "--erec --dump --dump_lj";; esac; return;; esac   # v = 영상 판 (exe/stab_ext2v.sh 와 같은 글자)
   case $md in h) echo "--det --fhash"; return;; v) echo "--dump --dump_F --dump_part"; return;; esac
