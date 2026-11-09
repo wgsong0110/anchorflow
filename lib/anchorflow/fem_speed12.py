@@ -76,17 +76,30 @@ def _P(t):
     return np.uint64(0) if t is None else np.uint64(t.data_ptr())
 
 
-def _rk(args):
-    from . import fem_rt_cuda as RTC
+def _load():
     import cupy as cp
-    if C.mod is None:
+    if C.mod is None:                                                                  # 캡처 밖에서 적재 (캡처 중 모듈 적재는 CUDA 가 거절)
         C.mod = cp.RawModule(code=R_SRC)
         C.fn["r"] = C.mod.get_function("s12_r")
+
+
+def _rk(args):
+    from . import fem_rt_cuda as RTC
+    _load()
     with RTC._Stream():
         C.fn["r"]((1,), (1,), args)
 
 
 def _sa_ptr(s):
+    c = getattr(s, "_s12sa", None)
+    if c is not None and c[0] is s.mod:
+        return c[1]
+    p = _sa_ptr0(s)
+    s._s12sa = (s.mod, p)
+    return p
+
+
+def _sa_ptr0(s):
     mods = [s.mod] + (list(s._mods()) if hasattr(s, "_mods") else [])
     for m in mods:
         try:
@@ -118,6 +131,13 @@ def _install_ctl():
     def ctl(s, op, it=0):
         cap = getattr(s, "_c3cap", None) is not None
         k1 = getattr(s, "_x1K", 0) == 1
+        if not cap:                                                                    # 캡처 밖 (데움): 모듈 적재 · S12A 주소
+            _load()
+            if getattr(s, "mod", None) is not None:
+                try:
+                    _sa_ptr(s)
+                except Exception:
+                    pass
         if C.z and op == 3 and it == 1 and cap and k1:                                   # X3g 반복 1 경계 끔 (경계는 반복 0 하나)
             s._x1K = -1
             try:
