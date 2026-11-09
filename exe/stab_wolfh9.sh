@@ -44,8 +44,8 @@ dfl() { local s=$1 x=" $2 "
   case $s in M*) x="${x// E / D @tb 16.7 @tb_m 0.8 @tb_w 2 @inv 1 }";; *) x="${x// E / D @tb 16.7 @tb_m 0.8 @tb_w 2 }";; esac
   x="${x// D / $DFL }"; case $s in M*) [[ "$x" == *" $DFL "* ]] && x="$x --sp2 31";; esac; echo "$x"; }
 dg_of() { local s=$1 md=$2 x
-  case $s in M*) case $md in g|r|z) echo "--erec";; esac; return;; esac
-  case $md in h) echo "--det --fhash"; return;; esac
+  case $s in M*) case $md in g|r|z) echo "--erec";; v) echo "--erec --dump --dump_lj";; esac; return;; esac   # v = 영상 판 (exe/stab_ext2v.sh 와 같은 글자)
+  case $md in h) echo "--det --fhash"; return;; v) echo "--dump --dump_F --dump_part"; return;; esac
   case $md in nd) case $s in L) x="--hgt --pdiag --qjd --bar_cnt";; W) x="--hgt --fhash --bar_cnt --dump --dump_part";; F) x="--pdiag --qjd --fhash --dump";; B) x="--pdiag --qjd --fhash";; esac;; *) x="";; esac
   echo "$x"; }
 W=/home/dkta/work
@@ -63,6 +63,34 @@ rr_of() { case $1 in                                                            
   B) echo "--rr pg --rr_shape bread --rr_traj $GTB --rr_cfg $GTB/config.json --rr_fast 1";;
   M3) echo "--rr gf --rr_shape watermelon --rr_traj $GTM --rr_cfg $WCF --rr_model $WMM --rr_gf $W/GaussianFluent --rr_fast 2";;
 esac; }
+vid() {   # 영상 판 뒤 3DGS 렌더 (같은 카드): 새 실행기 씬 = exe/lb_render.py (exe/fem_cm4.sh·stab_wolfh3_vid.sh 와 같은 절차), 수박 = 일반 + 손상 색 (logJp viridis −0.2~0.4; exe/stab_wmK.sh vid 와 같은 절차). h5 는 결과 디렉토리 밖 /dev/shm 에 두고 렌더 뒤 지움
+  local n=$1 s=$2 g=$3 Od=$O/$1 V=$O/$1/vj HD=/dev/shm/dkta/wolfh9_vid/$1 CD=$(pwd -P) GTD CFG SH
+  mkdir -p $V $HD
+  case $s in
+  M3)
+    $PY - $Od/pred.pt $HD/pred_v.pt <<'PYX' > $V/pad.log 2>&1
+import sys, torch
+d = torch.load(sys.argv[1], map_location="cpu", weights_only=False); P, F = d["pred"], d["F"]
+n = 0
+while n < P.shape[0] and bool(torch.isfinite(P[n]).all()) and bool(torch.isfinite(F[n]).all()): n += 1
+L = 100
+P, F = P[:n], F[:n]
+if n < L:
+    P = torch.cat([P, P[n - 1:n].expand(L - n, -1, -1)]); F = torch.cat([F, F[n - 1:n].expand(L - n, -1, -1, -1)])
+torch.save({"pred": P.contiguous(), "F": F.contiguous()}, sys.argv[2]); print("유한 프레임", n, "->", P.shape[0])
+PYX
+    $PY -u exe/lb_roll_to_h5.py --dump $HD/pred_v.pt --traj $GTM --out $HD/h5_fem > $V/h5.log 2>&1; rm -f $HD/pred_v.pt
+    $PY exe/wmdmg_stats.py --run $Od --sc_lj $HD/sc_lj > $V/sc.log 2>&1
+    (cd $W/GaussianFluent && CUDA_VISIBLE_DEVICES=$g $PY -u $CD/exe/wm_render.py --model_path $WMM --config $WCF --sim $HD/h5_fem --out $V/plain.mp4 < /dev/null > $V/r_plain.log 2>&1)
+    (cd $W/GaussianFluent && CUDA_VISIBLE_DEVICES=$g $PY -u $CD/exe/wm_render.py --model_path $WMM --config $WCF --sim $HD/h5_fem --scalar_dir $HD/sc_lj --vmin -0.2 --vmax 0.4 --cmap viridis --out $V/lj.mp4 < /dev/null > $V/r_lj.log 2>&1)
+    log "[영상] $n $(tail -1 $V/pad.log) plain $(stat -c %s $V/plain.mp4 2>&1) lj $(stat -c %s $V/lj.mp4 2>&1) $(tail -1 $V/r_plain.log | cut -c1-160)";;
+  *)
+    case $s in L) GTD=$W/lbdata/test_low/L000; CFG=$W/lbdata/config.json; SH=lego;; F) GTD=$FGT; CFG=$FGT/config.json; SH=ficus;; W) GTD=$GTW; CFG=$GTW/config.json; SH=wolf;; B) GTD=$GTB; CFG=$GTB/config.json; SH=bread;; esac
+    $PY -u exe/lb_roll_to_h5.py --dump $Od/pred.pt --traj $GTD --out $HD/h5 > $V/h5.log 2>&1
+    CUDA_VISIBLE_DEVICES=$g $PY -u exe/lb_render.py --sim $HD/h5 --config $CFG --shape $SH --out $V/fem_$SH.mp4 --frame_label 0 --caption " " < /dev/null > $V/r.log 2>&1
+    log "[영상] $n $(stat -c %s $V/fem_$SH.mp4 2>&1) $(tail -1 $V/r.log | cut -c1-160) $(tail -1 $V/h5.log | cut -c1-160)";;
+  esac
+  rm -rf $HD; }
 shm_use() { df --output=pcent /dev/shm | tail -1 | tr -dc '0-9'; }
 log() { echo "[$(date '+%F %T')] $*" >> $O/wolfh9_$STG.log; rclone copyto $O/wolfh9_$STG.log $RO/wolfh9_$STG.log -q; }
 shm_wait() { while [ "$(shm_use)" -ge 65 ]; do log "/dev/shm 사용률 $(shm_use) % -- 기다림"; sleep 120; done; }
@@ -110,6 +138,7 @@ run() {   # run 이름 씬 방식 카드 플래그
     $PY exe/wolfh1_an.py $AG/wolf.pt $O/$n/an.json $O/$n > $O/$n/an.log 2>&1                    # 절 CM52 진단 (높이·면적·회전 반경; 읽기만)
     $PY exe/wolfh4_relfall.py $AG/wolf.pt $n=$O/$n/pred.pt > $O/$n/relfall.md 2> $O/$n/relfall.err; fi   # 절 CM68·CM70 방출 뒤 낙하 몫 (읽기만)
   [ $s = F ] && [ -f $O/$n/pred.pt ] && $PY exe/fem_p_period.py --data $FI --pred $O/$n/pred.pt > $O/$n/period.txt 2>&1
+  [ $md = v ] && [ -f $O/$n/pred.pt ] && vid $n $s $g                                         # 영상 판: 덤프 렌더 (pred.pt 를 지우기 전; exe/stab_ext2v.sh 와 같음)
   log "$n rc=$rc $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200) hc 줄 $(wc -l < $O/$n/hc.jsonl 2>/dev/null) 렌더 $(wc -l < $O/$n/rr.jsonl 2>/dev/null) $(tail -2 $O/$n/period.txt 2>/dev/null | tr '\n' ' ') $(grep -a 'rror' $O/$n/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
   up $n
   if [ -f $O/$n/pred.pt ]; then                                                              # 덤프: R2 에 올리고 크기 확인 뒤 로컬 사본만 지움 (R2 에 그대로 남음)
@@ -121,7 +150,7 @@ run() {   # run 이름 씬 방식 카드 플래그
   done; }
 SPEC=$(grep -v '^#' exe/wolfh9_spec.txt | awk -v s=$STG '$1==s')
 [ -f exe/wolfh9_pre_$STG.sh ] && { log "앞 단계 스크립트 wolfh9_pre_$STG.sh"; bash exe/wolfh9_pre_$STG.sh $O $RO > $O/pre_$STG.out 2>&1; rclone copy $O $RO -q --include "pre_$STG.out"; }
-if echo "$SPEC" | grep -q '@rr 1'; then
+if echo "$SPEC" | grep -q '@rr 1' || [ $STG = v ]; then
   mkgt wolf $GTW --h5_dir $W/topo/pg_wolf_sand --config $W/PhysGaussian/config/wolf_config.json
   mkgt bread $GTB --h5_dir $W/topo/pg_bread_plastic --config $W/topo/bread_plastic_config.json
   mkgt wm $GTM --h5_dir $W/wm2/gf/simulation_ply --config $W/wm2/gf/config.json --allow_nonfinite

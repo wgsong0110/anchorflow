@@ -54,3 +54,6 @@ s2b oBF_1 F nd H9b
 s2b oBF_2 F nd H9b
 s2b oBB_1 B nd H9b
 s2b oBB_2 B nd H9b
+# v: 영상 판 (덤프 + F -> 3DGS 렌더, exe/stab_ext2v.sh 와 같은 절차): wolf H9a · H9b 하나씩
+v vA W v H9a
+v vB W v H9b
