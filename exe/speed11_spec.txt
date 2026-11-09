@@ -65,3 +65,8 @@ s3 xEL L z H5e
 s3 xEW W z H5e
 s3 xEF F z H5e
 s3 xEB B z H5e
+# s4: wolf 판정 판 다시 (nd 는 덤프가 가벼운 고리와 안 맞아 시작에서 멈춤 -> 진단 없는 판 'o') + 같은 날 대조 H5 수박 단독 (a·b 두 번)
+s4 oEW2_1 W o H5e
+s4 oEW2_2 W o H5e
+s4 xHM M3 z H5
+s4 xHM2 M3 z H5
