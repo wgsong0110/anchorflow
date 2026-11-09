@@ -19,3 +19,14 @@ s1 E0_1 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 0
 s1 E0_2 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 0
 s1 E0_3 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 0
 s1 E0_4 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 0
+# s1 결과: E2·E1 발산 0/4 (E0 4/4) 이나 이탈 4/4 (f41 부터, 200~500 개) -- 팔분 칸 정의는 내부 칸이 적어 (f7 629 / 23116) 고립 노드가 질량 47 %.
+# s2: 내부 칸 정의 t 1 = 26 이웃 칸이 모두 점유된 점유 칸 (칸 점유 집합의 위상 내부) 로 바꿔 차수 2·1 각 4 판
+s2k kT1W W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 1 --frames 8
+s2 T1E2_1 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 1
+s2 T1E2_2 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 1
+s2 T1E2_3 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 1
+s2 T1E2_4 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 1
+s2 T1E1_1 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 1 @w8t 1
+s2 T1E1_2 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 1 @w8t 1
+s2 T1E1_3 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 1 @w8t 1
+s2 T1E1_4 W nd H5n @w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 1 @w8t 1

@@ -31,7 +31,7 @@ import os
 import numpy as np
 import torch
 
-ST = dict(D=2, out=".", nsrc=0, nclass=0, nfold=0, nexp=0, ngg=0, nalloc=0, nstep=0, said=False, err=None)
+ST = dict(D=2, T=0, out=".", nsrc=0, nclass=0, nfold=0, nexp=0, ngg=0, nalloc=0, nstep=0, said=False, err=None)
 MARK = "// ---- 절 CM81 wolfh8"
 
 W8_SRC = r'''
@@ -50,6 +50,17 @@ __global__ void w8_icell(const int* IP, const int* cb, const float* A, int* ic, 
     for (int o=0;o<8;o++) if (!(A[(size_t)(c*8 + o)*28 + 27] > 0.f)) return;
     int n1 = IP[7]-2, n2 = IP[8]-2;
     ic[(cb[c*3]*n1 + cb[c*3+1])*n2 + cb[c*3+2]] = 1;
+    atomicAdd(&cnt[3], 1);
+}
+__global__ void w8_icell2(const int* IP, const int* cb, const int* occ, int* ic, int* cnt) {   // 내부 칸 정의 (t 1): 점유 칸 중 26 이웃 칸이 모두 점유 (칸 점유 집합의 위상 내부)
+    int c = blockIdx.x*blockDim.x + threadIdx.x;
+    if (IP[13] || c >= IP[11]) return;
+    int n0 = IP[6]-2, n1 = IP[7]-2, n2 = IP[8]-2;
+    int a0 = cb[c*3], b0 = cb[c*3+1], c0_ = cb[c*3+2];
+    for (int a=a0-1;a<=a0+1;a++) for (int b=b0-1;b<=b0+1;b++) for (int d=c0_-1;d<=c0_+1;d++) {
+        if (a < 0 || b < 0 || d < 0 || a >= n0 || b >= n1 || d >= n2) return;
+        if (!occ[(a*n1 + b)*n2 + d]) return; }
+    ic[(a0*n1 + b0)*n2 + c0_] = 1;
     atomicAdd(&cnt[3], 1);
 }
 __global__ void w8_class(const int* IP, const float* mn, const int* ic, int deg, int* base, float* w, int* cnt, float* cf) {
@@ -162,9 +173,9 @@ def _on(s):
     return getattr(s, "_w8on", None) is not None and getattr(s, "w8b", None) is not None
 
 
-def install(out, D=2):
+def install(out, D=2, T=0):
     from . import fem_an_rt as ART
-    ST.update(D=int(D), out=out)
+    ST.update(D=int(D), T=int(T), out=out)
     ob = ART.build_src
     ART.build_src = lambda *a, **kw: add_src(ob(*a, **kw))
     R = ART.RTSolver
@@ -215,7 +226,10 @@ def install(out, D=2):
             assert getattr(s, "nl", 1) > 1, "wolfh8: MG 판 (--mg_levels > 1) 만 (rt_grad 의 z·p 를 MG 가 다시 씀)"
             i32 = np.int32
             ok(s, "rt_zero_i", s.capC, (i32(s.capC), P(s.w8ic)), 256)
-            ok(s, "w8_icell", s.capQc, (P(s.IP), P(s.cb), P(s.Aacc), P(s.w8ic), P(s.w8cnt)), 128)
+            if ST["T"] == 1:
+                ok(s, "w8_icell2", s.capQc, (P(s.IP), P(s.cb), P(s.occ), P(s.w8ic), P(s.w8cnt)), 128)
+            else:
+                ok(s, "w8_icell", s.capQc, (P(s.IP), P(s.cb), P(s.Aacc), P(s.w8ic), P(s.w8cnt)), 128)
             ok(s, "w8_class", s.capN, (P(s.IP), P(s.mn), P(s.w8ic), i32(ST["D"]), P(s.w8b), P(s.w8w), P(s.w8cnt), P(s.w8cf)), 256)
             ok(s, "w8_free", s.capN, (P(s.IP), P(s.w8b), P(s.sk), P(s.pm), P(s.yh), P(s.y), P(s.eta)), 256)
             ST["nclass"] += 1
@@ -242,7 +256,7 @@ def install(out, D=2):
         ST["nstep"] += 1
         return r
     R.alloc, R.k, R.ctl, R.step = alloc, k, ctl, step
-    print(f"[절 CM81] wolfh8 켬 -- 확장 B-스플라인 차수 {ST['D']} (내부 칸 = 팔분 8 개 점유, 외부 노드 = 받침에 내부 칸 없는 활성 노드, 증분 아핀 확장)", flush=True)
+    print(f"[절 CM81] wolfh8 켬 -- 확장 B-스플라인 차수 {ST['D']} (내부 칸 정의 {ST['T']}: 0 = 팔분 8 개 점유, 1 = 26 이웃 칸 모두 점유; 외부 노드 = 받침에 내부 칸 없는 활성 노드, 증분 아핀 확장)", flush=True)
     import atexit
     atexit.register(_dump)
 
