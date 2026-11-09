@@ -101,3 +101,10 @@ s8 gC_6 M3 g H9 @s6l 1 --cg 8
 s8 gC_7 M3 g H9 @s6l 1 --cg 8
 s8 gC_8 M3 g H9 @s6l 1 --cg 8
 s8 xCM3 M3 z H9 @s6l 1 --cg 8
+# s9: 같은 조건 번갈아 단독 (수박만; 한 카드에 H9 · H12 · H11 · H10 차례로 a 다 돌고 b) -- s2·s6·s7·s8 단독은 시각마다 노드 사정이 달라 (같은 H12 가 15.8~16.3 대 17.9~18.0 ms) 직접 비교가 안 됨
+s9 yA M3 z H9 @s6l 1
+s9 yB M3 z H9 @s6l 1 --cg 8
+s9 yC M3 z H11 @s6l 1
+s9 yD M3 z H10 @s6l 1
+s9 yE M3 z H9 @s6l 1
+s9 yF M3 z H9 @s6l 1 --cg 8
