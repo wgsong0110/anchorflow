@@ -8,7 +8,7 @@ s0kb bK16 M3 r H5n @wmkk 16 --ksplit 4 --frames 8
 s0kb bK32 M3 r H5n @wmkk 32 --ksplit 5 --frames 8
 s0kb bK64 M3 r H5n @wmkk 64 --ksplit 6 --frames 8
 s0kb bK128 M3 r H5n @wmkk 128 --ksplit 7 --frames 8
-# s1 K 마다 4 판 + H5 대조 4 판 (비결정), 큰 K 먼저
+# s1 K 마다 4 판 + H5 대조 4 판 (비결정), 큰 K 먼저. s0k 는 kH5 통과 · kK128 은 f4 끝 모든 입자 비유한 (s0kb~s0kf: K 64·128 은 사슬과 무관하게 그 프레임 중간 걸음에서 비유한, K 16·32 는 통과) -> 연기 표식 없이 s1 을 그대로 돌림
 s1 K128_1 M3 r H5n @wmkk 128 --ksplit 7
 s1 K128_2 M3 r H5n @wmkk 128 --ksplit 7
 s1 K128_3 M3 r H5n @wmkk 128 --ksplit 7
