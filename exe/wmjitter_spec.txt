@@ -13,3 +13,6 @@ s1 jC_2 M3 g H9 @s6l 1 @wj 1 @tb 1000 @nxit 1 --newton 20 --cg 40 --tolP 1e-2
 s1 jT M3 g H9 @s6l 1 @wj 1 @tb 1000
 s1 jX M3 g H9 @s6l 1 @wj 1 @tb 1000 @nxit 1
 s1 jN M3 g H9 @s6l 1 @wj 1 @tb 1000 --newton 20 --cg 40 --tolP 1e-2
+# s2: H9 그대로 2 판 다시 -- s1 의 jA 는 기록 셈 (복사 스트림 f64) 이 프레임 GPU 시간을 약 2 배 (12 -> 25 ms) 로 늘려 예산 자름이 판정 판보다 많음; 미룬 기록 '@wj_dfr 1' (실행 중엔 장치 사본만)
+s2 jA_3 M3 g H9 @s6l 1 @wj 1 @wj_dfr 1
+s2 jA_4 M3 g H9 @s6l 1 @wj 1 @wj_dfr 1
