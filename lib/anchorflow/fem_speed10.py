@@ -384,9 +384,9 @@ def bind(s):
 
 def cap_install(M):
     """(K) 첫 할당 상자 배수 + 다시 할당 기록 (alloc(None) 부를 때마다 앞 IP[:16]·용량, 뒤 용량 -> s10.jsonl 'ovf'; 절 CM72 s7ovf 와 같은 셈)."""
-    from . import fem_an_rt as ART
     from . import fem_ao_rt as AORT
-    oa = ART.RTSolver.alloc
+    base = [c for c in AORT.AORTSolver.__mro__ if "alloc" in c.__dict__][-1]                  # 옛 실행기 바탕 = fem_an_rt_v0.RTSolver (절 CM72 s7ovf 가 고친 fem_an_rt.RTSolver 가 아님)
+    oa = base.alloc
 
     def alloc(s, need, *a, **kw):
         if need is None and isinstance(s, AORT.AORTSolver):
@@ -417,7 +417,8 @@ def cap_install(M):
                 C.log.flush()
             return r
         return oa(s, need, *a, **kw)
-    ART.RTSolver.alloc = alloc
+    base.alloc = alloc
+    print(f"[절 CM78] 할당 감쌈 {base.__module__}.{base.__name__}", flush=True)
 
 
 def frame_end(s, fr):

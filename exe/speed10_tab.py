@@ -110,7 +110,7 @@ def x3ms(n):
     return (stt.mean(v), max(v)) if v else (None, None)
 
 
-LAB = {"xH": "H5", "xN": "H6 = H5 + N + K"}
+LAB = {"xH": "H5", "xN": "H6 (rt_ytry 포함, 무효)", "xM": "H6 = H5 + N + K"}
 
 
 def lab(n, s):
@@ -151,7 +151,7 @@ def _row0(n):
                 T=mean([q.get("T") for q in F]), WT=mean([q["W"] - q["T"] for q in F if q.get("W") is not None and q.get("T") is not None]), err=err(n), load=load(n), res=res(n))
 
 
-S6R = [(st, n, s, md, x) for st, n, s, md, x in spec if st == "s2" and md == "z"]
+S6R = [(st, n, s, md, x) for st, n, s, md, x in spec if st in ("s2", "s3") and md == "z"]
 S6R.sort(key=lambda r: (["M3", "L", "W", "F", "B"].index(r[2]) if r[2] in ("M3", "L", "W", "F", "B") else 9))
 if S6R:
     print("## (0) 최종 요약 -- 다섯 씬 렌더 포함 벽시계 단독 (s2, 같은 카드에 차례로 a 다 돌고 b; H5 = 공통 후보, H6 = H5 + 노드 상자 압축 N + 첫 할당 상자 배수 K (옛 실행기 = 수박만); 평균 / 최악 / > 16.7 프레임 수, 프레임 3~; ms)\n")

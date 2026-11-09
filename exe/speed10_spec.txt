@@ -55,3 +55,27 @@ s2 xHL L z H5
 s2 xHW W z H5
 s2 xHF F z H5
 s2 xHB B z H5
+# s3: 목록에서 rt_ytry 뺌 (s1 vK: 나머지 커널 전부 원래 판일 때 rt_ytry 다름) + 할당 감쌈 고침 (옛 실행기 바탕 fem_an_rt_v0) -- 확인 판 4 · H6 비결정 8 · H3 + K 8 · 수박 단독 H6 4 · 커널 프로파일 H6
+s3 vL_1 M3 r H5 @s10n 2 @s10k KL @s10cap 8
+s3 vL_2 M3 r H5 @s10n 2 @s10k KL @s10cap 8
+s3 vL_3 M3 r H5 @s10n 2 @s10k KL @s10cap 8
+s3 vL_4 M3 r H5 @s10n 2 @s10k KL @s10cap 8
+s3 gM_1 M3 g H6
+s3 gM_2 M3 g H6
+s3 gM_3 M3 g H6
+s3 gM_4 M3 g H6
+s3 gM_5 M3 g H6
+s3 gM_6 M3 g H6
+s3 gM_7 M3 g H6
+s3 gM_8 M3 g H6
+s3 gJ_1 M3 g H3 @s10cap 8
+s3 gJ_2 M3 g H3 @s10cap 8
+s3 gJ_3 M3 g H3 @s10cap 8
+s3 gJ_4 M3 g H3 @s10cap 8
+s3 gJ_5 M3 g H3 @s10cap 8
+s3 gJ_6 M3 g H3 @s10cap 8
+s3 gJ_7 M3 g H3 @s10cap 8
+s3 gJ_8 M3 g H3 @s10cap 8
+s3 pM M3 q H6 @s7kp 3,100
+s3 xMM M3 z H6
+s3 xMM2 M3 z H6
