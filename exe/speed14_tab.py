@@ -15,7 +15,7 @@ spec = [l.split(None, 4) for l in open(os.path.join(HERE, "speed14_spec.txt")) i
 spec = [[q.strip() for q in s] + [""] * (5 - len(s)) for s in spec]
 LIM = 1000.0 / 60.0
 SCN = {"L": "레고", "W": "wolf", "F": "ficus", "B": "bread", "M3": "수박"}
-VAR = {"D": "H9 진단", "E": "H10a 진단", "G": "H10b 진단", "A": "H10a", "B": "H10b"}   # 고침 판 글자는 speed14_spec.txt 첫 주석 줄 "VAR 글자=이름" 로 덧붙임
+VAR = {"D": "H9 진단", "E": "H10 진단", "G": "H10"}   # 고침 판 글자는 speed14_spec.txt 첫 주석 줄 "VAR 글자=이름" 로 덧붙임
 import re as _re
 for _l in open(os.path.join(HERE, "speed14_spec.txt")):
     if _l.startswith("# VAR "):
