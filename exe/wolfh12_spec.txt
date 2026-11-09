@@ -15,3 +15,8 @@ s1 bE_2 W nd H8 @w12 0 @fi 0 @noext 1 --dump_F
 s1 dS_1 W nd H8 @w12 0 @fi 0 @nosc 1 --dump_F
 s1 dS_2 W nd H8 @w12 0 @fi 0 @nosc 1 --dump_F
 s1 h5_1 W nd H5n @w12 0 @fi 0 --dump_F
+# s2 (a) 가르기: 수렴 판의 두 몫 -- PCG 만 (예산 끔 + PCG 40 · tolP 1e-2, 뉴턴 문 그대로) · 뉴턴만 (예산 끔 + xit 문 끔 + 뉴턴 20, PCG 5 그대로) 각 2 판
+s2 pP_1 W nd H8 @w12 0 @fi 0 @tb 1000 --cg 40 --tolP 1e-2 --dump_F
+s2 pP_2 W nd H8 @w12 0 @fi 0 @tb 1000 --cg 40 --tolP 1e-2 --dump_F
+s2 nN_1 W nd H8 @w12 0 @fi 0 @tb 1000 @nxit 1 --newton 20 --dump_F
+s2 nN_2 W nd H8 @w12 0 @fi 0 @tb 1000 @nxit 1 --newton 20 --dump_F
