@@ -17,6 +17,11 @@ s0 gH_5 M3 g H5 @s7ovf 1
 s0 gH_6 M3 g H5 @s7ovf 1
 s0 gH_7 M3 g H5 @s7ovf 1
 s0 gH_8 M3 g H5 @s7ovf 1
+# s0b: 압축 목록 = 지금 ∪ 앞 목록 (빈 노드가 된 칸 다시 씀) + 상자가 커지면 전체 -- 후보 전부 확인 판 4
+s0b vB_1 M3 r H5 @s10n 2 @s10k all
+s0b vB_2 M3 r H5 @s10n 2 @s10k all
+s0b vB_3 M3 r H5 @s10n 2 @s10k all
+s0b vB_4 M3 r H5 @s10n 2 @s10k all
 # s1: 고른 목록 확인 판 4 + H6 비결정 8 + 커널 프로파일 (H5 · H6, 단독 카드 a 만)
 s1 vK_1 M3 r H5 @s10n 2 @s10k KL @s10cap 8
 s1 vK_2 M3 r H5 @s10n 2 @s10k KL @s10cap 8

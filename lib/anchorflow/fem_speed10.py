@@ -47,12 +47,26 @@ HDR = r"""
 __device__ int S10N = 0;
 __device__ int S10RDY = 0;
 __device__ unsigned long long* S10CNT;
+__device__ int* S10PL;
+__device__ int* S10MK;
+__device__ int* S10UL;
+__device__ int S10PN = 0;
+__device__ int S10UN = 0;
+__device__ int S10ST = 0;
+__device__ int S10HW = 0;
+__device__ int S10FULL = 1;
 """
 
 TAIL = r"""
 // ---- 절 CM78 speed10 커널 ----
 __global__ void s10_set(int v) { S10N = v; }
 __global__ void s10_rdy(int v) { S10RDY = v; }
+// 압축 목록 U = 지금 질량 있는 노드 (AO_ACT[0..IP[14])) ∪ 앞 목록 노드 중 지금 빈 것 (< IP[9]) -- 빈 노드가 된 칸에 원래 커널이 쓰는 '배경' 값을 한 번 다시 씀.
+// 상자가 지금까지 본 것보다 커지면 (IP[9] > S10HW) 그 목록은 상자 전체 (S10RDY 0) -- 처음 상자에 든 칸도 원래 값을 받게.
+__global__ void s10_u1(const int* IP) { S10ST += 1; S10FULL = (IP[9] > S10HW) ? 1 : 0; if (S10FULL) S10HW = IP[9]; S10UN = IP[14]; S10RDY = 0; }
+__global__ void s10_u2(const int* IP) { int st = gridDim.x*blockDim.x; for (int i = blockIdx.x*blockDim.x + threadIdx.x; i < IP[14]; i += st) { int n = AO_ACT[i]; S10MK[n] = S10ST; S10UL[i] = n; } }
+__global__ void s10_u3(const int* IP) { int st = gridDim.x*blockDim.x; for (int j = blockIdx.x*blockDim.x + threadIdx.x; j < S10PN; j += st) { int n = S10PL[j]; if (n < IP[9] && S10MK[n] != S10ST) { int k = atomicAdd(&S10UN, 1); S10UL[k] = n; } } }
+__global__ void s10_u4(const int* IP) { int st = gridDim.x*blockDim.x; int g = blockIdx.x*blockDim.x + threadIdx.x; for (int i = g; i < IP[14]; i += st) S10PL[i] = AO_ACT[i]; if (g == 0) { S10PN = IP[14]; S10RDY = S10FULL ? 0 : 1; } }
 __global__ void s10_tick(int slot) { S10CNT[slot*2] += 1ULL; }
 __global__ void s10_cpy(unsigned* d, const unsigned* s, long long nw) {
     long long st = (long long)gridDim.x*blockDim.x;
@@ -157,7 +171,7 @@ def transform(src, want):
         dev = f"static __device__ __forceinline__ void {nm}__s10b({params}, int n) {{{pre}{rest}}}\n"
         ker = (f"__global__ void {lb}{nm}({params}) {{   // 절 CM78 (N): 원래 본문 = {nm}__s10b\n"
                f"    int s10_st = gridDim.x*blockDim.x, s10_g = blockIdx.x*blockDim.x + threadIdx.x;\n"
-               f"    if (S10N == 1 && S10RDY) {{ int s10_na = IP[14]; for (int s10_i = s10_g; s10_i < s10_na; s10_i += s10_st) {nm}__s10b({a}, AO_ACT[s10_i]); }}\n"
+               f"    if (S10N == 1 && S10RDY) {{ int s10_na = S10UN; for (int s10_i = s10_g; s10_i < s10_na; s10_i += s10_st) {nm}__s10b({a}, S10UL[s10_i]); }}\n"
                f"    else {{ int s10_nb = IP[9]; for (int s10_n = s10_g; s10_n < s10_nb; s10_n += s10_st) {nm}__s10b({a}, s10_n); }}\n"
                f"}}")
         out.append(src[last:m.start()])                                                   # '__global__' 앞 글자는 그대로, 커널 자리만 바꿈
@@ -204,7 +218,12 @@ class FnProxy:
             return s_.f(g2, block, args, **kw)
         r = s_.f(grid, block, args, **kw)
         if C.n and nm == "ao_act":
-            mp.raw("s10_rdy")((1,), (1,), (np.int32(1),))
+            ip = args[0]
+            G = (int(C.g),)
+            mp.raw("s10_u1")((1,), (1,), (ip,))
+            mp.raw("s10_u2")(G, (256,), (ip,))
+            mp.raw("s10_u3")(G, (256,), (ip,))
+            mp.raw("s10_u4")(G, (256,), (ip,))
         return r
 
 
@@ -350,6 +369,15 @@ def bind(s):
     cp.ndarray((1,), dtype=cp.uint64, memptr=m.get_global("S10CNT"))[0] = int(s.s10c.data_ptr())
     cp.ndarray((1,), dtype=cp.int32, memptr=m.get_global("S10N"))[0] = 1 if C.n == 1 else 0
     cp.ndarray((1,), dtype=cp.int32, memptr=m.get_global("S10RDY"))[0] = 0
+    capN = int(s.capN)
+    if getattr(s, "s10pl", None) is None or s.s10pl.numel() < capN:                            # 다시 할당 뒤: 새 버퍼 (0) -> 높은 물 0, 다음 목록은 상자 전체
+        s.s10pl = torch.zeros(capN, device=s.x.device, dtype=torch.int32)
+        s.s10mk = torch.zeros(capN, device=s.x.device, dtype=torch.int32)
+        s.s10ul = torch.zeros(2 * capN, device=s.x.device, dtype=torch.int32)
+    for nm_, t_ in (("S10PL", s.s10pl), ("S10MK", s.s10mk), ("S10UL", s.s10ul)):
+        cp.ndarray((1,), dtype=cp.uint64, memptr=m.get_global(nm_))[0] = int(t_.data_ptr())
+    for nm_, v_ in (("S10PN", 0), ("S10UN", 0), ("S10HW", 0), ("S10FULL", 1)):
+        cp.ndarray((1,), dtype=cp.int32, memptr=m.get_global(nm_))[0] = v_
     C.solver = s
     C.bmap = _bufs(s)
 
