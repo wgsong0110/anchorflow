@@ -52,3 +52,6 @@ s0kf fKH5_128a M3 r H5n @wmkk 128 --ksplit 7 --frames 5
 s0kf fKH5_128b M3 r H5n @wmkk 128 --ksplit 7 --frames 5
 s0kf fKP1X_128 M3 r F P1X @wmkk 128 --ksplit 7 --frames 5
 s0kf fKH5_16 M3 r H5n @wmkk 16 --ksplit 4 --frames 5
+# 영상 (덤프 판으로 다시 돌림, 비결정; 한 단계에 한 판 -- 덤프 ~7 GB): H5 · 최선 K = K 16 (s1: 4/4 완주, f5·f6 손상·위 끝 손상이 정답에 가장 가까움)
+v1 H5_v M3 v H5n
+v2 K16_v M3 v H5n @wmkk 16 --ksplit 4
