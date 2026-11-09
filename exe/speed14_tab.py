@@ -26,7 +26,7 @@ for _l in open(os.path.join(HERE, "speed14_spec.txt")):
 VARG = {"dD": "H9 진단", "dE": "H10 진단", "dS": "H11 진단", "dP": "H9np 진단", "dC": "H9 진단 PCG 15 · 예산 끔", "dT": "H9 진단 예산 끔",
         "gF": "H10", "gR": "H11", "gC": "H9 PCG 8 (수박)", "gE": "H9 PCG 15 (수박)", "xFM": "H10", "xFM2": "H10", "xRM": "H11", "xRM2": "H11",
         "xHM": "H9 (같은 날 대조)", "xHM2": "H9 (같은 날 대조)", "xHW": "H9 (같은 날 대조)", "xCM": "H9 PCG 8 (수박)", "xCM2": "H9 PCG 8 (수박)",
-        "xEM": "H9 PCG 15 (수박)", "xEM2": "H9 PCG 15 (수박)"}   # 묶음 이름 전체로 (둘째 글자가 겹쳐서)
+        "xEM": "H9 PCG 15 (수박)", "xEM2": "H9 PCG 15 (수박)", "xCM3": "H9 PCG 8 (수박)"}   # 묶음 이름 전체로 (둘째 글자가 겹쳐서)
 
 
 def lab(g, x):

@@ -95,3 +95,9 @@ s7 xCM M3 z H9 @s6l 1 --cg 8
 s7 xCM2 M3 z H9 @s6l 1 --cg 8
 s7 xEM M3 z H9 @s6l 1 --cg 15
 s7 xEM2 M3 z H9 @s6l 1 --cg 15
+# s8: H12 = H9 + 수박 PCG 8 (씬별 기본 --cg 중 수박 5 -> 8; 다른 씬 H9 그대로) 판정 나머지 4 판 + 단독 2 회 더
+s8 gC_5 M3 g H9 @s6l 1 --cg 8
+s8 gC_6 M3 g H9 @s6l 1 --cg 8
+s8 gC_7 M3 g H9 @s6l 1 --cg 8
+s8 gC_8 M3 g H9 @s6l 1 --cg 8
+s8 xCM3 M3 z H9 @s6l 1 --cg 8
