@@ -9147,3 +9147,32 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 ### CM93.3 출력·실행
 - R2 lbours/wolfh12/ (판마다 cmd·log·summary·fem.jsonl·fi.jsonl·w12.jsonl·w12info·bbox·pred.pt (F 포함), 연기 kH·kA·kE·kS, wolfh12_s0k·s1·s2.log, stab_*.out, go_*.log·END, boot.log, wolfh12_diag_table.md, wolfh12_heap_table.md, heap_s1.json, code/ (tar 둘·boot·launch·launch.txt (stop))).
 - 실행: SSH 1 번 (06:51 UTC, 로그인 노드 -> ece-a6gpu9 에서 R2 의 wolfh12_launch.sh 를 /dev/shm/dkta 에 받아 `pbs_attach -j 133077.ECE-util1` 로 떼어 띄움; qstat 안 부름 -- 잡 133077 은 R2 boot_alive 로 살아 있음 확인). 상주 시작점이 993896c s0k,s1 (15:52~15:58 노드 시각) -> 693ec2d s2 (~16:46) 뒤 stop. 판은 공용 표식 디렉토리로 계산 프로세스 0 인 카드에 동시에 (speed14 것 안 건드림). 노드 / ·/tmp 안 씀. 표는 로컬.
+## CM94. wolf H8 덜 풀린 걸음 -- 확장을 반영한 MG 전처리기 (사용자 11-08 위임; 절 CM93: 주원인은 덜 풀린 걸음, 확장이 덜 풀림을 키움 (첫 프레임 잔차 14 대 확장 끔 0.004), 전처리기가 Eᵀ K E 를 모름) -- 가지 k1new, 커밋 e2cc87a (s0k·s1), 묶음 wolfh13 (PBS 잡 133077 ece-a6gpu9 상주 시작점 exe/wolfh13_boot.sh·wolfh13_launch.sh, lib/anchorflow/fem_wolfh13.py, exe/wolfh13_wrap.py·stab_wolfh13.sh·go_wolfh13.sh·wolfh13_spec.txt, 표는 로컬 exe/wolfh12_tab.py·wolfh10_heap.py -> R2 lbours/wolfh13/wolfh13_tab_s1.md·wolfh13_heap_s1.md·wolfh13_cmp_conv.md)
+### CM94.0 정의 (lib/anchorflow/fem_wolfh13.py; 감싸개 exe/wolfh13_wrap.py `--w13 1|2` -> exe/wolfh12_wrap.py (H8 사슬); 풀리는 방정식 Ã δ = Eᵀ(−g) 그대로, 전처리만 바뀜; 새 문턱·클램프 없음; κ 1 씬은 할당·커널 0)
+- 참고: de Prenter 2017 (finite cell 조건수·전처리), 2019 (immersed 다층 격자) -- 잘린·확장 받침 자유도를 전처리 블록과 층 전달에 반영.
+- 층 0: 블록 대각 = Eᵀ D E 의 블록 대각, D̃_j = m_j/τ² I + T_j (B_j + Σ_o c_oj² (m_o/τ² I + B_o)) T_j (외삽 받는 것 없는 노드는 rt_grad D⁻¹ 그대로, 외부 노드 0). 야코비 잔차는 접은 잔차 Eᵀ(r − A E z), 곱 전에 z 펼침, ω 는 같은 거듭제곱법을 D̃⁻¹ Ã 에.
+- 층 사이: 연장 Q = I_내부 T P E_c (연장 뒤 외부 노드 다시 펼침), 제한 = Qᵀ (고운 잔차를 T Eᵀ 로 접고 외부 0, 거친 층에서 E_cᵀ 로 접음).
+- 거친 층 (모드 1): 같은 규칙의 거친 층 확장 E_l (거친 칸 부피 > 0 = 점유, 26 이웃 모두 점유 = 내부 칸, 차수 2 외삽), Ã_l = E_lᵀ A_l E_l, 블록 대각 E_lᵀ D_l E_l (장벽 K n nᵀ 포함), ω 같은 거듭제곱법 (--mg_lreuse 규칙 그대로). 모드 2 = 층 0 만.
+### CM94.1 연기 (s0k; wolf 8 프레임, 걸음 끝 잔차 비 프레임 f4~f8; 레고 8 프레임 κ 1)
+| 판 | 걸음 끝 잔차 비 f4 · f5 · f6 · f7 · f8 | 덜 풀린 걸음 |
+|---|---|---|
+| H8 (kH) | 14.8 · 14.1 · 5.08 · 10.6 · 22.3 | 5/5 |
+| 모드 1 (kX1) | 0.37 · 1.07 · 0.47 · 0.30 · 1.8 | 2/5 |
+| 모드 2 (kX2) | 0.27 · 0.68 · 0.81 · 0.44 · 0.28 | 0/5 |
+- 레고 (kL): xpinfo 할당·훅·커널 0, 8/8 프레임 (κ 1 씬은 커널이 안 뜸).
+- 같은 해 확인 (수렴 판, 예산 끔 + xit 끔 + 뉴턴 20 · PCG 40 · tolP 1e-2, 20 프레임, 옛 kAC 대 새 kXC): 위치 차 f5 99 % 0.013 mm · f10 중앙 0 (이후 이탈 입자에서 갈림, f20 중앙 1.1 mm · 질량중심 9 mm), 둘 다 상한까지 돎 (뉴턴 19.2 · 19.5, PCG 769 · 781 /프레임) -- 같은 반복에서 걸음 끝 잔차 비 중앙 0.0024 -> 0.0005, 프레임 2.24 s -> 0.55 s.
+### CM94.2 결과 (s1; wolf 비결정 4 판, 모드 1, 반복 상한 그대로 (뉴턴 6 · PCG 5), 절 CM93 표 형식; 표 R2 wolfh13_tab_s1.md·wolfh13_heap_s1.md)
+| 판 | 발산 | 걸음 끝 잔차 비 중앙 | 덜 풀린 걸음 몫 | 뉴턴 · PCG /프레임 | 입자 J 중앙 f20 · f26 · f30 · 끝 | f30 J<0.9 점 수 · tr · p MPa · h⁺/h | 질량중심 f50 바닥 위 mm |
+|---|---|---|---|---|---|---|---|
+| 정답 | - | - | - | - | 1 | - | 53 |
+| H8 h8_1·2 (절 CM93) | 0 | 5.7 · 12.9 | 0.81~0.87 | 3 · 10 | 1.00 · 0.55~0.61 · 0.08~0.09 · 0.02 | 3.5 만 · −3.5 · −147 · 1.00 | 26 |
+| 새 전처리 x1~x4 | 0/4 | 22~32 | 0.79~0.91 | 3 · 10 | 1.00 · 0.66~0.67 · 0.10~0.11 · 0.03~0.04 | 3.5~4.1 만 · −3.4 · −141 · 1.00 | 29 [27~30] |
+- 프레임별 잔차 비 (x1 대 h8_1): 자유 낙하 f4~f7 0.3~0.4 대 11~15 (40 배 줄음), 접촉·압축 f10 뒤로는 0.1~2400 대 0.03~2000 -- 줄지 않음.
+- 더미 (f50): 꼭대기 99 % 56 mm (정답 159), 안식각 56° [24~87] (정답 26.6°), 채움 8.5 (정답 2.23), 입자 det F 0.03~0.04, 이탈 3/4 판 (최대 139 개), 오차 4.16~4.19 %.
+### CM94.3 결론
+- 확장 반영 전처리기는 같은 해를 내고 (수렴 판 위치 같음), 접촉 전 걸음의 잔차를 40 배 줄임 -- 절 CM93 (b) '확장이 덜 풀림을 키움' 의 전처리 몫은 고쳐짐 (첫 프레임 14 -> 0.3, 확장 끔 0.004 의 약 100 배까지).
+- **부피는 안 지켜짐**: 바닥 접촉·압축 걸음 (f10~) 의 덜 풀림은 그대로 (잔차 중앙 22~32, 덜 풀린 몫 0.8~0.9), 입자 J f30 0.1, 질량중심 29 mm (통과 53±15 아님), 이탈 3/4. 남은 원인은 전처리 조건이 아니라 접촉 걸음의 비선형 (뉴턴 3 반복 · PCG 10 안에 못 품) -- 절 CM93 (a) 의 수렴 판도 f25 에 무너진 것과 같은 꼴.
+- 통과 판 없음 -> 회귀·렌더 단독·영상 안 함. 공통 후보는 H8 그대로 (모드 1·2 는 후보 아님).
+### CM94.4 출력·실행
+- R2 lbours/wolfh13/ (판마다 cmd·log·summary·fem.jsonl·fi.jsonl·w12.jsonl·xpinfo.json·bbox·pred.pt (s1 은 F 포함), wolfh13_s0k·s1.log, stab_*.out, go_*.log·END, boot.log, wolfh13_tab_s1.md, wolfh13_heap_s1.md, wolfh13_heap_rows_s1.json, wolfh13_cmp_conv.md, code/ (tar·boot·launch·launch.txt (stop))).
+- 실행: SSH 1 번 (08:02 UTC, 로그인 노드 -> ece-a6gpu9 에서 R2 의 wolfh13_launch.sh 를 /dev/shm/dkta 에 받아 `pbs_attach -j 133077.ECE-util1` 로 떼어 띄움; qstat 안 부름). 판은 계산 프로세스 0 인 카드 3~6 (카드 0~2 는 wmconv, 안 건드림). 노드 / ·/tmp 안 씀. 표는 로컬.
