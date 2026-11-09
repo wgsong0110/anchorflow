@@ -1,7 +1,7 @@
 # 절 CM88 묶음 speed14 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_speed14.sh). 바탕 H9 (절 CM86). 진단 '@s14dg 1' (결과 불변, '@s13dg 1' 위) -> s14.jsonl.
 # H10 = H9 + M ('@s14m 1'): 옛 실행기 (수박) 가속도 기억 G2P 를 노드 질량 가중으로 (pa = Σ w m a / Σ w m). 새 실행기 씬은 H9 그대로.
 # (연기 21a9211 의 A1·A2 = 걸음 끝 기억에서 벌점 힘 몫 빼기는 수박 f5 쯤 발산, d797f38 의 generalized-α 는 절 CM33 경로 단언 (HHT 만) 에 걸림 -> 버림)
-# VAR F=H10; P=H9np 진단; C=H9 진단 PCG 15·예산 끔; T=H9 진단 예산 끔; H=H9 (같은 날 대조); R=H11; S=H11 진단
+# VAR F=H10; P=H9np 진단; C=H9 진단 PCG 15·예산 끔; T=H9 진단 예산 끔; H=H9 (같은 날 대조); R=H11; S=H11 진단; C=H9 PCG 8 (수박); E=H9 PCG 15 (수박)
 # s0k 연기: 수박 20 프레임 H10 · H10 진단, 수박 단독 a (셈 T)
 s0k kM M3 g H10 @s6l 1 --frames 20
 s0k kN M3 g H10 @s6l 1 @s13dg 1 @s14dg 1 --frames 20
@@ -82,3 +82,16 @@ s6 xRL L z H11 @s6l 1
 s6 xRW W z H11 @s6l 1
 s6 xRF F z H11 @s6l 1
 s6 xRB B z H11 @s6l 1
+# s7: 원인 (덜 풀림) 자체 -- H9 + 수박 PCG 8 · 15 (예산 그대로) 판정 각 4 판 + 단독 (수박 4 회씩)
+s7 gC_1 M3 g H9 @s6l 1 --cg 8
+s7 gC_2 M3 g H9 @s6l 1 --cg 8
+s7 gC_3 M3 g H9 @s6l 1 --cg 8
+s7 gC_4 M3 g H9 @s6l 1 --cg 8
+s7 gE_1 M3 g H9 @s6l 1 --cg 15
+s7 gE_2 M3 g H9 @s6l 1 --cg 15
+s7 gE_3 M3 g H9 @s6l 1 --cg 15
+s7 gE_4 M3 g H9 @s6l 1 --cg 15
+s7 xCM M3 z H9 @s6l 1 --cg 8
+s7 xCM2 M3 z H9 @s6l 1 --cg 8
+s7 xEM M3 z H9 @s6l 1 --cg 15
+s7 xEM2 M3 z H9 @s6l 1 --cg 15
