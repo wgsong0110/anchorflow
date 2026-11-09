@@ -169,8 +169,13 @@ if KF > 0:
             torch.cuda.synchronize()
             wall = 1e3 * (time.perf_counter() - t0)
             tries = [(KF,) + tuple(q[1:]) for q in tries]
-            wlog(t=fi, kreq=r, nC=nC, K=KF, sK=int(s.K), tries=[[float(v) if isinstance(v, float) else v for v in q] for q in tries], gpu_ms=float(s.last_ms), wall_ms=wall)
-            print(f"[절 CM80 wmK] 첫 충돌 프레임 t {fi} (f{fi + 1}): 새로 닿는 입자 {nC} · K_req {r:.2f} -> K {KF} 고정, 시도 {tries}, GPU {float(s.last_ms):.1f} ms · 벽시계 {wall:.1f} ms", flush=True)
+            try:                                                                          # 그 프레임 끝 입자 비유한 수 (진단, 읽기만)
+                nf_ = {k: int((~torch.isfinite(getattr(s, k).reshape(getattr(s, k).shape[0], -1))).any(1).sum()) for k in ("x", "v", "F") if getattr(s, k, None) is not None}
+            except Exception as e_:
+                err("nonfinite", e_)
+                nf_ = None
+            wlog(t=fi, kreq=r, nC=nC, K=KF, sK=int(s.K), tries=[[float(v) if isinstance(v, float) else v for v in q] for q in tries], gpu_ms=float(s.last_ms), wall_ms=wall, nonfin=nf_)
+            print(f"[절 CM80 wmK] 첫 충돌 프레임 t {fi} (f{fi + 1}): 새로 닿는 입자 {nC} · K_req {r:.2f} -> K {KF} 고정, 시도 {tries}, GPU {float(s.last_ms):.1f} ms · 벽시계 {wall:.1f} ms, 끝 비유한 입자 {nf_}", flush=True)
             return redo, KF, tries
         WRX.split_col = split_col
         print(f"[절 CM80] wmK 켬: 첫 충돌 프레임만 K {KF} (다른 프레임 쪼개기 깊이 ≤ {D0}), 바닥 법선 {NR.tolist()} PN {PN:.6g} d̂ {DH:.6g} m", flush=True)
