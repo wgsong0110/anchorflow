@@ -1,0 +1,85 @@
+# 절 CM92 묶음 finterp 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_finterp.sh). '@fi 0|1|2' = 입자 F 보간 교체 (lib/anchorflow/fem_finterp.py): 0 지금 정의 (진단만, 결과 같음), 1 J 산술, 2 J 증분.
+# 바탕 H8 (절 CM85·CM87 공통 후보) · H5n (절 CM81 H5). 진단 판 (g·nd·v) 은 --fidg 1 -> fi.jsonl (프레임마다 가우스 점·입자 det F 질량 평균).
+# s0k 연기: wolf 8 프레임 (모드 0·1·2), 레고·ficus·bread 8 프레임, 수박 20 프레임 (모드 0·1·2)
+s0k kW0 W nd H8 @fi 0 --frames 8
+s0k kW1 W nd H8 @fi 1 --frames 8
+s0k kW2 W nd H8 @fi 2 --frames 8
+s0k kL1 L nd H8 @fi 1 --frames 8
+s0k kF2 F nd H8 @fi 2 --frames 8
+s0k kB1 B nd H8 @fi 1 --frames 8
+s0k kM0 M3 g H8 @s6l 1 @fi 0 --frames 20
+s0k kM1 M3 g H8 @s6l 1 @fi 1 --frames 20
+s0k kM2 M3 g H8 @s6l 1 @fi 2 --frames 20
+# s1 할 일 1 (진단, 지금 정의 그대로): wolf H8 2 판 (첫 판 입자 F 덤프) · H5n 1 판, 수박 2 판, bread·레고·ficus 1 판
+s1 dW8_1 W nd H8 @fi 0 --dump_F
+s1 dW8_2 W nd H8 @fi 0
+s1 dW5_1 W nd H5n @fi 0 --dump_F
+s1 dM_1 M3 g H8 @s6l 1 @fi 0
+s1 dM_2 M3 g H8 @s6l 1 @fi 0
+s1 dB_1 B nd H8 @fi 0
+s1 dL_1 L nd H8 @fi 0
+s1 dF_1 F nd H8 @fi 0
+# s2 할 일 3: 모드 1 (J 산술) · 모드 2 (J 증분) -- wolf 바탕 H8 · H5n 각 4 판, 수박 8 판, 레고 4 판, ficus·bread 각 2 판
+s2 a1W8_1 W nd H8 @fi 1 --dump_F
+s2 a1W8_2 W nd H8 @fi 1
+s2 a1W8_3 W nd H8 @fi 1
+s2 a1W8_4 W nd H8 @fi 1
+s2 a1W5_1 W nd H5n @fi 1 --dump_F
+s2 a1W5_2 W nd H5n @fi 1
+s2 a1W5_3 W nd H5n @fi 1
+s2 a1W5_4 W nd H5n @fi 1
+s2 a1M_1 M3 g H8 @s6l 1 @fi 1
+s2 a1M_2 M3 g H8 @s6l 1 @fi 1
+s2 a1M_3 M3 g H8 @s6l 1 @fi 1
+s2 a1M_4 M3 g H8 @s6l 1 @fi 1
+s2 a1M_5 M3 g H8 @s6l 1 @fi 1
+s2 a1M_6 M3 g H8 @s6l 1 @fi 1
+s2 a1M_7 M3 g H8 @s6l 1 @fi 1
+s2 a1M_8 M3 g H8 @s6l 1 @fi 1
+s2 a1L_1 L nd H8 @fi 1
+s2 a1L_2 L nd H8 @fi 1
+s2 a1L_3 L nd H8 @fi 1
+s2 a1L_4 L nd H8 @fi 1
+s2 a1F_1 F nd H8 @fi 1
+s2 a1F_2 F nd H8 @fi 1
+s2 a1B_1 B nd H8 @fi 1
+s2 a1B_2 B nd H8 @fi 1
+s2 a2W8_1 W nd H8 @fi 2 --dump_F
+s2 a2W8_2 W nd H8 @fi 2
+s2 a2W8_3 W nd H8 @fi 2
+s2 a2W8_4 W nd H8 @fi 2
+s2 a2W5_1 W nd H5n @fi 2 --dump_F
+s2 a2W5_2 W nd H5n @fi 2
+s2 a2W5_3 W nd H5n @fi 2
+s2 a2W5_4 W nd H5n @fi 2
+s2 a2M_1 M3 g H8 @s6l 1 @fi 2
+s2 a2M_2 M3 g H8 @s6l 1 @fi 2
+s2 a2M_3 M3 g H8 @s6l 1 @fi 2
+s2 a2M_4 M3 g H8 @s6l 1 @fi 2
+s2 a2M_5 M3 g H8 @s6l 1 @fi 2
+s2 a2M_6 M3 g H8 @s6l 1 @fi 2
+s2 a2M_7 M3 g H8 @s6l 1 @fi 2
+s2 a2M_8 M3 g H8 @s6l 1 @fi 2
+s2 a2L_1 L nd H8 @fi 2
+s2 a2L_2 L nd H8 @fi 2
+s2 a2L_3 L nd H8 @fi 2
+s2 a2L_4 L nd H8 @fi 2
+s2 a2F_1 F nd H8 @fi 2
+s2 a2F_2 F nd H8 @fi 2
+s2 a2B_1 B nd H8 @fi 2
+s2 a2B_2 B nd H8 @fi 2
+# s3 렌더 포함 벽시계 단독 (한 카드에 a · b 두 회): 모드 1·2, 다섯 씬 (wolf 는 바탕 H8·H5n)
+s3 z1M M3 z H8 @s6l 1 @fi 1
+s3 z1L L z H8 @s6l 1 @fi 1
+s3 z1W8 W z H8 @s6l 1 @fi 1
+s3 z1W5 W z H5n @s6l 1 @fi 1
+s3 z1F F z H8 @s6l 1 @fi 1
+s3 z1B B z H8 @s6l 1 @fi 1
+s3 z2M M3 z H8 @s6l 1 @fi 2
+s3 z2L L z H8 @s6l 1 @fi 2
+s3 z2W8 W z H8 @s6l 1 @fi 2
+s3 z2W5 W z H5n @s6l 1 @fi 2
+s3 z2F F z H8 @s6l 1 @fi 2
+s3 z2B B z H8 @s6l 1 @fi 2
+# v 영상 판 (덤프 + F -> 3DGS 렌더): 통과 판만 (아래 줄은 통과가 나오면 고쳐 씀)
+v vW W v H8 @fi 1
