@@ -42,14 +42,14 @@ for n in sorted(os.listdir(O)):
     if L:
         R.append((n, L))
 print("## (13) 할 일 1 진단 -- 가속도 기억의 벌점 몫 (s14.jsonl; β < 1 걸음 = speed13 표 (9) 와 같은 걸음, 자른 점 = 필터 k > 0)\n")
-print("| 판 | β < 1 걸음 · 판정 | 자른 점 (걸음당) | 자른 점 중 J ≤ 0 %: Ut · Ut − c_a a_L' · Ut − c_a a_K' | 자른 점 J 중앙: Ut · −a_L' · −a_K' | 27 노드 최대 (mm, 중앙): c_a|a_n| · c_a|a_L'| · c_a|a_K'| | cos(a_n, a_L') 중앙 | 벌점 면 칸까지 거리 칸 중앙 [최소]: 가벼움 · 강성 전체 | 몸 전체 |a_L'|/|a_n'| 중앙: 무거운 · 나머지 | |a_K'|/|a_n'|: 무거운 · 나머지 | p2g 상대 차 중앙 |")
-print("|---|---|---|---|---|---|---|---|---|---|---|")
+print("| 판 | β < 1 걸음 · 판정 | 자른 점 (걸음당) | 자른 점 중 J ≤ 0 %: Ut · Ut − c_a a_L' · Ut − c_a a_K' · 고침 M 기억 Ut + c_a (a_M' − a_P') | 자른 점 J 중앙 (고침 M 기억) | 입자 기억 중 가벼운 노드 (m < 100 m̄) 몫 중앙 · |p_M|/|p_a| 중앙 | 자른 점 J 중앙: Ut · −a_L' · −a_K' | 27 노드 최대 (mm, 중앙): c_a|a_n| · c_a|a_L'| · c_a|a_K'| | cos(a_n, a_L') 중앙 | 벌점 면 칸까지 거리 칸 중앙 [최소]: 가벼움 · 강성 전체 | 몸 전체 |a_L'|/|a_n'| 중앙: 무거운 · 나머지 | |a_K'|/|a_n'|: 무거운 · 나머지 | p2g 상대 차 중앙 |")
+print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 for n, L in R:
     B = [q for q in L if (q.get("beta") is not None and q["beta"] < 1)]
     nc = sum(q["ncut"] for q in B)
-    a = [sum(q[k] for q in B) for k in ("cut_Ju_le0", "cut_JuL_le0", "cut_JuK_le0")]
+    a = [sum(q.get(k, 0) for q in B) for k in ("cut_Ju_le0", "cut_JuL_le0", "cut_JuK_le0", "cut_JuM_le0")]
     g = lambda key, i, S=B, sc=1.0: md([sc * q[key][i] for q in S if q.get(key)])
-    print(f"| {n} | {len(B)} · {sum(1 for q in B if q['trig'])} | {f(nc / max(1, len(B)), 1)} | {pc(a[0], nc)} · {pc(a[1], nc)} · {pc(a[2], nc)} | "
+    print(f"| {n} | {len(B)} · {sum(1 for q in B if q['trig'])} | {f(nc / max(1, len(B)), 1)} | {pc(a[0], nc)} · {pc(a[1], nc)} · {pc(a[2], nc)} · {pc(a[3], nc)} | {f(g('JuM', 1), 3)} | {f(md([q.get('p_light_share') for q in L]), 3)} · {f(md([q.get('p_M_over_pa') for q in L]), 3)} | "
           f"{f(g('Ju', 1), 3)} · {f(g('JuL', 1), 3)} · {f(g('JuK', 1), 3)} | {f(g('am', 1, B, 1000.0))} · {f(g('aLm', 1, B, 1000.0))} · {f(g('aKm', 1, B, 1000.0))} | {f(g('cosL', 1), 2)} | "
           f"{f(g('dL', 1), 1)} [{f(md([q['dL'][0] for q in B if q.get('dL')]), 0)}] · {f(g('dK', 1), 1)} [{f(md([q['dK'][0] for q in B if q.get('dK')]), 0)}] | "
           f"{f(md([q['heavy_rL'] for q in L]), 3)} · {f(md([q['oth_rL'] for q in L]), 3)} | {f(md([q['heavy_rK'] for q in L]), 3)} · {f(md([q['oth_rK'] for q in L]), 3)} | {f(md([q['p2g_rel'] for q in L]), 3)} |")

@@ -1,11 +1,11 @@
 # 절 CM88 묶음 speed14 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_speed14.sh). 바탕 H9 (절 CM86). 진단 '@s14dg 1' (결과 불변, '@s13dg 1' 위) -> s14.jsonl.
-# H10 = H9 + 옛 실행기 (수박) generalized-α ('--ga ga', ρ 0.7 그대로) -- 관성 예측의 가속도 기억 몫 c_a = (1−α_f)Δt²(½−β) − τ²α_m 을 HHT 0.127 Δt² 에서 0.028 Δt² 로. 새 실행기 씬은 H9 그대로.
-# (첫 연기 21a9211 의 A1·A2 = 걸음 끝 기억에서 벌점 힘 몫 빼기는 수박 f5 쯤 발산 -> 버림)
+# H10 = H9 + M ('@s14m 1'): 옛 실행기 (수박) 가속도 기억 G2P 를 노드 질량 가중으로 (pa = Σ w m a / Σ w m). 새 실행기 씬은 H9 그대로.
+# (연기 21a9211 의 A1·A2 = 걸음 끝 기억에서 벌점 힘 몫 빼기는 수박 f5 쯤 발산, d797f38 의 generalized-α 는 절 CM33 경로 단언 (HHT 만) 에 걸림 -> 버림)
 # VAR F=H10
 # s0k 연기: 수박 20 프레임 H10 · H10 진단, 수박 단독 a (셈 T)
-s0k kG M3 g H10 @s6l 1 --frames 20
-s0k kE M3 g H10 @s6l 1 @s13dg 1 @s14dg 1 --frames 20
-s0k xU M3 z H10 @s6l 1 @s14ct 1 --frames 20
+s0k kM M3 g H10 @s6l 1 --frames 20
+s0k kN M3 g H10 @s6l 1 @s13dg 1 @s14dg 1 --frames 20
+s0k xV M3 z H10 @s6l 1 @s14ct 1 --frames 20
 # s1: 할 일 1 진단 (수박 100 프레임: H9 진단 2 판 · H10 진단 2 판)
 s1 dD_1 M3 g H9 @s6l 1 @s13dg 1 @s14dg 1
 s1 dD_2 M3 g H9 @s6l 1 @s13dg 1 @s14dg 1

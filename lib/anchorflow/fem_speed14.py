@@ -20,6 +20,11 @@
       1 = 가벼움 몫만 (fw − 1[P1X]) · 2 = 벌점 강성 전체 (fw). 속도·변위 갱신은 그대로 (그 걸음 풀이의 힘을 다 씀) -- 다음 걸음 관성 예측 ŷ 의 가속도 몫에만 벌점이 안 들어감.
       벌점 = 수치 안정화 몫 (물리 힘 아님) 이라 HHT 가 '지난 걸음 가속도' 로 기억해 다음 걸음에 다시 밀지 않게 함.
       갱신 커널이 기억을 이미 0 으로 둔 노드 (고착·구속·후퇴 오일러 노드; 세 성분 모두 0) 는 그대로 0. 새 문턱·클램프 없음.
+(M) --s14m 1 (결과 바뀜; 고침 M, H10 = H9 + M): 가속도 기억을 입자로 넘기는 G2P (ao_g2p_a: pa = Σ_K w_K a_K) 를 노드 질량 가중으로
+      pa = Σ_K w_K m_K a_K / Σ_K w_K m_K  (운동량 (힘) 일치 꼴; 분모 0 이면 0). 가벼운 노드 (m ~ m̄) 는 벌점 강성에 끌려 가속도가 크지만 (그 노드의 힘은
+      다른 힘과 맞서 균형) 운동량은 작음 -- 무게 없이 섞으면 그 큰 가속도가 바닥 띠 무거운 칸 입자의 기억으로 건너가 다음 걸음 ŷ 를 누름.
+      속도·위치·F G2P 는 그대로, 기억 a_n 의 건너감만. 새 문턱·클램프 없음. 진단 판에서는 같은 커널로 입자 버퍼 pM 도 만들어 'r' 경계에서
+      J (Ut + c_a (a_M' − a_P')) (a_P' = 지금 pa 를 같은 P2G 로 옮긴 값) 와 가벼운 노드 몫을 봄.
 (T) --s14ct 1 (결과 불변; 단독 판 시간 가르기): 프레임 끝 G2P (ao_g2p_a) 바로 뒤 그래프 안에서 제어 셈 CT (뉴턴 반복 CT[2] · PCG 반복 CT[3] · PCG 시작 CT[7] · 걸음 CT[6])
       를 장치 고리 버퍼에 차례로 복사 (작은 커널 하나, 호스트 동기화 없음) -> 끝에 <out>/s14ct.json (기록 순서 = 프레임·시도 순서; 그래프 밖 데움 record 포함).
 """
@@ -34,6 +39,7 @@ class C:
     out = "."
     dg = 0
     a = 0
+    m = 0
     ct = 0
     log = None
     nend = 0
@@ -60,6 +66,40 @@ __global__ void s14_ct(const int* CT, int* ring, int* idx, int cap) {
     int i = idx[0];
     if (i < cap) for (int t=0;t<16;t++) ring[i*16+t] = CT[t];
     idx[0] = i + 1;
+}
+// 질량 가중 가속도 G2P (고침 M): pa = Σ w m a / Σ w m
+__global__ void s14_g2pm(int N, const int* IP, const int* pb, const float* fx, const float* ga, const float* mn, float* pa) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N || IP[13]) return;
+    float w[3][3], dw[3][3];
+    for (int a=0;a<3;a++) bwf(fx[p*3+a], w[a], dw[a]);
+    int nb1 = IP[7], nb2 = IP[8];
+    double s[3] = {0.0, 0.0, 0.0}, sw = 0.0;
+    for (int o=0;o<27;o++) {
+        int i = o/9, j = (o/3)%3, k = o%3;
+        int nid = ((pb[p*3]+i)*nb1 + (pb[p*3+1]+j))*nb2 + (pb[p*3+2]+k);
+        double ww = (double)(w[0][i]*w[1][j]*w[2][k])*(double)mn[nid];
+        sw += ww;
+        for (int a=0;a<3;a++) s[a] += ww*(double)ga[nid*3+a];
+    }
+    for (int a=0;a<3;a++) pa[p*3+a] = (sw > 0.0) ? (float)(s[a]/sw) : 0.f;
+}
+// 진단: 입자마다 기억 |Σ w a| 중 가벼운 노드 (m < 100 m̄) 몫의 크기 |Σ_{가벼움} w a| -> pl (1 성분)
+__global__ void s14_lshare(int N, const int* IP, const int* pb, const float* fx, const float* ga, const float* mn, float mcut, float* pl) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N || IP[13]) return;
+    float w[3][3], dw[3][3];
+    for (int a=0;a<3;a++) bwf(fx[p*3+a], w[a], dw[a]);
+    int nb1 = IP[7], nb2 = IP[8];
+    float s[3] = {0.f, 0.f, 0.f};
+    for (int o=0;o<27;o++) {
+        int i = o/9, j = (o/3)%3, k = o%3;
+        int nid = ((pb[p*3]+i)*nb1 + (pb[p*3+1]+j))*nb2 + (pb[p*3+2]+k);
+        if (!(mn[nid] < mcut)) continue;
+        float ww = w[0][i]*w[1][j]*w[2][k];
+        for (int a=0;a<3;a++) s[a] += ww*ga[nid*3+a];
+    }
+    pl[p] = sqrtf(s[0]*s[0] + s[1]*s[1] + s[2]*s[2]);
 }
 __global__ void s14_zd(const int* IP, double* f) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
@@ -218,6 +258,23 @@ def _after_end(s):
         C.nfix += 1
 
 
+def _pre_g2p(s, args):
+    """진단: 실제 G2P 앞에 같은 노드 기억 a 로 질량 가중 G2P (pM) 와 가벼운 노드 몫 (pLs) 을 입자 버퍼에 (그래프 안)."""
+    from . import fem_rt_cuda as RTC
+    if not C.dg:
+        return
+    N = int(s.N)
+    if getattr(s, "_s14pM", None) is None or s._s14pM.numel() < N * 3:
+        if _cap():
+            raise RuntimeError("절 CM88: 캡처 중 pM 버퍼 없음")
+        s._s14pM = torch.zeros(N * 3, device=s.dev, dtype=torch.float32)
+        s._s14pLs = torch.zeros(N, device=s.dev, dtype=torch.float32)
+    mbar = float(getattr(s, "mthr", 0.0) or 0.0)
+    with RTC._Stream():
+        _fn(s, "s14_g2pm")(((N + 127) // 128,), (128,), (np.int32(N), args[1], args[2], args[3], args[4], _P(s.mn), _P(s._s14pM)))
+        _fn(s, "s14_lshare")(((N + 127) // 128,), (128,), (np.int32(N), args[1], args[2], args[3], args[4], _P(s.mn), np.float32(100.0 * mbar), _P(s._s14pLs)))
+
+
 CTCAP = 8192
 
 
@@ -253,7 +310,17 @@ def _install_k():
     o_k = cls.k
 
     def k(s, name, n, args, b=128):
-        r = o_k(s, name, n, args, b)
+        if name == "ao_g2p_a" and (C.m or C.dg):
+            _pre_g2p(s, args)
+        if name == "ao_g2p_a" and C.m:
+            from . import fem_rt_cuda as RTC
+            N = int(s.N)
+            with RTC._Stream():
+                _fn(s, "s14_g2pm")(((N + 127) // 128,), (128,), (np.int32(N), args[1], args[2], args[3], args[4], _P(s.mn), args[5]))
+            C.ng2pm = getattr(C, "ng2pm", 0) + 1
+            r = None
+        else:
+            r = o_k(s, name, n, args, b)
         if name in STEPEND:
             _after_end(s)
         elif name == "ao_g2p_a":
@@ -308,6 +375,7 @@ def rdiag(s, trig):
         aL = _p2g(s, s._s14pL, s._s14nb, den).reshape(-1).clone()
         aK = _p2g(s, s._s14pK, s._s14nb, den).reshape(-1).clone()
         aP = _p2g(s, s.pa, s._s14nb, den).reshape(-1).clone()
+        aM = _p2g(s, s._s14pM, s._s14nb, den).reshape(-1).clone() if getattr(s, "_s14pM", None) is not None else aP.clone()
         ga_c = s.ga_c
         af, be = float(ga_c["af"]), float(ga_c["be"])
         dt = float(s.dt)
@@ -316,6 +384,7 @@ def rdiag(s, trig):
         ut = s.Ut.reshape(-1)[:cap3].contiguous()
         ut2 = (ut - ca * aL[:cap3]).contiguous()
         ut3 = (ut - ca * aK[:cap3]).contiguous()
+        utM = (ut + ca * (aM[:cap3] - aP[:cap3])).contiguous()
         ga = s.gaA.reshape(-1)[:cap3].contiguous()
         aLc, aKc, aPc = aL[:cap3].contiguous(), aK[:cap3].contiguous(), aP[:cap3].contiguous()
         s._s14cnt.zero_()
@@ -325,6 +394,22 @@ def rdiag(s, trig):
                                                                _P(aLc), _P(aKc), _P(aPc), np.float32(ca), _P(s._s14cnt), _P(s._s14rows), np.int32(CAP)))
         torch.cuda.synchronize()
         cnt = s._s14cnt.cpu().tolist()
+        # 고침 M 대조: 같은 자른 점에서 J (Ut + c_a (a_M' − a_P')) -- s14_q 를 ut2 자리에 utM 으로 한 번 더 (cnt 2 = J ≤ 0 수, 행 3 = J)
+        cM = torch.zeros(32, device=dev, dtype=torch.int32); rM = torch.zeros(CAP * 12, device=dev, dtype=torch.float32)
+        with RTC._Stream():
+            if nQ > 0:
+                _fn(s, "s14_q")(((nQ + 127) // 128,), (128,), (_P(s.IP), _P(s.cb), _P(s.BG), _P(s.Fq), _P(s.Vq), _P(s._s13kq), _P(ut), _P(utM), _P(utM), _P(ga),
+                                                               _P(aLc), _P(aKc), _P(aPc), np.float32(ca), _P(cM), _P(rM), np.int32(CAP)))
+        torch.cuda.synchronize()
+        cMl = cM.cpu().tolist(); nrM = min(int(cMl[31]), CAP)
+        JM = rM[:nrM * 12].view(nrM, 12)[:, 3].double() if nrM else None
+        # 가벼운 노드 몫: 자른 칸 입자의 기억 중 가벼운 노드 몫 -- 몸 전체 입자 중앙 |pLs|/|pa| (입자 기준)
+        try:
+            pa_n = s.pa.view(-1, 3).norm(dim=1); okp = pa_n > 0
+            lsh = float((s._s14pLs[:N][okp] / pa_n[okp]).double().median()) if okp.any() else None
+            mMs = float(((s._s14pM.view(-1, 3).norm(dim=1)[okp]) / pa_n[okp]).double().median()) if okp.any() else None
+        except Exception:
+            lsh, mMs = None, None
         nr = min(int(cnt[31]), CAP)
         R = s._s14rows[:nr * 12].view(nr, 12) if nr else None
         mn = s.mn[:nN]
@@ -341,7 +426,10 @@ def rdiag(s, trig):
         rec = dict(fr=fr, trig=int(trig), beta=float(s.awb[0].item()) if getattr(s, "awb", None) is not None else None, ca=ca, ncut=int(cnt[0]),
                    cut_Ju_le0=int(cnt[1]), cut_JuL_le0=int(cnt[2]), cut_JuK_le0=int(cnt[3]),
                    heavy_rL=med(lN[okh] / gN[okh]), heavy_rK=med(kN[okh] / gN[okh]), oth_rL=med(lN[oko] / gN[oko]), oth_rK=med(kN[oko] / gN[oko]),
-                   p2g_rel=med((pN[act & (gN > 0)] - gN[act & (gN > 0)]).abs() / gN[act & (gN > 0)]), nheavy=int(heavy.sum()), nact=int(act.sum()))
+                   p2g_rel=med((pN[act & (gN > 0)] - gN[act & (gN > 0)]).abs() / gN[act & (gN > 0)]), nheavy=int(heavy.sum()), nact=int(act.sum()),
+                   cut_JuM_le0=int(cMl[2]), JuM=[round(float(torch.quantile(JM, p)), 6) for p in (0.0, 0.5, 1.0)] if JM is not None and JM.numel() else None,
+                   p_light_share=lsh, p_M_over_pa=mMs,
+                   heavy_rM=med((nrm(aM[:cap3].contiguous()) - pN).abs()[okh] / gN[okh]) if okh.any() else None)
         if nr:
             Rc = R.double()
             def q3(col):
@@ -390,11 +478,11 @@ def _install_dg():
     S13.rdiag = rd
 
 
-def install(out, dg=0, a=0, ct=0):
+def install(out, dg=0, a=0, ct=0, m=0):
     """실행기를 runpy 로 띄우는 순간 (speed13 설치 뒤 = 가장 바깥) 에 부름."""
-    C.out, C.dg, C.a, C.ct = out, int(dg), int(a), int(ct)
+    C.out, C.dg, C.a, C.ct, C.m = out, int(dg), int(a), int(ct), int(m)
     assert C.a in (0, 1, 2)
-    if C.dg or C.a or C.ct:
+    if C.dg or C.a or C.ct or C.m:
         _install_src()
         _install_k()
     if C.dg:
@@ -416,7 +504,7 @@ def install(out, dg=0, a=0, ct=0):
             except Exception as e:
                 ctn = repr(e)[:200]
         with open(os.path.join(out, "s14info.json"), "w") as f_:
-            json.dump(dict(dg=C.dg, a=C.a, ct=C.ct, done=sorted(C.done), nend=C.nend, nfix=C.nfix, ng2p=C.ng2p, nct=getattr(C, "nct", 0), ctn=ctn, nrec=C.nrec, nerr=C.nerr), f_)
+            json.dump(dict(dg=C.dg, a=C.a, ct=C.ct, m=C.m, ng2pm=getattr(C, "ng2pm", 0), done=sorted(C.done), nend=C.nend, nfix=C.nfix, ng2p=C.ng2p, nct=getattr(C, "nct", 0), ctn=ctn, nrec=C.nrec, nerr=C.nerr), f_)
     _fin()
     atexit.register(_fin)
-    print(f"[절 CM88] speed14 켬 진단 {C.dg} 고침 A {C.a} 셈 T {C.ct}", flush=True)
+    print(f"[절 CM88] speed14 켬 진단 {C.dg} 고침 A {C.a} 고침 M {C.m} 셈 T {C.ct}", flush=True)
