@@ -332,7 +332,7 @@ def mx_md(v):
     return "-" if not v else f"{max(v):.2e} [{stt.median(v):.2e}]"
 
 
-print("| 판 | 반복 검사 수 · 외부 노드 수 | C1 펼치기 · 접기 커널 대 파이썬 · 수반 | C2 접은 잔차 대 Eᵀ r0 · r_o 최대 · SC[1] | C3 z 대 D⁻¹r · z_o · r·z · p_o 펼침 | C4 대칭 · min uᵀAu · Ap_o | C5 차분 대 곱 (줄어든 e1e-3 · e1e-4 / 원래 e1e-3) | C6 확장 관계 rel 최대 (검사 수) | C7 MG r_o · min r·z · p_o | 오류 |")
+print("| 판 | 반복 검사 수 · 외부 노드 수 | C1 펼치기 · 접기 커널 대 파이썬 · 수반 | C2 접은 잔차 대 Eᵀ r0 · r_o 최대 · SC[1] | C3 z 대 D⁻¹r · z_o · r·z · p_o 펼침 | C4 대칭 · min uᵀAu · Ap_o | C5 차분 대 곱 (줄어든 e1e-3 · e1e-4 / 원래 e1e-3) | C6 확장 관계 어긋남 |y_o − y0_o − Σc(y_j − y0_j)| 최대 [중앙] / 걸음 증분 최대 (검사 수) | C7 MG r_o · min r·z · p_o | 오류 |")
 print("|---|---|---|---|---|---|---|---|---|---|")
 for st, n, s, md, x in runs:
     if "@x1ck" not in x:
@@ -347,7 +347,7 @@ for st, n, s, md, x in runs:
     print(f"| {n} | {len(It)} · {fmt(mean([q.get('next') for q in It]), 0)} | {mx_md(g('C1', 'expand_rel'))} · {mx_md(g('C1', 'fold_rel'))} · {mx_md(g('C1', 'adj'))} | "
           f"{mx_md(g('C2', 'fold_r0_rel'))} · {mx_md(g('C2', 'r_ext_max'))} · {mx_md(g('C2', 'gg_rel'))} | {mx_md(g('C3', 'z_rel'))} · {mx_md(g('C3', 'z_ext_max'))} · {mx_md(g('C3', 'rz_rel'))} · {mx_md(g('C3', 'p_ext_rel'))} | "
           f"{mx_md(g('C4', 'sym'))} · {fmt(min(g('C4', 'uAu') + g('C4', 'vAv'), default=None), 3)} · {mx_md(g('C4', 'Ap_ext_max'))} | {mx_md(c5('e0.001', 'red_rel'))} · {mx_md(c5('e0.0001', 'red_rel'))} / {mx_md(c5('e0.001', 'full_rel'))} | "
-          f"{mx_md([q.get('rel') for q in Iv])} ({len(Iv)}) | {mx_md([q.get('r_ext_max') for q in Mg])} · {fmt(min([q.get('rz') for q in Mg], default=None), 3)} · {mx_md([q.get('p_ext_rel') for q in Mg])} | {xi.get('ck_err') or xi.get('err') or '-'} |")
+          f"{mx_md([q.get('dev') for q in Iv])} m / 증분 최대 {fmt(max([q.get('dmax') or 0 for q in Iv], default=None), 4)} m ({len(Iv)}) | {mx_md([q.get('r_ext_max') for q in Mg])} · {fmt(min([q.get('rz') for q in Mg], default=None), 3)} · {mx_md([q.get('p_ext_rel') for q in Mg])} | {xi.get('ck_err') or xi.get('err') or '-'} |")
 print()
 
 print("## (6) 확장 분류 (w8.jsonl, 걸음 시작마다; 판 평균)\n")

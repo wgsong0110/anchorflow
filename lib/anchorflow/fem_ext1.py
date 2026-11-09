@@ -167,18 +167,18 @@ def _add_log(src):
 
 
 def _hist(s):
-    if getattr(s, "x1H", None) is None:
-        s.x1H = torch.zeros(HCAP, 16, device=s.dev, dtype=torch.int32)
-        s.x1HF = torch.zeros(HCAP, 4, device=s.dev, dtype=torch.float32)
-        s.x1hp = torch.zeros(1, device=s.dev, dtype=torch.int32)
+    if getattr(s, "x13H", None) is None:
+        s.x13H = torch.zeros(HCAP, 16, device=s.dev, dtype=torch.int32)
+        s.x13HF = torch.zeros(HCAP, 4, device=s.dev, dtype=torch.float32)
+        s.x13hp = torch.zeros(1, device=s.dev, dtype=torch.int32)
         _SOL.append(weakref.ref(s))
 
 
 def _log(s, ok):
     _hist(s)
-    ks = int(getattr(s, "_x1ks", 0))
-    ok(s, "x1_log", 1, (P(s.IP), P(s.w8cnt), P(s.w8cf), P(s.x1hp), P(s.x1H), P(s.x1HF), np.int32(HCAP), np.int32(ks), np.int32(int(getattr(s, "K", 1)))), 1)
-    s._x1ks = ks + 1
+    ks = int(getattr(s, "_x13ks", 0))
+    ok(s, "x1_log", 1, (P(s.IP), P(s.w8cnt), P(s.w8cf), P(s.x13hp), P(s.x13H), P(s.x13HF), np.int32(HCAP), np.int32(ks), np.int32(int(getattr(s, "K", 1)))), 1)
+    s._x13ks = ks + 1
     ST["nlog"] += 1
 
 
@@ -197,7 +197,7 @@ def _install_an(out, D, T, X):
     def ctl(s, op, it=0):
         r = oc(s, op, it)
         if op == 0:
-            s._x1ks = 0
+            s._x13ks = 0
         elif op == 1 and W8._on(s):
             _log(s, ok)
         return r
@@ -214,7 +214,7 @@ def _install_ao():
     i32 = np.int32
 
     def on(s):
-        return getattr(s, "w8b", None) is not None and getattr(s, "_x1on", False)
+        return getattr(s, "w8b", None) is not None and getattr(s, "_x13on", False)
 
     def alloc(s, need):
         r = oa(s, need)
@@ -225,7 +225,7 @@ def _install_ao():
         s.w8acc = torch.zeros(s.capN * 3, device=dev, dtype=torch.float32)
         s.w8cnt = torch.zeros(16, device=dev, dtype=torch.int32)
         s.w8cf = torch.zeros(4, device=dev, dtype=torch.float32)
-        s._x1on = True
+        s._x13on = True
         ST["nalloc"] += 1
         return r
 
@@ -248,8 +248,8 @@ def _install_ao():
         expand(s, p, Tp)
 
     def k(s, name, n, args, b=128):
-        if on(s) and ST["ck"] and not getattr(s, "_x1in", False) and name in ("aq_elem", "ao_elem_s", "ao_elem", "rt_bar_q", "rt_bar_n"):
-            s._x1rec = getattr(s, "_x1rec", {}); s._x1rec[name] = tuple(args)
+        if on(s) and ST["ck"] and not getattr(s, "_x13in", False) and name in ("aq_elem", "ao_elem_s", "ao_elem", "rt_bar_q", "rt_bar_n"):
+            s._x13rec = getattr(s, "_x13rec", {}); s._x13rec[name] = tuple(args)
         r = ok(s, name, n, args, b)
         if not on(s):
             return r
@@ -261,14 +261,14 @@ def _install_ao():
             ST["ngg"] += 1
             if getattr(s, "nl", 1) <= 1:                                               # 블록 야코비: z·p·Tp·r·z 를 접은 r 로 다시 (MG 판은 V 순환 + rt_pinit 이 다시 씀)
                 jz(s, args[11], args[3], args[4], nr, args[12], args[13], args[14], args[16], args[17])
-            if ST["ck"] and not getattr(s, "_x1in", False):
-                s._x1g = dict(name=name, args=tuple(args))
+            if ST["ck"] and not getattr(s, "_x13in", False):
+                s._x13g = dict(name=name, args=tuple(args))
                 _check_iter(s, ok)
         elif name in ("rt_ap", "rt_ap_c"):                                             # IP mn it2 sk pm n0 n1 n2 p KTp Ap SC [Kb]
             fold(s, args[10], args[3], args[4], tuple(args[5:8]))
         elif name == "rt_pinit":                                                       # IP z sk pm n0 n1 n2 p Tp
             expand(s, args[7], args[8])
-            if ST["ck"] and not getattr(s, "_x1in", False):
+            if ST["ck"] and not getattr(s, "_x13in", False):
                 _check_mg(s)
         elif name in ("rt_cg2", "rt_cg2_c"):                                           # IP SC sk pm n0 n1 n2 z p Tp [KTz]
             expand(s, args[8], args[9])
@@ -289,17 +289,17 @@ def _install_ao():
         elif name == "ws_lsup":                                                        # IP kn sk pm n0 n1 n2 yh eta dl y cmp
             ok(s, "x1_wslsup", s.capN, (P(s.IP), P(s.w8b), P(s.w8w), args[1], P(s.awtd), args[9], args[7], args[8], args[10]), 256)
             ST["nwslsup"] += 1
-            if ST["ck"] and not getattr(s, "_x1in", False):
+            if ST["ck"] and not getattr(s, "_x13in", False):
                 _check_inv(s, "ws_lsup")
         elif name in ("rt_lsup", "rt_lsup_c", "en_bt_fin"):
-            if ST["ck"] and not getattr(s, "_x1in", False):
+            if ST["ck"] and not getattr(s, "_x13in", False):
                 _check_inv(s, name)
         return r
 
     def ctl(s, op, it=0):
         r = oc(s, op, it)
         if op == 0:
-            s._x1ks = 0
+            s._x13ks = 0
         if op == 1 and on(s):
             ok(s, "rt_zero_i", s.capC, (i32(s.capC), P(s.w8ic)), 256)
             if ST["T"] in (1, 2):
@@ -311,7 +311,7 @@ def _install_ao():
             ST["nclass"] += 1
             _log(s, ok)
             if ST["ck"] and not torch.cuda.is_current_stream_capturing():
-                s._x1y0 = s.y.clone()
+                s._x13y0 = s.y.clone()
             if not ST["said"]:
                 ST["said"] = True
                 print(f"[절 CM83 ext1] 옛 실행기 확장 훅 -- 차수 {ST['D']} 내부 칸 정의 {ST['T']} 고립 {ST['X']}, 걸음 시작 분류·변수 바꿈 항등, rt_grad 접기 + |g|² 다시"
@@ -335,12 +335,12 @@ def _fin():
     rows = []
     for wr in _SOL:
         s = wr()
-        if s is None or getattr(s, "x1H", None) is None:
+        if s is None or getattr(s, "x13H", None) is None:
             continue
         try:
             torch.cuda.synchronize()
-            n = min(int(s.x1hp.item()), HCAP)
-            H = s.x1H[:n].cpu().tolist(); HF = s.x1HF[:n].cpu().tolist()
+            n = min(int(s.x13hp.item()), HCAP)
+            H = s.x13H[:n].cpu().tolist(); HF = s.x13HF[:n].cpu().tolist()
             for i in range(n):
                 c, m = H[i], HF[i]
                 mt = sum(m[:3])
@@ -459,12 +459,12 @@ def _gpu_fold(s, ok, v, nr):
 def _check_iter(s, ok):
     if ST["nck"] >= NCK or _skip(s):
         return
-    s._x1in = True
+    s._x13in = True
     s._g3chk_bk = getattr(s, "_g3chk", False); s._g3chk = True
-    out = dict(kind="iter", K=int(getattr(s, "K", 1)), ks=int(getattr(s, "_x1ks", 0)) - 1)
+    out = dict(kind="iter", K=int(getattr(s, "K", 1)), ks=int(getattr(s, "_x13ks", 0)) - 1)
     try:
         torch.cuda.synchronize()
-        a = s._x1g["args"]; nr = tuple(a[5:8]); it2 = a[2]
+        a = s._x13g["args"]; nr = tuple(a[5:8]); it2 = a[2]
         nn, ext, q, ww = _emap(s)
         out.update(nn=nn, next=int(ext.numel()))
         if nn <= 0 or ext.numel() == 0:
@@ -524,7 +524,7 @@ def _check_iter(s, ok):
         ST["ck_err"] = f"{type(e_).__name__}: {e_} | {traceback.format_exc()[-600:]}"
         out["err"] = ST["ck_err"]
     finally:
-        s._x1in = False
+        s._x13in = False
         s._g3chk = s._g3chk_bk
     _ckw(out)
 
@@ -554,7 +554,7 @@ _BK = ("y", "eta", "f", "B", "H", "r", "z", "p", "dl", "Tp", "Dinv", "g0buf", "S
 
 def _grad_at(s, ok, deta, nr):
     """η + deta (외부 노드는 펼친 증분) 에서 기울기 사슬 (요소 커널 + 벌점 훅 · 장벽 · rt_grad + 접기 훅) 을 다시 돌려 (접은 g, 원래 g) -> 상태 되돌림."""
-    R = getattr(s, "_x1rec", {}) or {}
+    R = getattr(s, "_x13rec", {}) or {}
     en = next((n for n in ("aq_elem", "ao_elem_s", "ao_elem") if n in R), None)
     if en is None:
         return None, None
@@ -577,7 +577,7 @@ def _grad_at(s, ok, deta, nr):
             s.bGn.zero_(); s.bKn.zero_()
             s.k("rt_bar_q", s.capQc * 8, R["rt_bar_q"])
             s.k("rt_bar_n", s.capN, R["rt_bar_n"], 256)
-        g = s._x1g
+        g = s._x13g
         ok(s, g["name"], s.capN, g["args"], 256)                                       # 원래 rt_grad (접기 전)
         g0 = -_v3(s.g0buf, nn).double().clone()
         k_ = type(s).k
@@ -591,17 +591,17 @@ def _grad_at(s, ok, deta, nr):
 
 
 def _check_inv(s, where):
-    if ST["ninv"] >= NINV or getattr(s, "_x1y0", None) is None or _skip(s):
+    if ST["ninv"] >= NINV or getattr(s, "_x13y0", None) is None or _skip(s):
         return
     try:
         torch.cuda.synchronize()
         nn, ext, q, ww = _emap(s)
         if ext.numel() == 0:
             return
-        d = _v3(s.y, nn).double() - _v3(s._x1y0, nn).double()
+        d = _v3(s.y, nn).double() - _v3(s._x13y0, nn).double()
         pred = (ww[:, :, None] * d[q]).sum(1)
         dev = float((d[ext] - pred).norm(dim=-1).max())
-        _ckw(dict(kind="inv", at=where, K=int(getattr(s, "K", 1)), ks=int(getattr(s, "_x1ks", 0)) - 1, next=int(ext.numel()), dev=dev, dmax=float(d.norm(dim=-1).max()),
+        _ckw(dict(kind="inv", at=where, K=int(getattr(s, "K", 1)), ks=int(getattr(s, "_x13ks", 0)) - 1, next=int(ext.numel()), dev=dev, dmax=float(d.norm(dim=-1).max()),
                   rel=dev / max(float(d.norm(dim=-1).max()), 1e-300)))
         ST["ninv"] += 1
     except Exception as e_:
