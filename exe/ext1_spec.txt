@@ -1,0 +1,65 @@
+# 절 CM83 묶음 ext1 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_ext1.sh). H6 = H5 (절 CM79) + S_구속·C + (K) P1X 강성 × κ + T1E2 (절 CM81 '@w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 1'),
+# H6np = H6 − 가벼움 벌점 × κ ('@l4 1 @l3 10 @l3sc 1 @l3fr 1' 뺌). 수박 판정·단독과 다른 씬 단독은 가벼운 판 '@s6l 1' (절 CM78·CM82 와 같음), 다른 씬 판정은 진단 판 (절 CM81 과 같음).
+# s0k 검사·연기: 수박 옛 실행기 이식 검사 '@x1ck 1' (그래프 밖 데움 record 에서 C1~C6) + 다른 씬 8 프레임
+s0k kcA M3 r H6 @x1ck 1 --frames 12
+s0k kcN M3 r H6np @x1ck 1 --frames 12
+s0k kgA M3 g H6 @s6l 1 --frames 8
+s0k kL L nd H6 --frames 8
+s0k kW W nd H6np --frames 8
+s0k kF F nd H6 --frames 8
+s0k kB B nd H6np --frames 8
+# s1: 두 판 x 다섯 씬 (수박 8 · 레고 4 · wolf 4 · ficus 2 · bread 2) + 렌더 포함 단독 (수박 a·b 두 번 = 4 회, 나머지 a·b)
+s1 gA_1 M3 g H6 @s6l 1
+s1 gA_2 M3 g H6 @s6l 1
+s1 gA_3 M3 g H6 @s6l 1
+s1 gA_4 M3 g H6 @s6l 1
+s1 gA_5 M3 g H6 @s6l 1
+s1 gA_6 M3 g H6 @s6l 1
+s1 gA_7 M3 g H6 @s6l 1
+s1 gA_8 M3 g H6 @s6l 1
+s1 oAL_1 L nd H6
+s1 oAL_2 L nd H6
+s1 oAL_3 L nd H6
+s1 oAL_4 L nd H6
+s1 oAW_1 W nd H6
+s1 oAW_2 W nd H6
+s1 oAW_3 W nd H6
+s1 oAW_4 W nd H6
+s1 oAF_1 F nd H6
+s1 oAF_2 F nd H6
+s1 oAB_1 B nd H6
+s1 oAB_2 B nd H6
+s1 gN_1 M3 g H6np @s6l 1
+s1 gN_2 M3 g H6np @s6l 1
+s1 gN_3 M3 g H6np @s6l 1
+s1 gN_4 M3 g H6np @s6l 1
+s1 gN_5 M3 g H6np @s6l 1
+s1 gN_6 M3 g H6np @s6l 1
+s1 gN_7 M3 g H6np @s6l 1
+s1 gN_8 M3 g H6np @s6l 1
+s1 oNL_1 L nd H6np
+s1 oNL_2 L nd H6np
+s1 oNL_3 L nd H6np
+s1 oNL_4 L nd H6np
+s1 oNW_1 W nd H6np
+s1 oNW_2 W nd H6np
+s1 oNW_3 W nd H6np
+s1 oNW_4 W nd H6np
+s1 oNF_1 F nd H6np
+s1 oNF_2 F nd H6np
+s1 oNB_1 B nd H6np
+s1 oNB_2 B nd H6np
+s1 xAM M3 z H6 @s6l 1
+s1 xAM2 M3 z H6 @s6l 1
+s1 xAL L z H6 @s6l 1
+s1 xAW W z H6 @s6l 1
+s1 xAF F z H6 @s6l 1
+s1 xAB B z H6 @s6l 1
+s1 xNM M3 z H6np @s6l 1
+s1 xNM2 M3 z H6np @s6l 1
+s1 xNL L z H6np @s6l 1
+s1 xNW W z H6np @s6l 1
+s1 xNF F z H6np @s6l 1
+s1 xNB B z H6np @s6l 1
+# s0m: 옛 실행기 MG 판 경로 검사 (수박을 MG 층 4 로; 판정 아님, rt_pinit 펼치기·r_o = 0·r·z > 0)
+s0m kcM M3 r H6 @x1ck 1 --mg_levels 4 --mg_nc 4 --frames 8
