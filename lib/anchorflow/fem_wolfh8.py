@@ -52,12 +52,13 @@ __global__ void w8_icell(const int* IP, const int* cb, const float* A, int* ic, 
     ic[(cb[c*3]*n1 + cb[c*3+1])*n2 + cb[c*3+2]] = 1;
     atomicAdd(&cnt[3], 1);
 }
-__global__ void w8_icell2(const int* IP, const int* cb, const int* occ, int* ic, int* cnt) {   // 내부 칸 정의 (t 1): 점유 칸 중 26 이웃 칸이 모두 점유 (칸 점유 집합의 위상 내부)
+__global__ void w8_icell2(const int* IP, const int* cb, const int* occ, int* ic, int* cnt, int face) {   // 내부 칸 정의 t 1: 점유 칸 중 26 이웃 칸이 모두 점유 (칸 점유 집합의 위상 내부), t 2 (face 1): 면 이웃 6 칸만
     int c = blockIdx.x*blockDim.x + threadIdx.x;
     if (IP[13] || c >= IP[11]) return;
     int n0 = IP[6]-2, n1 = IP[7]-2, n2 = IP[8]-2;
     int a0 = cb[c*3], b0 = cb[c*3+1], c0_ = cb[c*3+2];
     for (int a=a0-1;a<=a0+1;a++) for (int b=b0-1;b<=b0+1;b++) for (int d=c0_-1;d<=c0_+1;d++) {
+        if (face && (a != a0) + (b != b0) + (d != c0_) > 1) continue;
         if (a < 0 || b < 0 || d < 0 || a >= n0 || b >= n1 || d >= n2) return;
         if (!occ[(a*n1 + b)*n2 + d]) return; }
     ic[(a0*n1 + b0)*n2 + c0_] = 1;
@@ -226,8 +227,8 @@ def install(out, D=2, T=0):
             assert getattr(s, "nl", 1) > 1, "wolfh8: MG 판 (--mg_levels > 1) 만 (rt_grad 의 z·p 를 MG 가 다시 씀)"
             i32 = np.int32
             ok(s, "rt_zero_i", s.capC, (i32(s.capC), P(s.w8ic)), 256)
-            if ST["T"] == 1:
-                ok(s, "w8_icell2", s.capQc, (P(s.IP), P(s.cb), P(s.occ), P(s.w8ic), P(s.w8cnt)), 128)
+            if ST["T"] in (1, 2):
+                ok(s, "w8_icell2", s.capQc, (P(s.IP), P(s.cb), P(s.occ), P(s.w8ic), P(s.w8cnt), i32(1 if ST["T"] == 2 else 0)), 128)
             else:
                 ok(s, "w8_icell", s.capQc, (P(s.IP), P(s.cb), P(s.Aacc), P(s.w8ic), P(s.w8cnt)), 128)
             ok(s, "w8_class", s.capN, (P(s.IP), P(s.mn), P(s.w8ic), i32(ST["D"]), P(s.w8b), P(s.w8w), P(s.w8cnt), P(s.w8cf)), 256)
@@ -256,7 +257,7 @@ def install(out, D=2, T=0):
         ST["nstep"] += 1
         return r
     R.alloc, R.k, R.ctl, R.step = alloc, k, ctl, step
-    print(f"[절 CM81] wolfh8 켬 -- 확장 B-스플라인 차수 {ST['D']} (내부 칸 정의 {ST['T']}: 0 = 팔분 8 개 점유, 1 = 26 이웃 칸 모두 점유; 외부 노드 = 받침에 내부 칸 없는 활성 노드, 증분 아핀 확장)", flush=True)
+    print(f"[절 CM81] wolfh8 켬 -- 확장 B-스플라인 차수 {ST['D']} (내부 칸 정의 {ST['T']}: 0 = 팔분 8 개 점유, 1 = 26 이웃 칸 모두 점유, 2 = 면 이웃 6 칸 모두 점유; 외부 노드 = 받침에 내부 칸 없는 활성 노드, 증분 아핀 확장)", flush=True)
     import atexit
     atexit.register(_dump)
 
