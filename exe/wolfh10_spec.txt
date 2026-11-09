@@ -1,0 +1,39 @@
+# 절 CM89 묶음 wolfh10 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_wolfh10.sh). L = '@w10 1' 새 실행기 뒤집힘 없는 보폭 필터 (옛 실행기 --ls_inv --ls_end --y0u --y0l 정의, lib/anchorflow/fem_wolfh10.py).
+# H8L = H8 (= H9 wolf 계산, 절 CM85·CM87) + L, H5L = H5n (절 CM81 H5) + L. 수박 (옛 실행기) 은 손대지 않음.
+# s0k 연기: wolf 8 프레임 H8L · H5L, 레고 8 프레임 H8L (탄성 선탐색 경로)
+s0k kA W nd H8L --frames 8
+s0k kB W nd H5L --frames 8
+s0k kL L nd H8L --frames 8
+# s1: wolf 4 판씩 (첫 판 입자 F 덤프·가우스 점 J)
+s1 A_1 W nd H8L --dump_F --qjd
+s1 A_2 W nd H8L
+s1 A_3 W nd H8L
+s1 A_4 W nd H8L
+s1 B_1 W nd H5L --dump_F --qjd
+s1 B_2 W nd H5L
+s1 B_3 W nd H5L
+s1 B_4 W nd H5L
+# s2a·s2b: 회귀 (새 실행기 레고·ficus·bread 각 2 판) + 렌더 포함 벽시계 단독 (레고·ficus·bread·wolf, 한 카드에 a · b 두 회)
+s2a oAL_1 L nd H8L
+s2a oAL_2 L nd H8L
+s2a oAF_1 F nd H8L
+s2a oAF_2 F nd H8L
+s2a oAB_1 B nd H8L
+s2a oAB_2 B nd H8L
+s2a xAL L z H8L @s6l 1
+s2a xAF F z H8L @s6l 1
+s2a xAB B z H8L @s6l 1
+s2a xAW W z H8L @s6l 1
+s2b oBL_1 L nd H5L
+s2b oBL_2 L nd H5L
+s2b oBF_1 F nd H5L
+s2b oBF_2 F nd H5L
+s2b oBB_1 B nd H5L
+s2b oBB_2 B nd H5L
+s2b xBL L z H5L @s6l 1
+s2b xBF F z H5L @s6l 1
+s2b xBB B z H5L @s6l 1
+s2b xBW W z H5L @s6l 1
+# v: 영상 판 (덤프 + F -> 3DGS 렌더): wolf H8L · H5L 하나씩
+v vA W v H8L
+v vB W v H5L
