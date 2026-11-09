@@ -25,6 +25,11 @@
       다른 힘과 맞서 균형) 운동량은 작음 -- 무게 없이 섞으면 그 큰 가속도가 바닥 띠 무거운 칸 입자의 기억으로 건너가 다음 걸음 ŷ 를 누름.
       속도·위치·F G2P 는 그대로, 기억 a_n 의 건너감만. 새 문턱·클램프 없음. 진단 판에서는 같은 커널로 입자 버퍼 pM 도 만들어 'r' 경계에서
       J (Ut + c_a (a_M' − a_P')) (a_P' = 지금 pa 를 같은 P2G 로 옮긴 값) 와 가벼운 노드 몫을 봄.
+(R) --s14r 1 (결과 바뀜; 고침 R, H11 = H9 + R): 걸음 끝 가속도 기억에서 '덜 풀린 몫' 을 걷어냄 -- 절 CM88.1: 벌점 강성 판의 바닥 띠 무거운 칸
+      기억 2 배는 벌점 힘 (그 노드 몫 0) 이 아니라 PCG 5 번으로 덜 풀린 걸음의 잔차 (PCG 15 + 예산 끔이면 사라짐). 기억 a_{n+1} = (y − ys)/τ² 는 운동학 값이라
+      덜 풀린 y 의 오차 (y − y*)/τ² 를 그대로 담음. 고침: 마지막으로 돈 PCG 의 남은 선형 잔차 r (rt_grad 의 −g 에서 시작한 PCG 잔차, 버퍼 s.r) 에
+      같은 전처리 (블록 대각 D⁻¹ = (M/τ² + T B T)⁻¹, s.Dinv) 를 한 번 곱해 고착 투영 T 로 되돌린 δ = T D⁻¹ r (≈ y* − y) 로 기억만 a ← a + δ/τ².
+      속도·변위는 그대로 (그 걸음 풀이 그대로), 다음 걸음 관성 예측 ŷ 의 기억에만. 기억이 이미 0 인 노드는 그대로. 새 문턱·클램프 없음.
 (T) --s14ct 1 (결과 불변; 단독 판 시간 가르기): 프레임 끝 G2P (ao_g2p_a) 바로 뒤 그래프 안에서 제어 셈 CT (뉴턴 반복 CT[2] · PCG 반복 CT[3] · PCG 시작 CT[7] · 걸음 CT[6])
       를 장치 고리 버퍼에 차례로 복사 (작은 커널 하나, 호스트 동기화 없음) -> 끝에 <out>/s14ct.json (기록 순서 = 프레임·시도 순서; 그래프 밖 데움 record 포함).
 """
@@ -40,6 +45,7 @@ class C:
     dg = 0
     a = 0
     m = 0
+    rc = 0
     ct = 0
     log = None
     nend = 0
@@ -100,6 +106,17 @@ __global__ void s14_lshare(int N, const int* IP, const int* pb, const float* fx,
         for (int a=0;a<3;a++) s[a] += ww*ga[nid*3+a];
     }
     pl[p] = sqrtf(s[0]*s[0] + s[1]*s[1] + s[2]*s[2]);
+}
+// 고침 R: 기억 a += T D⁻¹ r / τ²  (기억이 남은 노드만)
+__global__ void s14_rc(const int* IP, const float* sk, const int* pm, float n0, float n1, float n2, const float* Dinv, const float* r, float it2, float* ga) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    bool kept = (ga[n*3] != 0.f) || (ga[n*3+1] != 0.f) || (ga[n*3+2] != 0.f);
+    if (!kept) return;
+    float z[3], t[3];
+    for (int a=0;a<3;a++) z[a] = Dinv[n*9+a*3]*r[n*3] + Dinv[n*9+a*3+1]*r[n*3+1] + Dinv[n*9+a*3+2]*r[n*3+2];
+    Tapply(sk[n], pm[n], n0, n1, n2, z, t);
+    for (int a=0;a<3;a++) { float v = t[a]*it2; if (v == v) ga[n*3+a] += v; }
 }
 __global__ void s14_zd(const int* IP, double* f) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
@@ -241,7 +258,19 @@ def _pen(s, mode, ap, fix):
         _fn(s, "s14_ap")(((capN + 255) // 256,), (256,), (_P(s.IP), _P(s.mn), _P(s._s14f), _P(s.gaA), _P(ap), np.int32(1 if fix else 0)))
 
 
+def _after_rc(s):
+    from . import fem_rt_cuda as RTC
+    capN = int(s.capN)
+    nr = s.floor["NR"] if getattr(s, "floor", None) else [0.0, 0.0, 1.0]
+    it2 = 1.0 / (float(s.tau) ** 2)
+    with RTC._Stream():
+        _fn(s, "s14_rc")(((capN + 255) // 256,), (256,), (_P(s.IP), _P(s.sk), _P(s.pm), *[np.float32(q) for q in nr], _P(s.Dinv), _P(s.r), np.float32(it2), _P(s.gaA)))
+    C.nrc = getattr(C, "nrc", 0) + 1
+
+
 def _after_end(s):
+    if C.rc:
+        _after_rc(s)
     if not (C.dg or C.a):
         return
     if getattr(s, "g3fm", None) is None or getattr(s, "_gpk", None) is None:
@@ -478,11 +507,11 @@ def _install_dg():
     S13.rdiag = rd
 
 
-def install(out, dg=0, a=0, ct=0, m=0):
+def install(out, dg=0, a=0, ct=0, m=0, rc=0):
     """실행기를 runpy 로 띄우는 순간 (speed13 설치 뒤 = 가장 바깥) 에 부름."""
-    C.out, C.dg, C.a, C.ct, C.m = out, int(dg), int(a), int(ct), int(m)
+    C.out, C.dg, C.a, C.ct, C.m, C.rc = out, int(dg), int(a), int(ct), int(m), int(rc)
     assert C.a in (0, 1, 2)
-    if C.dg or C.a or C.ct or C.m:
+    if C.dg or C.a or C.ct or C.m or C.rc:
         _install_src()
         _install_k()
     if C.dg:
@@ -504,7 +533,7 @@ def install(out, dg=0, a=0, ct=0, m=0):
             except Exception as e:
                 ctn = repr(e)[:200]
         with open(os.path.join(out, "s14info.json"), "w") as f_:
-            json.dump(dict(dg=C.dg, a=C.a, ct=C.ct, m=C.m, ng2pm=getattr(C, "ng2pm", 0), done=sorted(C.done), nend=C.nend, nfix=C.nfix, ng2p=C.ng2p, nct=getattr(C, "nct", 0), ctn=ctn, nrec=C.nrec, nerr=C.nerr), f_)
+            json.dump(dict(dg=C.dg, a=C.a, ct=C.ct, m=C.m, rc=C.rc, nrc=getattr(C, "nrc", 0), ng2pm=getattr(C, "ng2pm", 0), done=sorted(C.done), nend=C.nend, nfix=C.nfix, ng2p=C.ng2p, nct=getattr(C, "nct", 0), ctn=ctn, nrec=C.nrec, nerr=C.nerr), f_)
     _fin()
     atexit.register(_fin)
-    print(f"[절 CM88] speed14 켬 진단 {C.dg} 고침 A {C.a} 고침 M {C.m} 셈 T {C.ct}", flush=True)
+    print(f"[절 CM88] speed14 켬 진단 {C.dg} 고침 A {C.a} 고침 M {C.m} 고침 R {C.rc} 셈 T {C.ct}", flush=True)
