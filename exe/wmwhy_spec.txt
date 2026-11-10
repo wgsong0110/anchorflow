@@ -1,0 +1,16 @@
+# 절 CM97 묶음 wmwhy 판 목록 (exe/stab_wmwhy.sh): 단계 이름 셀 K 바닥 탄성 반환사상 PCG상한
+# 바탕 = 옛 실행기만 (감싸개 사슬 없음), 8 프레임, 모든 프레임 K 걸음, 뉴턴 40 · εN 1e-3 · εP 1e-2 (끝까지 수렴 쪽), 기록 --erec --nrec --ufrec --wsh_sv 3,4,5,6,8 + 탄성 F·속도 (exe/wmwhy_wrap.py)
+#   바닥: bar = 장벽 + 띠 고착 (--fl_bar --fl_bst 1 --y0eb, 우리 판) · slip = 노드 바닥 정답식 (GF bounding_box: 들어가는 법선 성분만 0, --floor_slip) · stick = 노드 바닥 전부 고착
+#   탄성: snh = Stable Neo-Hookean (우리 판) · nhb = GF NHB 그대로 (--elx 없음)
+#   반환 사상: gq = 가우스 점 RM + 입자 F·logJp 보간 교체 (--fp_interp --lj_interp, 우리 판) · pp = 입자별 RM (G2P 걸음마다 입자 F ← RM(ΔF F), 보간 교체 없음)
+# 큰 판 먼저 (셀 1)
+s1 B1 1 16 bar snh gq 200
+s1 S1 1 16 slip snh gq 200
+s1 B2 2 16 bar snh gq 150
+s1 S2 2 16 slip snh gq 150
+s1 B3 3 16 bar snh gq 100
+s1 B3k32 3 32 bar snh gq 100
+s1 S3 3 16 slip snh gq 100
+s1 X3 3 16 stick snh gq 100
+s1 N3 3 16 bar nhb gq 100
+s1 P3 3 16 bar snh pp 100
