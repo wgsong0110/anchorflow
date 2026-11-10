@@ -1,5 +1,6 @@
 # 절 CM100 묶음 gpl 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_gpl.sh). '@gpl q' = P1X 강성·고스트 질량 면 가중 q λ_A (lib/anchorflow/fem_gpl.py; λ = 절 CM73 (A),
 # q = γ̄_P/γ̄ (γ̄ 0.1): A = q 1 (γ̄_P 0.1), B = q 10 (γ̄_P 1)). 바탕 H5 (H5n, 확장 없음, κ 강성 빼기 없음). 모든 씬 같은 정의 (레고·ficus m̄ 0 -> λ ≡ 0).
+# (연기 판정: 프레임 시작 ~ 첫 바닥 노드 커널 사이 벌점 커널 수 0 -- m̄ 0 씬 (레고·ficus) 은 가중이 그 앞뒤 모두 0 이라 판정에서 뺌; 첫 판 13ef1f5 는 레고·ficus 첫 프레임 1 회로 실패 표식)
 # s0k 연기 8 프레임: wolf A·B · 수박 A (진단 판 g) · 수박 A 가벼운 판 (exe/s6 실행기) · bread A · ficus A · 레고 A
 s0k kWA W nd H5n @gpl 1 --frames 8
 s0k kWB W nd H5n @gpl 10 --frames 8
