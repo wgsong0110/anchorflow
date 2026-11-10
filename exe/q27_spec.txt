@@ -16,6 +16,9 @@ s0k kL27 L nd H5n @q27 1 --frames 8
 s0k kF27 F nd H5n @q27 1 --frames 8
 s0k kB27 B nd H5n @q27 1 --frames 8
 s0k kW5 W nd H5n @q27 0 --frames 8
+# s0mk 연기 (수박 다시, 프레임 점검을 x_orig 에): 27 점 H5 · 벌점 끔
+s0mk kM27b M3 g H5n @q27 1 --frames 8 --dump
+s0mk kM27zb M3 g H5z @q27 1 --frames 8
 # s1: wolf 판마다 4 판 동시 (빈 카드), 입자 F 덤프 -- P = 3x3x3 + H5, Z = 3x3x3 + 벌점 끔, C = 대조 H5 2x2x2
 s1 wP_1 W nd H5n @q27 1 --dump_F
 s1 wP_2 W nd H5n @q27 1 --dump_F
