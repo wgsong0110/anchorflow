@@ -44,3 +44,8 @@ s2 dW_3 W nd TC @tcdg 2
 s2 dW_4 W nd TC @tcdg 2
 s2 dSL_1 L nd T9S @tcm 0 @tcdg 2
 s2 dSL_2 L nd T9S @tcm 0 @tcdg 2
+# s3 (조정자 11-10): ficus·bread 비교 영상 칸 -- T9S·TC 를 같은 명령 + 덤프 (v = --dump --dump_F --dump_part + 3DGS 렌더), 정답·H9 칸은 기존 (fem3_ficus gt · edgep gtvid/hF/hB)
+s3 vSF F v T9S @tcm 0
+s3 vSB B v T9S @tcm 0
+s3 vCF F v TC
+s3 vCB B v TC
