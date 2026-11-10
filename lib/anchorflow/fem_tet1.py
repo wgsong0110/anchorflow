@@ -113,18 +113,54 @@ def _sub_fn(src, name, pat, rep, cnt):
     return src
 
 
+def _bodies(src):
+    """모든 __global__/__device__ 함수 본문 [시작, 끝) (뒤에서부터 바꾸려고 순서대로)."""
+    out = []
+    for m in re.finditer(r"(?:__global__|__device__)[\w\s]*?void\s+(?:__launch_bounds__\(\d+\)\s+)?(\w+)\s*\(", src):
+        i = src.find("{", m.end())
+        if i < 0:
+            continue
+        d, j = 0, i
+        while j < len(src):
+            if src[j] == "{":
+                d += 1
+            elif src[j] == "}":
+                d -= 1
+                if d == 0:
+                    break
+            j += 1
+        if j < len(src):
+            out.append((m.group(1), i, j + 1))
+    return out
+
+
 def transform(src):
-    """사면체 기저로 바꾼 소스와 규칙별 적용 수. 대상 글자가 없는 모듈은 그대로."""
+    """사면체 기저로 바꾼 소스와 규칙별 적용 수. 대상 글자가 없는 모듈은 그대로.
+    입자 가중 (bwf 줄·27 곱·기울기) 은 bwf 를 부르는 함수 본문 안에서만 바꿈 (정답 격자 B-스플라인 커널 -- 예 fem_wolfh5 w5s_acc -- 은 그대로)."""
     cnt = {}
     s = src
-    for nm, (r, new) in dict(bwf=(R_BWF, NEW_BWF), bwf3=(R_BWF3, NEW_BWF), grad=(R_GRAD, NEW_GRAD), prod=(R_PROD, NEW_PROD),
-                             oc=(R_OC, None), tri=(R_TRI, NEW_TRI)).items():
-        if nm == "oc":
-            s, n = r.subn(lambda m_: "af_tt(fx + (size_t)(" + m_.group(1) + "))", s)
-        else:
-            s, n = r.subn(new, s)
-        if n:
-            cnt[nm] = n
+    left = []
+    for name, a, b in reversed(_bodies(s)):
+        body = s[a:b]
+        n1 = n2 = 0
+        body, n1 = R_BWF.subn(NEW_BWF, body)
+        body, n2 = R_BWF3.subn(NEW_BWF, body)
+        if not (n1 or n2):
+            continue
+        body, n3 = R_GRAD.subn(NEW_GRAD, body)
+        body, n4 = R_PROD.subn(NEW_PROD, body)
+        for k_, v_ in (("bwf", n1), ("bwf3", n2), ("grad", n3), ("prod", n4)):
+            if v_:
+                cnt[k_] = cnt.get(k_, 0) + v_
+        if "bwf(fx" in body or re.search(r"(?<![\w])(w|wx)\[[012]\]\[[ijk]\]", body) or re.search(r"(?<![\w])dw\[[012]\]", body):
+            left.append(name)
+        s = s[:a] + body + s[b:]
+    s, n = R_OC.subn(lambda m_: "af_tt(fx + (size_t)(" + m_.group(1) + "))", s)
+    if n:
+        cnt["oc"] = n
+    s, n = R_TRI.subn(NEW_TRI, s)
+    if n:
+        cnt["tri"] = n
     for fn in ("rt_coord",):
         s = _sub_fn(s, fn, r"floorf\(y - 0\.5f\)", "floorf(y)", cnt)
     for fn in ("rt_gauss",):
@@ -135,15 +171,12 @@ def transform(src):
     s = _sub_fn(s, "gq_pq", r"\]\*0\.125f", "]*AF_TVW(q & 7)", cnt)
     cnt = {k: v for k, v in cnt.items() if v}
     if cnt:
-        left = []
         if "bwf(fx" in s:
             left.append("bwf(fx")
         if re.search(r"fx\[p\*3\] >= 1\.f", s):
             left.append("oc")
         if "? t[0] : 1.f - t[0]" in s:
             left.append("tri")
-        if re.search(r"(?<![\w])(w|wx)\[[012]\]\[[ijk]\]", s):
-            left.append("w[..][i] 남음")
         if left:
             raise RuntimeError(f"[절 CM102 tet1] 바꾸지 못한 B-스플라인 글자: {left} (규칙 {cnt})")
         k = s.index('extern "C" {') + len('extern "C" {') if 'extern "C" {' in s else 0

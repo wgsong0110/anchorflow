@@ -1,12 +1,13 @@
 # 절 CM102 묶음 tet1 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_tet1.sh). H9 = 절 CM86 공통 판, T9 = H9 − B-스플라인 전용 (P1X ghost penalty · 가벼움 벌점 · (K) · 확장) + 사면체 일차 기저 (@tet 1),
 # T9S = T9 + 희소 사면체 처리 (점유 가중 κ 1). 방식: h 결정적 (--det --fhash), nd·g 진단, d 덤프, v 덤프 + 3DGS 영상, z 렌더 포함 단독 a·b.
-# s0h: 끈 판 = H9 확인 (결정적 8 프레임, 같은 명령 두 번 + tet1_wrap --tet 0; 해시 대조는 판정 안 막음)
-s0h hL0 L h H9 --frames 8
-s0h hL0b L h H9 --frames 8
-s0h hL1 L h H9 @tet 0 --frames 8
-s0h hW0 W h H9 --frames 8
-s0h hW0b W h H9 --frames 8
-s0h hW1 W h H9 @tet 0 --frames 8
+# s0h: 끈 판 확인 (결정적 8 프레임, 같은 명령 두 번 + tet1_wrap --tet 0; 해시 대조는 판정 안 막음). H9 자체는 P1X (γ̄ 0.1) 때문에 결정적 판이 안 됨 (ghost3 assert, 9e42f93 s0h)
+# -> H9nb = H9 − B-스플라인 전용 (T9 와 같은 사슬, 기저만 그대로) 로 대조
+s0h hL0 L h H9nb --frames 8
+s0h hL0b L h H9nb --frames 8
+s0h hL1 L h H9nb @tet 0 --frames 8
+s0h hW0 W h H9nb --frames 8
+s0h hW0b W h H9nb --frames 8
+s0h hW1 W h H9nb @tet 0 --frames 8
 # s0k 연기 8 프레임 (실패면 뒤 단계 안 함)
 s0k kM0 M3 g H9 @tet 0 @s6l 1 --frames 8
 s0k kTL L nd T9 --frames 8
