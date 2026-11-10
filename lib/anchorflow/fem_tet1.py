@@ -188,6 +188,16 @@ def transform(src):
     return s, cnt
 
 
+def transform_oct8(src):
+    """절 CM102 X9 (사용자 11-10): 이차 B-스플라인 그대로, 옛 실행기 (--gq_mass 없음) 팔분 가우스 점 부피·질량에 점유 가중 κ
+    = (1 − κ) 팔분 칸 입자 몫 + κ / 8 (새 실행기 --gq_oct 와 같은 식) -- T9 와 같은 κ 를 쓰기 위함."""
+    cnt = {}
+    kap = float(os.environ["AF_TET1_OCT"])
+    s = _sub_fn(src, "rt_gauss", r"Vq\[q\] = ac\[28\]\*0\.125f; float mm = ac\[29\]\*0\.125f;",
+                "float tvw_ = (1.f - %.9ef)*aq[27]/ac[28] + %.9ef/8.f; Vq[q] = ac[28]*tvw_; float mm = ac[29]*tvw_;" % (kap, kap), cnt)
+    return s, {k: v for k, v in cnt.items() if v}
+
+
 def tables(Ai):
     """BW [8*27], BG [8*27*3] (월드 기울기 = 격자 기울기 @ Ai, 원래 표와 같은 꼴)."""
     Ai64 = np.asarray(Ai, dtype=np.float64)
@@ -260,6 +270,13 @@ def install(out, mode):
             if isinstance(code, str):
                 h0 = hashlib.sha1(code.encode()).hexdigest()[:12]
                 rec = dict(n=len(INFO["mods"]), sha=h0)
+                if INFO["mode"] == 0 and os.environ.get("AF_TET1_OCT"):                 # X9 (B-스플라인 대조) 수박: 점유 가중 κ 만 (팔분 /8 식)
+                    code2, cnt = transform_oct8(code)
+                    rec.update(rules=cnt, sha_x9=hashlib.sha1(code2.encode()).hexdigest()[:12])
+                    if "code" in kw:
+                        kw["code"] = code2
+                    else:
+                        a[0] = code2
                 if INFO["mode"] == 1:
                     try:
                         code2, cnt = transform(code)

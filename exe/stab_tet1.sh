@@ -40,7 +40,7 @@ dfl() { local s=$1 x=" $2 "
   local W8="@w5s 1 @w5c 1 @w8k 1 @w8e 1 @w8d 2 @w8t 1"                                       # 절 CM83: H6 = H5 + S_구속·C + (K) + T1E2 (절 CM81 T1E2 판 글자 그대로), H6np = H6 − 가벼움 벌점 × κ (KAP)
   x="${x// H8N / H8 @w11 1 }"; x="${x// H5KN / H5n @w8k 1 @w11 1 }"                             # 절 CM91: N = 노드별 뒤집힘 보폭 (옛 --ws_bar 4 --ws_fi 정의), H5KN = H5n + P1X 강성 × κ (확장 없음) + N
   x="${x// H9a / H8 @w9 1 }"; x="${x// H9b / H8 @w9 2 }"                                          # 절 CM87
-  x="${x// T9S / H9 @tet 1 @tnob 1 @tsp 1 }"; x="${x// T9 / H9 @tet 1 @tnob 1 }"; x="${x// H9nb / H9 @tnob 1 }"; x="${x// H9 / H8 @s13x 1 }"   # 절 CM102: T9 = H9 − B-스플라인 전용 + 사면체 기저, T9S = T9 + 희소 사면체 처리; H9 = H8 + X (절 CM86)
+  x="${x// X9 / H9 @tet 0 @tnob 1 }"; x="${x// T9S / H9 @tet 1 @tnob 1 @tsp 1 }"; x="${x// T9 / H9 @tet 1 @tnob 1 }"; x="${x// H9nb / H9 @tnob 1 }"; x="${x// H9 / H8 @s13x 1 }"   # 절 CM102: T9 = H9 − B-스플라인 전용 + 사면체 기저, T9S = T9 + 희소 사면체 처리; H9 = H8 + X (절 CM86)
   x="${x// H6np / H5nP $W8 }"; x="${x// H6 / H5n $W8 }"; x="${x// H7np / H5nP $W8 }"; x="${x// H8 / H5n $W8 @s12z 1 }"; x="${x// H7 / H5n $W8 }"   # 절 CM84: H7 = H6 와 같은 글자, 감싸개 ext2 가 κ 로 확장을 고름
   case $s in M*) ;; *) [[ "$x" == *" H4n "* || "$x" == *" H5n"* ]] && x="$x --cap_mul 4";; esac  # 새 실행기 첫 할당 배수 4 (절 CM72 H2) -- 속도 판에만 (Gk = 절 CM75 판은 없음)
   local SPD="@s6o 1 @s6b 1 @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s9c 1 @s9y 1" KAP="@l4 1 @l3 10 @l3sc 1 @l3fr 1"   # 절 CM81: H5 = H4 + C·Y; R = 벽시계 예산 Rw '@s6rw 1', X = X3g '@s8g 1e6'
@@ -145,7 +145,7 @@ run() {   # run 이름 씬 방식 카드 플래그
   [ "${rr:-0}" = 1 ] && hx="$hx $(rr_of $s) $w4"
   [[ " $5 " == *" T9S "* ]] && c="${c/--gq_oct 0.1 /--gq_oct 1 }"                                # 절 CM102 T9S 새 실행기: 점유 가중 κ 0.1 -> 1
   local toct=""
-  if [ $s = M3 ] && [[ "$tet" == *"--tet 1"* ]]; then                                       # 절 CM102 (조정자 11-10): 수박 사면체 판 = 입자 -> 자기 사면체 λ 4 노드 질량·운동량 (--gq_mass 끔), HHT ρ 0.8 (다른 씬과 같게),
+  if [ $s = M3 ] && [[ " $5 " == *" T9 "* || " $5 " == *" T9S "* || " $5 " == *" X9 "* ]]; then   # X9 = T9 에서 --tet 0 (이차 B-스플라인) 만 다름                                       # 절 CM102 (조정자 11-10): 수박 사면체 판 = 입자 -> 자기 사면체 λ 4 노드 질량·운동량 (--gq_mass 끔), HHT ρ 0.8 (다른 씬과 같게),
     c="${c/ --gq_mass / }"; c="${c/ --gq_oct 0 / }"; c="${c/--rho 0.7 /--rho 0.8 }"; c="${c/--sp2 31/--sp2 23}"   # --sp2 비트 8 (점->노드 칸 모으기, 결과 불변 가속) 은 --gq_mass 판 전용 -> 뺌      #   점유 가중 κ 는 tet1_wrap --toct (옛 실행기는 --gq_mass 없이 --gq_oct 경로가 없음): T9 0.1 · T9S 1 (새 실행기와 같은 값)
     toct="--toct 0.1"; [[ " $5 " == *" T9S "* ]] && toct="--toct 1"
   fi   # 절 CM102 T9S: 점유 가중 κ (새 실행기 0.1 · 수박 0) -> 1 (칸 입자 부피·질량을 6 사면체에 고르게)

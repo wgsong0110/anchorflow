@@ -90,5 +90,20 @@ s1x vH9L L v H9
 # 조정자 11-10: 레고 사면체 판 메모리 발산 원인 진단 (결과 불변 기록 판, 수정 없음): nd 진단 + 뉴턴 반복별 기록 (--nrec) + 가우스 점 det 반복별 (--wdiag 0), 대조 = 같은 사슬 B-스플라인 기저 (H9nb = T9 − 사면체, 벌점 없는 H9)
 s1x dLT L nd T9 --nrec --wdiag 0 --frames 20
 s1x dLB L nd H9nb --nrec --wdiag 0 --frames 20
-s1x dLB2 L nd H9nb
-s1x dLB3 L nd H9nb
+# 사용자 11-10: 육면체 대조 X9 = T9 에서 --tet 0 만 (이차 B-스플라인, B-스플라인 전용 장치 끔, 수박 --gq_mass 끔·ρ 0.8·κ 0.1 (--toct, 팔분 /8 식)·--sp2 23)
+s1x xW_1 W v X9
+s1x xW_2 W d X9
+s1x xW_3 W d X9
+s1x xW_4 W d X9
+s1x xM_1 M3 v X9 @s6l 1
+s1x xM_2 M3 d X9 @s6l 1
+s1x xM_3 M3 d X9 @s6l 1
+s1x xM_4 M3 d X9 @s6l 1
+s1x xM_5 M3 d X9 @s6l 1
+s1x xM_6 M3 d X9 @s6l 1
+s1x xM_7 M3 d X9 @s6l 1
+s1x xM_8 M3 d X9 @s6l 1
+s1x xL_1 L nd X9
+s1x xL_2 L nd X9
+s1x xL_3 L nd X9
+s1x xL_4 L nd X9

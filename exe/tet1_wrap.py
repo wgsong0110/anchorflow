@@ -22,7 +22,7 @@ while argv and argv[0] in ("--tet", "--toct"):
     else:
         os.environ["AF_TET1_OCT"] = argv[1]                                        # 옛 실행기 사면체 점유 가중 κ (--gq_mass 없는 수박 판)
     del argv[:2]
-if MODE == 1:
+if MODE == 1 or os.environ.get("AF_TET1_OCT"):
     os.environ["AF_TET1"] = "1"                                                     # 옛 실행기 CM30 assert: --gq_mass 없이 --ws_bar 허용
 if MODE is not None:
     from anchorflow import fem_tet1 as TET
