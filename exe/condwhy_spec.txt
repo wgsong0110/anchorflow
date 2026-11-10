@@ -1,33 +1,33 @@
 # 절 CM98 묶음 condwhy 판 목록: 단계 이름 씬 방식 글자 (exe/stab_condwhy.sh). 세 항: e = 확장 T1E2 (@w8e·@w8d·@w8t), k = P1X 강성 × κ (@w8k), s = S_구속·C (@w5s·@w5c); 이름 꼬리 = 남긴 항 (H8 = eks, 0 = 셋 다 뺌, @s12z 는 모두 그대로); h5 = H5n (대조)
 # 진단 공통 D = @tb 1000 @nxit 1 --tolN 1e-5 (절 CM96 과 같음); A = --newton 25 --cg 100 --tolP 1e-6 (모든 반복 끊김 셈), P = --newton 2 --cg 400 --tolP 1e-8 (첫 반복 κ); 상태 8 = 절 CM96 저장 판 sv8 (H8), 5 = sv5 (H5n)
-c0k kE W x H8 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 1
-c0k k0 W x H8 @noext 1 @nok 1 @nosc 1 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 1
-c1 A8_eks W x H8 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A8_ks W x H8 @noext 1 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A8_es W x H8 @nok 1 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A8_ek W x H8 @nosc 1 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A8_s W x H8 @noext 1 @nok 1 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A8_k W x H8 @noext 1 @nosc 1 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A8_e W x H8 @nok 1 @nosc 1 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A8_0 W x H8 @noext 1 @nok 1 @nosc 1 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A8_h5 W x H5n @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A5_eks W x H8 @cwload /dev/shm/dkta/condwhy_st/sv5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A5_ks W x H8 @noext 1 @cwload /dev/shm/dkta/condwhy_st/sv5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A5_es W x H8 @nok 1 @cwload /dev/shm/dkta/condwhy_st/sv5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A5_ek W x H8 @nosc 1 @cwload /dev/shm/dkta/condwhy_st/sv5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A5_s W x H8 @noext 1 @nok 1 @cwload /dev/shm/dkta/condwhy_st/sv5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A5_k W x H8 @noext 1 @nosc 1 @cwload /dev/shm/dkta/condwhy_st/sv5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A5_e W x H8 @nok 1 @nosc 1 @cwload /dev/shm/dkta/condwhy_st/sv5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A5_0 W x H8 @noext 1 @nok 1 @nosc 1 @cwload /dev/shm/dkta/condwhy_st/sv5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A5_h5 W x H5n @cwload /dev/shm/dkta/condwhy_st/sv5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 A8_eksW W x H8 @w13 1 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
-c1 P8_eks W x H8 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
-c1 P8_ks W x H8 @noext 1 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
-c1 P8_es W x H8 @nok 1 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
-c1 P8_ek W x H8 @nosc 1 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
-c1 P8_s W x H8 @noext 1 @nok 1 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
-c1 P8_k W x H8 @noext 1 @nosc 1 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
-c1 P8_e W x H8 @nok 1 @nosc 1 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
-c1 P8_0 W x H8 @noext 1 @nok 1 @nosc 1 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
-c1 P8_h5 W x H5n @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
-c1 P8_eksW W x H8 @w13 1 @cwload /dev/shm/dkta/condwhy_st/sv8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
+c0k kE W x H8 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 1
+c0k k0 W x H8 @noext 1 @nok 1 @nosc 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 1
+c1 A8_eks W x H8 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A8_ks W x H8 @noext 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A8_es W x H8 @nok 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A8_ek W x H8 @nosc 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A8_s W x H8 @noext 1 @nok 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A8_k W x H8 @noext 1 @nosc 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A8_e W x H8 @nok 1 @nosc 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A8_0 W x H8 @noext 1 @nok 1 @nosc 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A8_h5 W x H5n @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A5_eks W x H8 @cwload 5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A5_ks W x H8 @noext 1 @cwload 5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A5_es W x H8 @nok 1 @cwload 5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A5_ek W x H8 @nosc 1 @cwload 5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A5_s W x H8 @noext 1 @nok 1 @cwload 5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A5_k W x H8 @noext 1 @nosc 1 @cwload 5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A5_e W x H8 @nok 1 @nosc 1 @cwload 5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A5_0 W x H8 @noext 1 @nok 1 @nosc 1 @cwload 5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A5_h5 W x H5n @cwload 5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 A8_eksW W x H8 @w13 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+c1 P8_eks W x H8 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
+c1 P8_ks W x H8 @noext 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
+c1 P8_es W x H8 @nok 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
+c1 P8_ek W x H8 @nosc 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
+c1 P8_s W x H8 @noext 1 @nok 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
+c1 P8_k W x H8 @noext 1 @nosc 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
+c1 P8_e W x H8 @nok 1 @nosc 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
+c1 P8_0 W x H8 @noext 1 @nok 1 @nosc 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
+c1 P8_h5 W x H5n @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
+c1 P8_eksW W x H8 @w13 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
