@@ -32,3 +32,10 @@ s2 PX3 3 16 stick snh pp 100 40 -
 s2 PN3 3 16 bar nhb pp 100 40 -
 s2 B3w 3 16 bar snh gq 100 40 --gq_oct,0,--ws_bar,4,--ws_fi
 s2 B3n6 3 16 bar snh gq 100 6 -
+# s2 결과 (7189a3c): pp 판은 셀 1·1.5 에서 f4 에 몸이 멈춤 (운동 5.82 → 0.00 J, 걸음 15/16 덜 풀림, 보폭 최소 1e-8~1e-15, 잔차 비 1e2~1e9), 셀 2·3 pp·gq 대부분 비유한; B3w (우리 판 필터) 만 gq 로 완주하나 걸음 7/16 덜 풀림 (잔차 비 0.83~0.97 에서 멈춤).
+# s3: 덜 풀림이 반환 사상 (RM 을 모르는 탄성 접선) 탓인지 가르기 -- 같은 판에서 RM 끔 (--no_rm, 탄성만; 진단) + B3w 다시 (비결정 흩어짐)
+s3 B3we 3 16 bar snh gq 100 40 --gq_oct,0,--ws_bar,4,--ws_fi,--no_rm
+s3 B3w2 3 16 bar snh gq 100 40 --gq_oct,0,--ws_bar,4,--ws_fi
+s3 B2w 2 16 bar snh gq 100 20 --gq_oct,0,--ws_bar,4,--ws_fi
+s3 B15w 1.5 16 bar snh gq 100 20 --gq_oct,0,--ws_bar,4,--ws_fi
+s3 B3wn 3 16 bar nhb gq 100 40 --gq_oct,0,--ws_bar,4,--ws_fi
