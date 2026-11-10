@@ -164,14 +164,22 @@ __global__ void __launch_bounds__(128) t2_band(const int* IP, const int* cb, con
     }
     if (kq > 0) atomicMax(&TI[1], kq);
 }
-// ACC: 0 반복 확인 수 · 1 보폭 자른 수 (a < 1) · 2 최소 a · 3 시작점 섞은 수 · 4 시작점 최소 a · 5 det 근으로 자른 수 · 6 띠로 더 줄인 수 · 7 실현 가능 후보 없음 · 8 시작점 이미 뒤집힌 점 최대
+// ACC: 0 반복 확인 수 · 1 보폭 자른 수 (a < 1) · 2 최소 a · 3 시작점 섞은 수 · 4 시작점 최소 a · 5 det 근으로 자른 수 · 6 띠로 더 줄인 수 · 7 실현 가능 후보 없음
+//      8 시작점 기준이 뒤집힌 점 최대 · 9 관성 예측 기준이 뒤집혀 y = 0 기준으로 섞은 수
+// start: 0 반복 경계, 1 시작점 (기준 = 걸음 시작 관성 예측 Ũ), 2 시작점 대체 (기준 = y 0; 1 의 기준에 뒤집힌 점이 있을 때만 씀)
 __global__ void t2_pick(int* TI, float* T, double* ACC, int start, int apply, int nc) {
+    if (start == 2 && T[2] == 0.f) { T[0] = 1.f; TI[0] = __float_as_int(2.f); TI[1] = 0; TI[2] = 0; return; }
     float ad = __int_as_float(TI[0]); float a0 = fminf(1.f, 0.9f*ad); int k = TI[1];
     float a = (k >= nc) ? 0.f : ldexpf(a0, -k);
-    T[0] = apply ? a : 1.f; T[1] = a;
-    ACC[0] += 1.0; if (a < 1.f) ACC[1] += 1.0; ACC[2] = fmin(ACC[2], (double)a);
-    if (a0 < 1.f) ACC[5] += 1.0; if (k > 0) ACC[6] += 1.0; if (k >= nc) ACC[7] += 1.0;
-    if (start) { if (a < 1.f) ACC[3] += 1.0; ACC[4] = fmin(ACC[4], (double)a); ACC[8] = fmax(ACC[8], (double)TI[2]); }
+    bool use = true;
+    if (start == 1) { T[2] = (float)TI[2]; use = (TI[2] == 0); }
+    T[0] = (apply && use) ? a : 1.f; T[1] = a;
+    if (use) {
+        ACC[0] += 1.0; if (a < 1.f) ACC[1] += 1.0; ACC[2] = fmin(ACC[2], (double)a);
+        if (a0 < 1.f) ACC[5] += 1.0; if (k > 0) ACC[6] += 1.0; if (k >= nc) ACC[7] += 1.0;
+        if (start) { if (a < 1.f) ACC[3] += 1.0; ACC[4] = fmin(ACC[4], (double)a); ACC[8] = fmax(ACC[8], (double)TI[2]); }
+        if (start == 2) ACC[9] += 1.0;
+    }
     TI[0] = __float_as_int(2.f); TI[1] = 0; TI[2] = 0;
 }
 __global__ void t2_apply(const int* IP, const float* T, const float* ya, const float* ea, float* y, float* eta) {
@@ -185,15 +193,15 @@ __global__ void t2_copy(const int* IP, const float* y, const float* eta, float* 
     if (n >= IP[9]) return;
     for (int c=0;c<3;c++) { size_t i = (size_t)n*3+c; ya[i] = y[i]; ea[i] = eta[i]; }
 }
-// 기준점 (rt_ga_y0 와 같은 식, U = 0): y = ŷ + T η 꼴로 y = 0 에 가장 가까운 점 (고정 노드 pm 2 는 지금 값 그대로)
-__global__ void t2_ref(const int* IP, const float* yh, const float* sk, const int* pm, float n0, float n1, float n2, float* ea, float* ya) {
+// 기준점 (rt_ga_y0 와 같은 식, 목표 Ur (없으면 0)): y = ŷ + T η 꼴로 목표에 가장 가까운 점 (고정 노드 pm 2 는 지금 값 그대로)
+__global__ void t2_ref(const int* IP, const float* Ur, const float* yh, const float* sk, const int* pm, float n0, float n1, float n2, float* ea, float* ya) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= IP[9]) return;
     int p = pm[n];
     if (p == 2) return;
     float s = sk[n];
     float isk = (s > 1e-6f) ? 1.f/s : 0.f;
-    float dd[3]; for (int a=0;a<3;a++) dd[a] = -yh[n*3+a];
+    float dd[3]; for (int a=0;a<3;a++) dd[a] = (Ur ? Ur[n*3+a] : 0.f) - yh[n*3+a];
     float e[3];
 #if defined(AF_FSTK) || defined(AF_FUP)
     if (p < 0) { float sn_ = __int_as_float(-p - 1); float isn_ = (sn_ > 1e-6f) ? 1.f/sn_ : 0.f;
@@ -240,7 +248,7 @@ __global__ void __launch_bounds__(128) t2_diag(const int* IP, const int* cb, con
 }
 __global__ void t2_rowfin(int* TI, const double* ACC, double* R, int maxrow) {
     int r = TI[10]; if (r >= maxrow) r = maxrow - 1;
-    for (int k=0;k<9;k++) R[r*24+9+k] = ACC[k];
+    for (int k=0;k<10;k++) R[r*24+9+k] = ACC[k];
     TI[11] += 1; if (TI[10] < maxrow - 1) TI[10] += 1; else TI[12] += 1;
 }
 '''
@@ -352,7 +360,7 @@ class Hook:
         dev = s.y.device
         TI = torch.zeros(16, dtype=torch.int32, device=dev); TI[0] = int(np.float32(2.0).view(np.int32))
         old = h.buf
-        h.buf = dict(ya=torch.zeros_like(s.y), ea=torch.zeros_like(s.eta), TI=TI, T=torch.ones(4, dtype=torch.float32, device=dev),
+        h.buf = dict(ya=torch.zeros_like(s.y), ea=torch.zeros_like(s.eta), yi=torch.zeros_like(s.y), ei=torch.zeros_like(s.eta), TI=TI, T=torch.ones(4, dtype=torch.float32, device=dev),
                      ACC=torch.zeros(16, dtype=torch.float64, device=dev), R=torch.zeros(MAXROW * NR_, dtype=torch.float64, device=dev),
                      RI=torch.zeros(MAXROW * 4, dtype=torch.int32, device=dev))
         if old is not None:                                                                 # 다시 할당 (용량 2 배): 행 버퍼 이어서
@@ -383,18 +391,19 @@ class Hook:
     def check(h, start):
         s, B = h.s, h.buf
         i32, f32 = np.int32, np.float32
-        if start:
-            h.L("t2_copy", h.nn(), (_P(s.IP), _P(s.y), _P(s.eta), _P(B["ya"]), _P(B["ea"])), 256)
-            fl = getattr(s, "floor", None)
-            nr = fl["NR"] if fl else [0.0, 0.0, 1.0]
-            h.L("t2_ref", h.nn(), (_P(s.IP), _P(s.yh), _P(s.sk), _P(s.pm), f32(nr[0]), f32(nr[1]), f32(nr[2]), _P(B["ea"]), _P(B["ya"])), 256)
-        qa = (_P(s.IP), _P(s.cb), _P(s.BG), _P(s.Fq), _P(s.Vq), _P(B["ya"]), _P(s.y), _P(B["TI"]))
-        h.L("t2_cap", h.nq(), qa, 128)
-        h.L("t2_band", h.nq(), qa + (i32(NC),), 128)
         ap = 1 if CFG["mode"] == 1 else 0
-        h.L("t2_pick", 1, (_P(B["TI"]), _P(B["T"]), _P(B["ACC"]), i32(1 if start else 0), i32(ap), i32(NC)), 1)
-        if ap:
-            h.L("t2_apply", h.nn(), (_P(s.IP), _P(B["T"]), _P(B["ya"]), _P(B["ea"]), _P(s.y), _P(s.eta)), 256)
+        fl = getattr(s, "floor", None)
+        nr = fl["NR"] if fl else [0.0, 0.0, 1.0]
+        for st in ((1, 2) if start else (0,)):
+            if st:                                                                          # 기준점: 1 = 걸음 시작 관성 예측 (yi), 2 = y 0
+                h.L("t2_copy", h.nn(), (_P(s.IP), _P(s.y), _P(s.eta), _P(B["ya"]), _P(B["ea"])), 256)
+                h.L("t2_ref", h.nn(), (_P(s.IP), _P(B["yi"]) if st == 1 else _P(None), _P(s.yh), _P(s.sk), _P(s.pm), f32(nr[0]), f32(nr[1]), f32(nr[2]), _P(B["ea"]), _P(B["ya"])), 256)
+            qa = (_P(s.IP), _P(s.cb), _P(s.BG), _P(s.Fq), _P(s.Vq), _P(B["ya"]), _P(s.y), _P(B["TI"]))
+            h.L("t2_cap", h.nq(), qa, 128)
+            h.L("t2_band", h.nq(), qa + (i32(NC),), 128)
+            h.L("t2_pick", 1, (_P(B["TI"]), _P(B["T"]), _P(B["ACC"]), i32(st), i32(ap), i32(NC)), 1)
+            if ap:
+                h.L("t2_apply", h.nn(), (_P(s.IP), _P(B["T"]), _P(B["ya"]), _P(B["ea"]), _P(s.y), _P(s.eta)), 256)
 
     def snap(h):
         s, B = h.s, h.buf
@@ -417,6 +426,7 @@ class Hook:
                 h.k0(name, n, args, b)
                 h._alloc()
                 h.L("t2_acc0", 1, (_P(h.buf["ACC"]),), 1)
+                h.L("t2_copy", h.nn(), (_P(s.IP), _P(s.y), _P(s.eta), _P(h.buf["yi"]), _P(h.buf["ei"])), 256)   # 걸음 시작 관성 예측 Ũ (시작점 기준)
                 h.phase = 1
                 hk["step0:" + name] = hk.get("step0:" + name, 0) + 1
                 return
@@ -460,10 +470,11 @@ class Hook:
             r = R[i]
             rows.append(dict(nq=int(r[0]), ndet=int(r[1]), nband=int(r[2]), nlo=int(r[3]), nhi=int(r[4]), Eb=float(r[5]), ninf=int(r[6]), Eh=float(r[7]), nact=int(r[8]),
                              nchk=int(r[9]), ncap=int(r[10]), amin=float(r[11]), nstart=int(r[12]), astart=float(r[13]), ndetcap=int(r[14]), nbandcap=int(r[15]),
-                             nnofeas=int(r[16]), ninv0=int(r[17]), dmin=fk(RI[i][0]), smin=fk(RI[i][1]), smax=fk(RI[i][2]), pbmax=fk(RI[i][3])))
+                             nnofeas=int(r[16]), ninv0=int(r[17]), nfb=int(r[18]), dmin=fk(RI[i][0]), smin=fk(RI[i][1]), smax=fk(RI[i][2]), pbmax=fk(RI[i][3])))
         h.f.write(json.dumps(dict(c=h.ncall, t=float(t), steps=rows, over=int(TI[12]))) + "\n"); h.f.flush()
         h.ncall += 1
         B["TI"][10:13].zero_()
+        _dump()
 
 
 def _install_hook(s):
@@ -546,5 +557,5 @@ def summarize(path):
     return dict(nstep=len(S), steps_det=sum(r["ndet"] > 0 for r in S), max_ndet=max(r["ndet"] for r in S), min_det=min(r["dmin"] for r in S),
                 steps_band=sum(r["nband"] > 0 for r in S), max_nband=max(r["nband"] for r in S), min_s=min(r["smin"] for r in S), max_s=max(r["smax"] for r in S),
                 nchk=sum(r["nchk"] for r in S), ncap=sum(r["ncap"] for r in S), amin=min(r["amin"] for r in S), nstart=sum(r["nstart"] for r in S),
-                nnofeas=sum(r["nnofeas"] for r in S), eb_share_max=max((r["Eb"] / (r["Eb"] + r["Eh"]) if (r["Eb"] + r["Eh"]) > 0 else 0.0) for r in S),
+                nnofeas=sum(r["nnofeas"] for r in S), nfb=sum(r.get("nfb", 0) for r in S), eb_share_max=max((r["Eb"] / (r["Eb"] + r["Eh"]) if (r["Eb"] + r["Eh"]) > 0 else 0.0) for r in S),
                 eb_share_mean=float(np.mean([(r["Eb"] / (r["Eb"] + r["Eh"]) if (r["Eb"] + r["Eh"]) > 0 else 0.0) for r in S])), ninf=sum(r["ninf"] for r in S))
