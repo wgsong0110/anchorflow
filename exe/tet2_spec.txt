@@ -105,3 +105,24 @@ s1c qF_1 F nd T9S @t2 2
 s1c qF_2 F nd T9S @t2 2
 s1c qB_1 B nd T9S @t2 2
 s1c qB_2 B nd T9S @t2 2
+# s1d (판 r, 조정자 11-10 정정): 프레임 사상 ΔF = X F_q⁻¹ 의 특이값이 [s_lo, s_hi] (단계 g2, 정답 프레임 간 ΔF) 밖일 때만 부드러운 벌점 κ V Σ max(0,·)² ('@t2 3'), det 장벽·보폭·시작점 섞기 없음, 기록 켬
+s1d rW_1 W v T9S @t2 3
+s1d rW_2 W d T9S @t2 3
+s1d rW_3 W d T9S @t2 3
+s1d rW_4 W d T9S @t2 3
+s1d rM_1 M3 v T9S @t2 3 @s6l 1
+s1d rM_2 M3 d T9S @t2 3 @s6l 1
+s1d rM_3 M3 d T9S @t2 3 @s6l 1
+s1d rM_4 M3 d T9S @t2 3 @s6l 1
+s1d rM_5 M3 d T9S @t2 3 @s6l 1
+s1d rM_6 M3 d T9S @t2 3 @s6l 1
+s1d rM_7 M3 d T9S @t2 3 @s6l 1
+s1d rM_8 M3 d T9S @t2 3 @s6l 1
+s1d rL_1 L v T9S @t2 3
+s1d rL_2 L nd T9S @t2 3
+s1d rL_3 L nd T9S @t2 3
+s1d rL_4 L nd T9S @t2 3
+s1d rF_1 F nd T9S @t2 3
+s1d rF_2 F nd T9S @t2 3
+s1d rB_1 B nd T9S @t2 3
+s1d rB_2 B nd T9S @t2 3

@@ -24,20 +24,20 @@ import numpy as np
 
 NC = 16
 MAXROW = 64
-NR_ = 24
+NR_ = 32
 STEP0 = {"rt_step0", "rt_step0g", "rt_ga_step0", "ao_step0_ga"}
 ENDK = {"rt_stepend", "rt_stepend_g", "rt_ga_end", "rt_ga_end_uf", "rt_ga_end_ufl", "ao_stepend_ga", "ao_stepend_th", "ao_stepend_uf", "ao_stepend_ufl", "en_stepend"}
 ELEM = {"rt_elem": 8, "ao_elem": 9, "ao_elem_s": 9, "aq_elem": None}                 # 이름: 모드 인자 자리 (None = 모드 없음, 늘 기울기)
 
-CFG = dict(mode=None, slo=None, shi=None, dlo=None, dhi=None, ja=None, c=1.0, dg=1)
+CFG = dict(mode=None, slo=None, shi=None, dlo=None, dhi=None, ja=None, c=1.0, dg=1, s3lo=0.0, s3hi=1e30)
 INFO = dict(mode=None, mods=[], hooks={}, err=None, solvers=[])
 OUT = ["."]
 
 
 def defs():
     c = CFG
-    return ("\n#define AF_T2 %d\n#define AF_T2_SLO %.9e\n#define AF_T2_SHI %.9e\n#define AF_T2_DLO %.9e\n#define AF_T2_DHI %.9e\n#define AF_T2_JA %.9e\n#define AF_T2_C %.9e\n"
-            % (int(c["mode"]), c["slo"], c["shi"], c["dlo"], c["dhi"], c["ja"], c["c"]))
+    return ("\n#define AF_T2 %d\n#define AF_T2_SLO %.9e\n#define AF_T2_SHI %.9e\n#define AF_T2_DLO %.9e\n#define AF_T2_DHI %.9e\n#define AF_T2_JA %.9e\n#define AF_T2_C %.9e\n#define AF_T3_SLO %.9e\n#define AF_T3_SHI %.9e\n"
+            % (int(c["mode"]), c["slo"], c["shi"], c["dlo"], c["dhi"], c["ja"], c["c"], c["s3lo"], c["s3hi"]))
 
 
 DEV = r'''
@@ -83,6 +83,43 @@ __device__ __forceinline__ void t2_btf(const float* S, double kap, int i, int j,
     double si = S[i], sj = S[j];
     double den = si + sj; if (fabs(den) > 1e-12) *lt += (float)((g[i] + g[j])/den);
     double dd = si - sj; *lf += (fabs(dd) > 1e-6*(fabs(si) + fabs(sj))) ? (float)((g[i] - g[j])/dd) : (float)(D[i*4] - D[i*3+j]);
+}
+// ---- 절 CM103 판 r (모드 3, 조정자 11-10 정정): 프레임 사상 립시츠 벌점 -- ΔF = X F_q⁻¹ = I + Σ y ⊗ ∇λ (프레임 시작 꼭짓점 -> 지금 꼭짓점 사상의 기울기, 사면체 상수)
+//   E = κ V Σ_i [max(0, σ_i(ΔF) − s_hi)² + max(0, s_lo − σ_i(ΔF))²] (범위 안 0, 장벽 아님). 힘 = V P_r F_q⁻ᵀ (P_r = U diag(∂/∂σ) Vᵀ of ΔF, X 응력 자리에 더함),
+//   헤시안 = 위로 덮는 상수 2κ ‖F_q⁻¹‖_F² I (벌점이 걸린 점만; ΔF 공간 벌점 헤시안 고윳값 ≤ 2κ) -- 주값 D 대각과 λ_t·λ_f 에 더함.
+__device__ void ssvdf(const float* X, float* U, float* S, float* V);
+__device__ __forceinline__ void t3_dF(const float* X, const float* F, float* D, double* Fi) {
+    double f[9]; for (int k=0;k<9;k++) f[k] = F[k];
+    double c0 = f[4]*f[8]-f[5]*f[7], c1 = f[5]*f[6]-f[3]*f[8], c2 = f[3]*f[7]-f[4]*f[6];
+    double det = f[0]*c0 + f[1]*c1 + f[2]*c2, id = (det != 0.0) ? 1.0/det : 0.0;
+    Fi[0] = c0*id; Fi[1] = (f[2]*f[7]-f[1]*f[8])*id; Fi[2] = (f[1]*f[5]-f[2]*f[4])*id;
+    Fi[3] = c1*id; Fi[4] = (f[0]*f[8]-f[2]*f[6])*id; Fi[5] = (f[2]*f[3]-f[0]*f[5])*id;
+    Fi[6] = c2*id; Fi[7] = (f[1]*f[6]-f[0]*f[7])*id; Fi[8] = (f[0]*f[4]-f[1]*f[3])*id;
+    for (int a=0;a<3;a++) for (int b=0;b<3;b++) D[a*3+b] = (float)((double)X[a*3]*Fi[b] + (double)X[a*3+1]*Fi[3+b] + (double)X[a*3+2]*Fi[6+b]);
+}
+__device__ __forceinline__ double t3_pen(double s, double* d1) {
+    if (s > AF_T3_SHI) { *d1 = 2.0*(s - AF_T3_SHI); return (s - AF_T3_SHI)*(s - AF_T3_SHI); }
+    if (s < AF_T3_SLO) { *d1 = -2.0*(AF_T3_SLO - s); return (AF_T3_SLO - s)*(AF_T3_SLO - s); }
+    *d1 = 0.0; return 0.0;
+}
+__device__ __noinline__ double t3_e(const float* X, const float* F, double kap) {
+    float D[9], U[9], S[3], V[9]; double Fi[9]; t3_dF(X, F, D, Fi); ssvdf(D, U, S, V);
+    double e = 0.0, d1; for (int i=0;i<3;i++) e += t3_pen(S[i], &d1);
+    return kap*e;
+}
+__device__ __noinline__ void t3_P(const float* X, const float* F, double kap, float* P, float sc) {
+    float D[9], U[9], S[3], V[9]; double Fi[9]; t3_dF(X, F, D, Fi); ssvdf(D, U, S, V);
+    double g[3], any = 0.0; for (int i=0;i<3;i++) { t3_pen(S[i], &g[i]); g[i] *= kap; any += fabs(g[i]); }
+    if (any == 0.0) return;
+    double Pr[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) Pr[a*3+b] = U[a*3]*g[0]*V[b*3] + U[a*3+1]*g[1]*V[b*3+1] + U[a*3+2]*g[2]*V[b*3+2];
+    for (int a=0;a<3;a++) for (int b=0;b<3;b++) P[a*3+b] += sc*(float)(Pr[a*3]*Fi[b*3] + Pr[a*3+1]*Fi[b*3+1] + Pr[a*3+2]*Fi[b*3+2]);
+}
+__device__ __noinline__ float t3_c(const float* X, const float* F, double kap) {
+    float D[9], U[9], S[3], V[9]; double Fi[9]; t3_dF(X, F, D, Fi); ssvdf(D, U, S, V);
+    bool act = false; for (int i=0;i<3;i++) if (S[i] > AF_T3_SHI || S[i] < AF_T3_SLO) act = true;
+    if (!act) return 0.f;
+    double n2 = 0.0; for (int k=0;k<9;k++) n2 += Fi[k]*Fi[k];
+    return (float)(2.0*kap*n2);
 }
 #endif
 '''
@@ -223,8 +260,8 @@ __global__ void t2_acc0(double* ACC) { for (int k=0;k<16;k++) ACC[k] = 0.0; ACC[
 __device__ __forceinline__ int t2_key(float f) { int b = __float_as_int(f); return (b >= 0) ? b : (b ^ 0x7fffffff); }
 __global__ void t2_rowinit(const int* TI, double* R, int* RI, int maxrow) {
     int r = TI[10]; if (r >= maxrow) r = maxrow - 1;
-    for (int k=0;k<24;k++) R[r*24+k] = 0.0;
-    RI[r*4] = 0x7fffffff; RI[r*4+1] = 0x7fffffff; RI[r*4+2] = (int)0x80000000; RI[r*4+3] = (int)0x80000000;
+    for (int k=0;k<32;k++) R[r*32+k] = 0.0;
+    RI[r*8] = 0x7fffffff; RI[r*8+1] = 0x7fffffff; RI[r*8+2] = (int)0x80000000; RI[r*8+3] = (int)0x80000000; RI[r*8+4] = 0x7fffffff; RI[r*8+5] = (int)0x80000000;
 }
 __device__ __forceinline__ double t2_ws(double v) { for (int o=16;o>0;o>>=1) v += __shfl_down_sync(0xffffffffu, v, o); return v; }
 __device__ __forceinline__ float t2_wmin(float v) { for (int o=16;o>0;o>>=1) v = fminf(v, __shfl_down_sync(0xffffffffu, v, o)); return v; }
@@ -234,7 +271,7 @@ __device__ __forceinline__ float t2_wmax(float v) { for (int o=16;o>0;o>>=1) v =
 __global__ void __launch_bounds__(128) t2_diag(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* y, float mu, float lam, const int* TI, double* R, int* RI, int maxrow) {
     int q = blockIdx.x*blockDim.x + threadIdx.x;
     bool on = q < IP[12] && Vq[q < IP[12] ? q : 0] > 0.f;
-    double c[9] = {0,0,0,0,0,0,0,0,0}; float dmin = 3e38f, smin = 3e38f, smax = -3e38f, pmax = -3e38f;
+    double c[9] = {0,0,0,0,0,0,0,0,0}; float dmin = 3e38f, smin = 3e38f, smax = -3e38f, pmax = -3e38f; float S3[3], d3lo = 3e38f, d3hi = -3e38f; double c3 = 0.0;
     if (on) {
         double X[9]; float S[3]; t2_X(q, IP, cb, BG, Fq, y, X); t2_sv(X, S);
         double vq = Vq[q], J = (double)S[0]*S[1]*S[2], kap = AF_T2_C*(2.0*(double)mu + (double)lam);
@@ -247,11 +284,16 @@ __global__ void __launch_bounds__(128) t2_diag(const int* IP, const int* cb, con
             c[7] = vq*((double)mu*(l0*l0 + l1*l1 + l2*l2) + 0.5*(double)lam*lj*lj); }
         c[8] = (!isfinite(eb) || eb > 0.0) ? 1.0 : 0.0;
         dmin = (float)J; smin = S[2]; smax = S[0];
+        float Ff[9], Xf[9], Dd[9], Uu[9], Vv[9]; double Fi[9];                             // 프레임 사상 ΔF = X F_q⁻¹ (판 r 범위, 모든 판 기록)
+        for (int k=0;k<9;k++) { Ff[k] = Fq[(size_t)q*9+k]; Xf[k] = (float)X[k]; }
+        t3_dF(Xf, Ff, Dd, Fi); ssvdf(Dd, Uu, S3, Vv);
+        d3lo = S3[2]; d3hi = S3[0]; c3 = (S3[2] < (float)AF_T3_SLO || S3[0] > (float)AF_T3_SHI) ? 1.0 : 0.0;
     }
     int r = TI[10]; if (r >= maxrow) r = maxrow - 1;
-    for (int k=0;k<9;k++) { double v = t2_ws(c[k]); if ((threadIdx.x & 31) == 0 && v != 0.0) atomicAdd(&R[r*24+k], v); }
-    dmin = t2_wmin(dmin); smin = t2_wmin(smin); smax = t2_wmax(smax); pmax = t2_wmax(pmax);
-    if ((threadIdx.x & 31) == 0) { atomicMin(&RI[r*4], t2_key(dmin)); atomicMin(&RI[r*4+1], t2_key(smin)); atomicMax(&RI[r*4+2], t2_key(smax)); atomicMax(&RI[r*4+3], t2_key(pmax)); }
+    for (int k=0;k<9;k++) { double v = t2_ws(c[k]); if ((threadIdx.x & 31) == 0 && v != 0.0) atomicAdd(&R[r*32+k], v); }
+    dmin = t2_wmin(dmin); smin = t2_wmin(smin); smax = t2_wmax(smax); pmax = t2_wmax(pmax); d3lo = t2_wmin(d3lo); d3hi = t2_wmax(d3hi); c3 = t2_ws(c3);
+    if ((threadIdx.x & 31) == 0) { atomicMin(&RI[r*8], t2_key(dmin)); atomicMin(&RI[r*8+1], t2_key(smin)); atomicMax(&RI[r*8+2], t2_key(smax)); atomicMax(&RI[r*8+3], t2_key(pmax));
+        atomicMin(&RI[r*8+4], t2_key(d3lo)); atomicMax(&RI[r*8+5], t2_key(d3hi)); if (c3 != 0.0) atomicAdd(&R[r*32+23], c3); }
 }
 // 걸음 끝 갱신 뒤 U (입자 F 갱신에 쓰이는 걸음 끝 변위) 의 X = F_q + ∇U F_q: det ≤ 0 · 띠 밖 점 수 -> R 21·22
 __global__ void __launch_bounds__(128) t2_diagU(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* U, const int* TI, double* R, int maxrow) {
@@ -262,11 +304,11 @@ __global__ void __launch_bounds__(128) t2_diagU(const int* IP, const int* cb, co
         c0 = ((double)S[0]*S[1]*S[2] <= 0.0) ? 1.0 : 0.0; c1 = (S[2] < (float)AF_T2_SLO || S[0] > (float)AF_T2_SHI) ? 1.0 : 0.0; }
     int r = TI[10]; if (r >= maxrow) r = maxrow - 1;
     c0 = t2_ws(c0); c1 = t2_ws(c1);
-    if ((threadIdx.x & 31) == 0) { if (c0 != 0.0) atomicAdd(&R[r*24+21], c0); if (c1 != 0.0) atomicAdd(&R[r*24+22], c1); }
+    if ((threadIdx.x & 31) == 0) { if (c0 != 0.0) atomicAdd(&R[r*32+21], c0); if (c1 != 0.0) atomicAdd(&R[r*32+22], c1); }
 }
 __global__ void t2_rowfin(int* TI, const double* ACC, double* R, int maxrow) {
     int r = TI[10]; if (r >= maxrow) r = maxrow - 1;
-    for (int k=0;k<12;k++) R[r*24+9+k] = ACC[k];
+    for (int k=0;k<12;k++) R[r*32+9+k] = ACC[k];
     TI[11] += 1; if (TI[10] < maxrow - 1) TI[10] += 1; else TI[12] += 1;
 }
 '''
@@ -299,8 +341,32 @@ R_JAC = r"(?<![\w.])jac3f\(D, Ev\);"
 R_VQ = r"(?<![\w.])float vq = on \? Vq\[qq\] : 0\.f;"
 
 
+def _rules3(name):
+    """판 r (모드 3): 프레임 사상 ΔF 립시츠 벌점 (에너지·응력·위로 덮는 헤시안)."""
+    base = re.sub(r"_c$", "", name)
+    k = KAP_PRM if base == "aq_elem" else KAP_ML
+    C = "{ float c3_ = t3_c(X, F, %s); for (int i3_=0;i3_<3;i3_++) D[i3_][i3_] += c3_; } jac3f(D, Ev);" % k
+    T = "{ float c3_ = t3_c(X, F, %s); lt += c3_; lf += c3_; } lt = isfinite(lt) ? fmaxf(lt, 0.f) : 0.f;" % k
+    L3 = "for (int a=0;a<3;a++) for (int b=0;b<3;b++) "
+    PE = "P[a*3+b] = U[a*3]*ph[0]*V[b*3] + U[a*3+1]*ph[1]*V[b*3+1] + U[a*3+2]*ph[2]*V[b*3+2];"
+    PM = "Pm[a*3+b] = U[a*3]*p[0]*V[b*3] + U[a*3+1]*p[1]*V[b*3+1] + U[a*3+2]*p[2]*V[b*3+2];"
+    PS = "Pm[a*3+b] = vq*(U[a*3]*p[0]*V[b*3] + U[a*3+1]*p[1]*V[b*3+1] + U[a*3+2]*p[2]*V[b*3+2]);"
+    if base == "rt_elem":
+        return [("E", r"(?<![\w.])blocksum_add\(e, E\);", "if (on && vq > 0.f) e += (double)vq*t3_e(X, F, %s); blocksum_add(e, E);" % k),
+                ("P", re.escape(L3 + PE), L3 + PE + " t3_P(X, F, %s, P, 1.f);" % k), ("D", R_JAC, C), ("T", R_LT, T)]
+    if base == "rt_elem_lsN":
+        return [("E", r"(?<![\w.])blocksum_add\(en, &SC\[40\+i\]\);", "if (on && vq > 0.f) en += (double)vq*t3_e(X, F, %s); blocksum_add(en, &SC[40+i]);" % k)]
+    if base in ("ao_elem", "aq_elem"):
+        return [("P", re.escape(L3 + PM), L3 + PM + " t3_P(X, F, %s, Pm, 1.f);" % k), ("D", R_JAC, C), ("T", R_LT, T)]
+    if base == "ao_elem_s":
+        return [("P", re.escape(L3 + PS), L3 + PS + " t3_P(X, F, %s, Pm, vq);" % k), ("D", R_JAC, C), ("T", R_LT, T)]
+    return None
+
+
 def _rules(name):
     """함수 이름 -> [(규칙 이름, 정규식, 바꿈)]."""
+    if CFG["mode"] == 3:
+        return _rules3(name)
     base = re.sub(r"_c$", "", name)
     if base == "rt_elem":
         k = KAP_ML
@@ -380,7 +446,7 @@ class Hook:
         old = h.buf
         h.buf = dict(ya=torch.zeros_like(s.y), ea=torch.zeros_like(s.eta), yi=torch.zeros_like(s.y), ei=torch.zeros_like(s.eta), TI=TI, T=torch.ones(4, dtype=torch.float32, device=dev),
                      ACC=torch.zeros(16, dtype=torch.float64, device=dev), R=torch.zeros(MAXROW * NR_, dtype=torch.float64, device=dev),
-                     RI=torch.zeros(MAXROW * 4, dtype=torch.int32, device=dev))
+                     RI=torch.zeros(MAXROW * 8, dtype=torch.int32, device=dev))
         if old is not None:                                                                 # 다시 할당 (용량 2 배): 행 버퍼 이어서
             h.buf["TI"].copy_(old["TI"]); h.buf["R"].copy_(old["R"]); h.buf["RI"].copy_(old["RI"]); h.buf["ACC"].copy_(old["ACC"])
         if h.mu is None:
@@ -409,7 +475,7 @@ class Hook:
     def check(h, start):
         s, B = h.s, h.buf
         i32, f32 = np.int32, np.float32
-        ap = 1 if CFG["mode"] >= 1 else 0
+        ap = 1 if CFG["mode"] in (1, 2) else 0                                         # 판 r (모드 3) 은 보폭·시작점 섞기 없음 (벌점만), 기록만
         fl = getattr(s, "floor", None)
         nr = fl["NR"] if fl else [0.0, 0.0, 1.0]
         for st in ((1, 2) if start else (0,)):
@@ -485,7 +551,7 @@ class Hook:
         nr = int(TI[10]) + (1 if TI[12] > 0 else 0)
         nr = min(nr, MAXROW)
         R = B["R"][:nr * NR_].view(nr, NR_).cpu().numpy() if nr else np.zeros((0, NR_))
-        RI = B["RI"][:nr * 4].view(nr, 4).cpu().numpy() if nr else np.zeros((0, 4), np.int32)
+        RI = B["RI"][:nr * 8].view(nr, 8).cpu().numpy() if nr else np.zeros((0, 8), np.int32)
 
         def fk(k):
             k = int(k)
@@ -496,7 +562,7 @@ class Hook:
             r = R[i]
             rows.append(dict(nq=int(r[0]), ndet=int(r[1]), nband=int(r[2]), nlo=int(r[3]), nhi=int(r[4]), Eb=float(r[5]), ninf=int(r[6]), Eh=float(r[7]), nact=int(r[8]),
                              nchk=int(r[9]), ncap=int(r[10]), amin=float(r[11]), nstart=int(r[12]), astart=float(r[13]), ndetcap=int(r[14]), nbandcap=int(r[15]),
-                             nnofeas=int(r[16]), ninv0=int(r[17]), nfb=int(r[18]), nfq_det=int(r[19]), nfq_band=int(r[20]), nU_det=int(r[21]), nU_band=int(r[22]), dmin=fk(RI[i][0]), smin=fk(RI[i][1]), smax=fk(RI[i][2]), pbmax=fk(RI[i][3])))
+                             nnofeas=int(r[16]), ninv0=int(r[17]), nfb=int(r[18]), nfq_det=int(r[19]), nfq_band=int(r[20]), nU_det=int(r[21]), nU_band=int(r[22]), n3=int(r[23]), d3lo=fk(RI[i][4]), d3hi=fk(RI[i][5]), dmin=fk(RI[i][0]), smin=fk(RI[i][1]), smax=fk(RI[i][2]), pbmax=fk(RI[i][3])))
         h.f.write(json.dumps(dict(c=h.ncall, t=float(t), steps=rows, over=int(TI[12]))) + "\n"); h.f.flush()
         h.ncall += 1
         B["TI"][10:13].zero_()
@@ -519,10 +585,12 @@ def _install_hook(s):
         s.step = step
 
 
-def install(out, mode, band, c=1.0, dg=1):
+def install(out, mode, band, c=1.0, dg=1, band3=None):
     import cupy as cp
     OUT[0] = out
     CFG.update(mode=int(mode), slo=band[0], shi=band[1], dlo=band[2], dhi=band[3], ja=band[4], c=float(c), dg=int(dg))
+    if band3:
+        CFG.update(s3lo=float(band3[0]), s3hi=float(band3[1]))
     INFO.update(mode=int(mode), cfg=dict(CFG))
     try:
         os.remove(os.path.join(out, "t2.jsonl"))
@@ -566,7 +634,7 @@ def install(out, mode, band, c=1.0, dg=1):
                 _install_hook(s)
             init._tet2 = True
             C.__init__ = init
-    print(f"[절 CM103] tet2 켬 -- 모드 {mode} ({'장벽·보폭' if mode == 1 else ('특이값 띠 장벽만 (det 장벽·det 보폭 뺌)' if mode == 2 else '기록만 (결과 불변)')}), 띠 σ [{band[0]:.4f}, {band[1]:.4f}] 활성 폭 {band[2]:.4f}·{band[3]:.4f}, "
+    print(f"[절 CM103] tet2 켬 -- 모드 {mode} ({'장벽·보폭' if mode == 1 else ('특이값 띠 장벽만 (det 장벽·det 보폭 뺌)' if mode == 2 else ('프레임 사상 ΔF 립시츠 벌점 [%g, %g] (장벽·보폭 없음)' % (CFG['s3lo'], CFG['s3hi']) if mode == 3 else '기록만 (결과 불변)'))}), 띠 σ [{band[0]:.4f}, {band[1]:.4f}] 활성 폭 {band[2]:.4f}·{band[3]:.4f}, "
           f"det 활성 {band[4]:.4f}, κ = {c} (2μ+λ), 기록 {dg}", flush=True)
     _dump()
 

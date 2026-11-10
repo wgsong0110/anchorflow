@@ -154,7 +154,9 @@ run() {   # run 이름 씬 방식 카드 플래그
   c="exe/speed13_wrap.py $s13 exe/speed12_wrap.py $s12 exe/ext2_wrap.py $w8 $l4 $l3 $w5x $s9 $s8 $s7 $s5 $mf $wf $hx $wg $w5 $w3 $w2 $wo $c"; [ -n "$tet" ] && c="exe/tet1_wrap.py $tet $toct $c"
   if [ -n "$t2" ]; then local dg_=1; [ $md = z ] && dg_=0                                       # 절 CM103: 단독 (시간) 판은 기록 끔 (프레임마다 동기화 없음)
     local tb_; tb_=$(band_of $s) || { log "$n 띠 없음 (단계 g 먼저)"; return; }
-    c="exe/tet2_wrap.py --t2 $t2 --t2b $tb_ --t2dg $dg_ $c"; fi
+    local t3_=""; [ -s $O/gtdf_$s.json ] && t3_="--t3b $($PY -c "import json; b=json.load(open('$O/gtdf_$s.json'))['band3']; print('%.6e,%.6e' % (b['slo'], b['shi']))")"   # 절 CM103 판 r: 정답 프레임 간 ΔF 범위 (단계 g2)
+    [ "$t2" = 3 ] && [ -z "$t3_" ] && { log "$n ΔF 범위 없음 (단계 g2 먼저)"; return; }
+    c="exe/tet2_wrap.py --t2 $t2 --t2b $tb_ $t3_ --t2dg $dg_ $c"; fi
   rm -rf $O/$n; mkdir -p $O/$n; echo "$pre $PY -u $c --out $O/$n" > $O/$n/cmd.txt
   nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader > $O/$n/apps_at_start.txt 2>&1; echo "카드 $g 계산 프로세스 $(nvidia-smi -i $g --query-compute-apps=pid --format=csv,noheader | grep -c .)" >> $O/$n/apps_at_start.txt; nvidia-smi --query-gpu=index,uuid,utilization.gpu,memory.used --format=csv,noheader >> $O/$n/apps_at_start.txt; cat /proc/loadavg >> $O/$n/apps_at_start.txt
   shm_wait
@@ -184,6 +186,17 @@ run() {   # run 이름 씬 방식 카드 플래그
     done
   ) > /dev/null 2>&1 < /dev/null & disown; }
 band_of() { local f=$O/gtsv_$1.json; [ -s $f ] || return 1; $PY -c "import json; b=json.load(open('$f'))['band']; print('%.6e,%.6e,%.6e,%.6e,%.6e' % (b['slo'], b['shi'], b['dlo'], b['dhi'], b['ja']))"; }
+if [ $STG = g2 ]; then                                                                        # 절 CM103 단계 g2: 정답 프레임 간 ΔF 특이값 -> 판 r 범위 (씬마다 빈 카드, 동시)
+  for sc in L W M3 F B; do
+    ( me=$BASHPID; g=$(claim_wait $me)
+      case $sc in L) D_=$SD/L000.pt; c_=1; n_=80; x_="";; W) D_=$AG/wolf.pt; c_=2; n_=50; x_="";; M3) D_=$WMD/wm.pt; c_=3; n_=100; x_="";; F) D_=$FI; c_=1; n_=125; x_="--region_density";; B) D_=$AG/bread.pt; c_=1; n_=300; x_="";; esac
+      CUDA_VISIBLE_DEVICES=$g $PY -u exe/tet2_gtdf.py --data $D_ --cell $c_ --frames $n_ --tag $sc $x_ --out $O/gtdf_$sc.json < /dev/null > $O/gtdf_$sc.log 2>&1
+      log "gtdf $sc rc=$? $(grep -a '정답 프레임 간' $O/gtdf_$sc.log | tail -1)"
+      rclone copy $O $RO -q --include "gtdf_$sc.*"
+      [ "$(cat $CL/$g 2>/dev/null)" = "$me" ] && rm -f $CL/$g ) & sleep 3
+  done
+  wait; log "단계 끝 g2"; exit 0
+fi
 if [ $STG = g ]; then                                                                         # 절 CM103 단계 g: 정답 사면체 F 특이값 범위 -> 띠 (씬마다 빈 카드 하나, 동시)
   for sc in L W M3 F B; do
     ( me=$BASHPID; g=$(claim_wait $me)

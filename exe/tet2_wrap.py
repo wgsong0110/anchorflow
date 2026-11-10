@@ -14,13 +14,15 @@ sys.setrecursionlimit(max(sys.getrecursionlimit(), 20000))
 argv = sys.argv[1:]
 out = argv[argv.index("--out") + 1] if "--out" in argv else "."
 os.makedirs(out, exist_ok=True)
-MODE, BAND, C, DG = None, None, 1.0, 1
-while argv and argv[0] in ("--t2", "--t2b", "--t2c", "--t2dg"):
+MODE, BAND, C, DG, B3 = None, None, 1.0, 1, None
+while argv and argv[0] in ("--t2", "--t2b", "--t2c", "--t2dg", "--t3b"):
     k, v = argv[0], argv[1]
     if k == "--t2":
         MODE = int(float(v))
     elif k == "--t2b":
         BAND = [float(q) for q in v.split(",")]
+    elif k == "--t3b":
+        B3 = [float(q) for q in v.split(",")]
     elif k == "--t2c":
         C = float(v)
     else:
@@ -28,6 +30,6 @@ while argv and argv[0] in ("--t2", "--t2b", "--t2c", "--t2dg"):
     del argv[:2]
 assert MODE is not None and BAND is not None and len(BAND) == 5, "--t2 와 --t2b 다섯 값이 필요"
 from anchorflow import fem_tet2 as T2
-T2.install(out, MODE, BAND, C, DG)
+T2.install(out, MODE, BAND, C, DG, B3)
 sys.argv = list(argv)
 runpy.run_path(sys.argv[0], run_name="__main__")
