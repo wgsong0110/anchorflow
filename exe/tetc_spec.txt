@@ -1,0 +1,35 @@
+# 절 CM106 묶음 tetc 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_tetc.sh). TC = T9 + 사면체 단위 질량·운동량 (노드 ¼; --gq_mass + κ 0) + 기록 (tetc_wrap --tcm 1),
+# 대조 cS* = T9S + 기록만 ('@tcm 0', 결과 불변; 노드 질량 대 강성·질량 ≈ 0 노드 수를 같은 식으로). 방식: nd 진단 · d 덤프 (wolf·수박 지표 뒤 지움) · v 덤프 + 3DGS 영상 (덤프 남김).
+# s0k 연기 8 프레임 (실패면 뒤 단계 안 함)
+s0k kCL L nd TC --frames 8
+s0k kCW W d TC --frames 8
+s0k kCM M3 d TC @s6l 1 --frames 8
+s0k kCF F nd TC --frames 8
+s0k kCB B nd TC --frames 8
+s0k kSL L nd T9S @tcm 0 --frames 8
+# s1: TC wolf 4 · 수박 8 · 레고 4 · ficus 2 · bread 2 (_1 은 wolf·수박·레고 영상 판), 대조 T9S 기록 판 씬마다 1
+s1 cW_1 W v TC
+s1 cW_2 W d TC
+s1 cW_3 W d TC
+s1 cW_4 W d TC
+s1 cM_1 M3 v TC @s6l 1
+s1 cM_2 M3 d TC @s6l 1
+s1 cM_3 M3 d TC @s6l 1
+s1 cM_4 M3 d TC @s6l 1
+s1 cM_5 M3 d TC @s6l 1
+s1 cM_6 M3 d TC @s6l 1
+s1 cM_7 M3 d TC @s6l 1
+s1 cM_8 M3 d TC @s6l 1
+s1 cL_1 L v TC
+s1 cL_2 L nd TC
+s1 cL_3 L nd TC
+s1 cL_4 L nd TC
+s1 cF_1 F nd TC
+s1 cF_2 F nd TC
+s1 cB_1 B nd TC
+s1 cB_2 B nd TC
+s1 cSW W d T9S @tcm 0
+s1 cSM M3 d T9S @tcm 0 @s6l 1
+s1 cSL L nd T9S @tcm 0
+s1 cSF F nd T9S @tcm 0
+s1 cSB B nd T9S @tcm 0
