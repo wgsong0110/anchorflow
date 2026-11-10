@@ -146,7 +146,7 @@ run() {   # run 이름 씬 방식 카드 플래그
   [[ " $5 " == *" T9S "* ]] && c="${c/--gq_oct 0.1 /--gq_oct 1 }"                                # 절 CM102 T9S 새 실행기: 점유 가중 κ 0.1 -> 1
   local toct=""
   if [ $s = M3 ] && [[ "$tet" == *"--tet 1"* ]]; then                                       # 절 CM102 (조정자 11-10): 수박 사면체 판 = 입자 -> 자기 사면체 λ 4 노드 질량·운동량 (--gq_mass 끔), HHT ρ 0.8 (다른 씬과 같게),
-    c="${c/ --gq_mass / }"; c="${c/ --gq_oct 0 / }"; c="${c/--rho 0.7 /--rho 0.8 }"      #   점유 가중 κ 는 tet1_wrap --toct (옛 실행기는 --gq_mass 없이 --gq_oct 경로가 없음): T9 0.1 · T9S 1 (새 실행기와 같은 값)
+    c="${c/ --gq_mass / }"; c="${c/ --gq_oct 0 / }"; c="${c/--rho 0.7 /--rho 0.8 }"; c="${c/--sp2 31/--sp2 23}"   # --sp2 비트 8 (점->노드 칸 모으기, 결과 불변 가속) 은 --gq_mass 판 전용 -> 뺌      #   점유 가중 κ 는 tet1_wrap --toct (옛 실행기는 --gq_mass 없이 --gq_oct 경로가 없음): T9 0.1 · T9S 1 (새 실행기와 같은 값)
     toct="--toct 0.1"; [[ " $5 " == *" T9S "* ]] && toct="--toct 1"
   fi   # 절 CM102 T9S: 점유 가중 κ (새 실행기 0.1 · 수박 0) -> 1 (칸 입자 부피·질량을 6 사면체에 고르게)
   c="exe/speed13_wrap.py $s13 exe/speed12_wrap.py $s12 exe/ext2_wrap.py $w8 $l4 $l3 $w5x $s9 $s8 $s7 $s5 $mf $wf $hx $wg $w5 $w3 $w2 $wo $c"; [ -n "$tet" ] && c="exe/tet1_wrap.py $tet $toct $c"
