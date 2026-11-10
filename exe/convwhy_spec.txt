@@ -1,0 +1,43 @@
+# 절 CM96 묶음 convwhy 판 목록: 단계 이름 씬 방식 글자 (exe/stab_convwhy.sh; 방식 x = 진단 덤프 없음)
+# 진단 공통 D = 예산 끔 @tb 1000 + xit 문 끔 @nxit 1 + 뉴턴 상한 25 + 허용치 1e-5 (εN 1e-2 도달 반복은 기록에서); (a) = PCG 상한 100 · tolP 1e-6; (b) = 장벽 강성 × 0.01; (c) = 소성 끔; (d) = 거의 빈 노드 고정 문턱 --mlow 0.1 (H8 1e-3); J = 야코비 PCG (--mg_levels 1, 상한 400, tolP 1e-6, 뉴턴 3) 조건수 판; R = H8·H5n 그대로 (대조)
+# 상태: 저장 판 sv8 (H8) · sv5 (H5n) 이 프레임 f10 f12 f15 f20 f25 f30 걸음 시작 상태 (실행기 fi 9 11 14 19 24 29) 를 st_fNN.pt 로
+s0k k8 W x H8 @cwsave 9 --frames 10
+s1k kR W x H8 @cwload /dev/shm/dkta/lbours/convwhy/k8  --frames 1
+s1k kB W x H8 @cwload /dev/shm/dkta/lbours/convwhy/k8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --frames 1
+s1k ka W x H8 @cwload /dev/shm/dkta/lbours/convwhy/k8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --cg 100 --tolP 1e-6 --frames 1
+s1k kb W x H8 @cwload /dev/shm/dkta/lbours/convwhy/k8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 @cwks 0.01 --frames 1
+s1k kc W x H8 @cwload /dev/shm/dkta/lbours/convwhy/k8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 @cwnopl 1 --frames 1
+s1k kd W x H8 @cwload /dev/shm/dkta/lbours/convwhy/k8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --mlow 0.1 --frames 1
+s1k kJ W x H8 @cwload /dev/shm/dkta/lbours/convwhy/k8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --mg_levels 1 --cg 400 --tolP 1e-6 --newton 3 --frames 1
+s1 sv8 W x H8 @cwsave 9,11,14,19,24,29 --frames 30
+s1 sv5 W x H5n @cwsave 9,11,14,19,24,29 --frames 30
+s2 r8_R W x H8 @cwload /dev/shm/dkta/lbours/convwhy/sv8  --frames 6
+s2 r8_B W x H8 @cwload /dev/shm/dkta/lbours/convwhy/sv8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --frames 6
+s2 r8_a W x H8 @cwload /dev/shm/dkta/lbours/convwhy/sv8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --cg 100 --tolP 1e-6 --frames 6
+s2 r8_b W x H8 @cwload /dev/shm/dkta/lbours/convwhy/sv8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 @cwks 0.01 --frames 6
+s2 r8_c W x H8 @cwload /dev/shm/dkta/lbours/convwhy/sv8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 @cwnopl 1 --frames 6
+s2 r8_d W x H8 @cwload /dev/shm/dkta/lbours/convwhy/sv8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --mlow 0.1 --frames 6
+s2 r8_ab W x H8 @cwload /dev/shm/dkta/lbours/convwhy/sv8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --cg 100 --tolP 1e-6 @cwks 0.01 --frames 6
+s2 r8_ac W x H8 @cwload /dev/shm/dkta/lbours/convwhy/sv8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --cg 100 --tolP 1e-6 @cwnopl 1 --frames 6
+s2 r8_ad W x H8 @cwload /dev/shm/dkta/lbours/convwhy/sv8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --cg 100 --tolP 1e-6 --mlow 0.1 --frames 6
+s2 r8_bc W x H8 @cwload /dev/shm/dkta/lbours/convwhy/sv8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 @cwks 0.01 @cwnopl 1 --frames 6
+s2 r8_bd W x H8 @cwload /dev/shm/dkta/lbours/convwhy/sv8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 @cwks 0.01 --mlow 0.1 --frames 6
+s2 r8_cd W x H8 @cwload /dev/shm/dkta/lbours/convwhy/sv8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 @cwnopl 1 --mlow 0.1 --frames 6
+s2 r8_abcd W x H8 @cwload /dev/shm/dkta/lbours/convwhy/sv8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --cg 100 --tolP 1e-6 @cwks 0.01 @cwnopl 1 --mlow 0.1 --frames 6
+s2 r8_J W x H8 @cwload /dev/shm/dkta/lbours/convwhy/sv8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --mg_levels 1 --cg 400 --tolP 1e-6 --newton 3 --frames 6
+s2 r8_Jd W x H8 @cwload /dev/shm/dkta/lbours/convwhy/sv8 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --mg_levels 1 --cg 400 --tolP 1e-6 --newton 3 --mlow 0.1 --frames 6
+s2 r5_R W x H5n @cwload /dev/shm/dkta/lbours/convwhy/sv5  --frames 6
+s2 r5_B W x H5n @cwload /dev/shm/dkta/lbours/convwhy/sv5 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --frames 6
+s2 r5_a W x H5n @cwload /dev/shm/dkta/lbours/convwhy/sv5 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --cg 100 --tolP 1e-6 --frames 6
+s2 r5_b W x H5n @cwload /dev/shm/dkta/lbours/convwhy/sv5 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 @cwks 0.01 --frames 6
+s2 r5_c W x H5n @cwload /dev/shm/dkta/lbours/convwhy/sv5 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 @cwnopl 1 --frames 6
+s2 r5_d W x H5n @cwload /dev/shm/dkta/lbours/convwhy/sv5 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --mlow 0.1 --frames 6
+s2 r5_ab W x H5n @cwload /dev/shm/dkta/lbours/convwhy/sv5 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --cg 100 --tolP 1e-6 @cwks 0.01 --frames 6
+s2 r5_ac W x H5n @cwload /dev/shm/dkta/lbours/convwhy/sv5 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --cg 100 --tolP 1e-6 @cwnopl 1 --frames 6
+s2 r5_ad W x H5n @cwload /dev/shm/dkta/lbours/convwhy/sv5 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --cg 100 --tolP 1e-6 --mlow 0.1 --frames 6
+s2 r5_bc W x H5n @cwload /dev/shm/dkta/lbours/convwhy/sv5 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 @cwks 0.01 @cwnopl 1 --frames 6
+s2 r5_bd W x H5n @cwload /dev/shm/dkta/lbours/convwhy/sv5 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 @cwks 0.01 --mlow 0.1 --frames 6
+s2 r5_cd W x H5n @cwload /dev/shm/dkta/lbours/convwhy/sv5 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 @cwnopl 1 --mlow 0.1 --frames 6
+s2 r5_abcd W x H5n @cwload /dev/shm/dkta/lbours/convwhy/sv5 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --cg 100 --tolP 1e-6 @cwks 0.01 @cwnopl 1 --mlow 0.1 --frames 6
+s2 r5_J W x H5n @cwload /dev/shm/dkta/lbours/convwhy/sv5 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --mg_levels 1 --cg 400 --tolP 1e-6 --newton 3 --frames 6
+s2 r5_Jd W x H5n @cwload /dev/shm/dkta/lbours/convwhy/sv5 @tb 1000 @nxit 1 --newton 25 --tolN 1e-5 --mg_levels 1 --cg 400 --tolP 1e-6 --newton 3 --mlow 0.1 --frames 6
