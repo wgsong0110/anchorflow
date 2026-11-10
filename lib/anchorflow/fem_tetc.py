@@ -153,6 +153,8 @@ def _wrap_step(st0):
                 except Exception as e_:
                     rec["rat_err"] = repr(e_)[:300]
             _write(rec)
+            if fr % 10 == 0:
+                _dump()
         except Exception as e_:
             INFO["err"] = ("step " + repr(e_))[:400]; _dump()
         return r
