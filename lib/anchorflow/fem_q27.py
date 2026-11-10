@@ -397,6 +397,20 @@ def _install_q27():
 
             w._q27 = True
             setattr(M, fn, w)
+    try:                                                                            # 옛 실행기 (수박): 프레임 끝 x_orig 부를 때 (다른 감싸개가 split_step 을 바꿔도 남음)
+        from . import fem_an_rt_v0 as V0
+        ox = V0.RTSolver.x_orig
+        if not getattr(ox, "_q27", False):
+            def x_orig(s, _ox=ox):
+                try:
+                    _check(s)
+                except Exception as e:
+                    ST["chk_err"] = repr(e)
+                return _ox(s)
+            x_orig._q27 = True
+            V0.RTSolver.x_orig = x_orig
+    except Exception as e:
+        ST["err"] = "x_orig hook: " + repr(e)
     ST["installed"] = True
     _info()
 
