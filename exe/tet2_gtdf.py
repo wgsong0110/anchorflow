@@ -39,7 +39,7 @@ DXG = float(cfg.get("grid_lim", 2.0)) / int(cfg.get("n_grid", 100))
 NODE_H = a.cell * DXG * math.sqrt(2.0)
 lat = SX.lattice(NODE_H, SX.HZ_CUBE * NODE_H, device=dev, dtype=torch.float64)
 T = min(a.frames + 1, int(d["x"].shape[0]))
-allS, rows = [], []
+allS, allM, rows = [], [], []
 for f in range(T - 1):
     x0 = d["x"][f].to(dev).double(); x1 = d["x"][f + 1].to(dev).double()
     ok = torch.isfinite(x0).all(1) & torch.isfinite(x1).all(1)
@@ -59,7 +59,7 @@ for f in range(T - 1):
     DF = Cyx[good] @ torch.linalg.inv(Cxx[good])
     S = torch.linalg.svdvals(DF)
     S = S[torch.isfinite(S).all(1)]
-    allS.append(S.reshape(-1).float().cpu())
+    allS.append(S.reshape(-1).float().cpu()); allM.append(S[:, 0].float().cpu())
     rows.append(dict(f=f, ncell=n, ngood=int(good.sum()), smin=float(S.min()), smax=float(S.max()), q=[float(v) for v in torch.quantile(S.reshape(-1)[:2_000_000], torch.tensor([1e-3, 0.5, 0.999], device=dev, dtype=S.dtype))]))
     if f % 10 == 0:
         print(f"[{a.tag}] f{f}->{f + 1} 칸 {n} (맞춤 {int(good.sum())}) ΔF σ [{float(S.min()):.4f}, {float(S.max()):.4f}]", flush=True)
@@ -67,7 +67,10 @@ A = torch.cat(allS).double()
 idx = torch.randperm(A.numel())[:16_000_000]
 ql, qh = [float(v) for v in torch.quantile(A[idx], torch.tensor([a.q, 1 - a.q], dtype=torch.float64))]
 slo, shi = math.exp(a.margin * math.log(ql)), math.exp(a.margin * math.log(qh))
+AM = torch.cat(allM).double(); qm = float(torch.quantile(AM[torch.randperm(AM.numel())[:16_000_000]], torch.tensor([1 - a.q], dtype=torch.float64))[0])
+shi_u = math.exp(a.margin * math.log(qm))   # 상한만 판 (u): 칸 최대 특이값 σ_max 분포의 1 − q 분위, 로그 여유
 out = dict(tag=a.tag, cell=a.cell, edge=a.cell * DXG, frames=T - 1, n=int(A.numel()), amin=float(A.min()), amax=float(A.max()), qlo=ql, qhi=qh, q=a.q, margin=a.margin,
-           band3=dict(slo=slo, shi=shi), rows=rows)
+           band3=dict(slo=slo, shi=shi), band3u=dict(slo=-1e30, shi=shi_u, qmax=qm, smax_max=float(AM.max())), rows=rows)
 json.dump(out, open(a.out, "w"), indent=1)
+print(f"[{a.tag}] 상한만: 칸 σ_max 분위 {1 - a.q:g} = {qm:.4f} (최대 {float(AM.max()):.4f}) -> s_hi {shi_u:.4f}", flush=True)
 print(f"[{a.tag}] 정답 프레임 간 ΔF σ: 전체 [{float(A.min()):.4f}, {float(A.max()):.4f}], 분위 {a.q:g}/{1 - a.q:g} = {ql:.4f}/{qh:.4f} -> 범위 [{slo:.4f}, {shi:.4f}] (로그 여유 {a.margin})", flush=True)

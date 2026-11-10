@@ -271,7 +271,7 @@ __device__ __forceinline__ float t2_wmax(float v) { for (int o=16;o>0;o>>=1) v =
 __global__ void __launch_bounds__(128) t2_diag(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* y, float mu, float lam, const int* TI, double* R, int* RI, int maxrow) {
     int q = blockIdx.x*blockDim.x + threadIdx.x;
     bool on = q < IP[12] && Vq[q < IP[12] ? q : 0] > 0.f;
-    double c[9] = {0,0,0,0,0,0,0,0,0}; float dmin = 3e38f, smin = 3e38f, smax = -3e38f, pmax = -3e38f; float S3[3], d3lo = 3e38f, d3hi = -3e38f; double c3 = 0.0;
+    double c[9] = {0,0,0,0,0,0,0,0,0}; float dmin = 3e38f, smin = 3e38f, smax = -3e38f, pmax = -3e38f; float S3[3], d3lo = 3e38f, d3hi = -3e38f; double c3 = 0.0, c4 = 0.0;
     if (on) {
         double X[9]; float S[3]; t2_X(q, IP, cb, BG, Fq, y, X); t2_sv(X, S);
         double vq = Vq[q], J = (double)S[0]*S[1]*S[2], kap = AF_T2_C*(2.0*(double)mu + (double)lam);
@@ -287,13 +287,13 @@ __global__ void __launch_bounds__(128) t2_diag(const int* IP, const int* cb, con
         float Ff[9], Xf[9], Dd[9], Uu[9], Vv[9]; double Fi[9];                             // 프레임 사상 ΔF = X F_q⁻¹ (판 r 범위, 모든 판 기록)
         for (int k=0;k<9;k++) { Ff[k] = Fq[(size_t)q*9+k]; Xf[k] = (float)X[k]; }
         t3_dF(Xf, Ff, Dd, Fi); ssvdf(Dd, Uu, S3, Vv);
-        d3lo = S3[2]; d3hi = S3[0]; c3 = (S3[2] < (float)AF_T3_SLO || S3[0] > (float)AF_T3_SHI) ? 1.0 : 0.0;
+        d3lo = S3[2]; d3hi = S3[0]; c3 = (S3[2] < (float)AF_T3_SLO || S3[0] > (float)AF_T3_SHI) ? 1.0 : 0.0; c4 = ((double)S3[0]*S3[1]*S3[2] <= 0.0) ? 1.0 : 0.0;
     }
     int r = TI[10]; if (r >= maxrow) r = maxrow - 1;
     for (int k=0;k<9;k++) { double v = t2_ws(c[k]); if ((threadIdx.x & 31) == 0 && v != 0.0) atomicAdd(&R[r*32+k], v); }
-    dmin = t2_wmin(dmin); smin = t2_wmin(smin); smax = t2_wmax(smax); pmax = t2_wmax(pmax); d3lo = t2_wmin(d3lo); d3hi = t2_wmax(d3hi); c3 = t2_ws(c3);
+    dmin = t2_wmin(dmin); smin = t2_wmin(smin); smax = t2_wmax(smax); pmax = t2_wmax(pmax); d3lo = t2_wmin(d3lo); d3hi = t2_wmax(d3hi); c3 = t2_ws(c3); c4 = t2_ws(c4);
     if ((threadIdx.x & 31) == 0) { atomicMin(&RI[r*8], t2_key(dmin)); atomicMin(&RI[r*8+1], t2_key(smin)); atomicMax(&RI[r*8+2], t2_key(smax)); atomicMax(&RI[r*8+3], t2_key(pmax));
-        atomicMin(&RI[r*8+4], t2_key(d3lo)); atomicMax(&RI[r*8+5], t2_key(d3hi)); if (c3 != 0.0) atomicAdd(&R[r*32+23], c3); }
+        atomicMin(&RI[r*8+4], t2_key(d3lo)); atomicMax(&RI[r*8+5], t2_key(d3hi)); if (c3 != 0.0) atomicAdd(&R[r*32+23], c3); if (c4 != 0.0) atomicAdd(&R[r*32+24], c4); }
 }
 // 걸음 끝 갱신 뒤 U (입자 F 갱신에 쓰이는 걸음 끝 변위) 의 X = F_q + ∇U F_q: det ≤ 0 · 띠 밖 점 수 -> R 21·22
 __global__ void __launch_bounds__(128) t2_diagU(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* U, const int* TI, double* R, int maxrow) {
@@ -562,7 +562,7 @@ class Hook:
             r = R[i]
             rows.append(dict(nq=int(r[0]), ndet=int(r[1]), nband=int(r[2]), nlo=int(r[3]), nhi=int(r[4]), Eb=float(r[5]), ninf=int(r[6]), Eh=float(r[7]), nact=int(r[8]),
                              nchk=int(r[9]), ncap=int(r[10]), amin=float(r[11]), nstart=int(r[12]), astart=float(r[13]), ndetcap=int(r[14]), nbandcap=int(r[15]),
-                             nnofeas=int(r[16]), ninv0=int(r[17]), nfb=int(r[18]), nfq_det=int(r[19]), nfq_band=int(r[20]), nU_det=int(r[21]), nU_band=int(r[22]), n3=int(r[23]), d3lo=fk(RI[i][4]), d3hi=fk(RI[i][5]), dmin=fk(RI[i][0]), smin=fk(RI[i][1]), smax=fk(RI[i][2]), pbmax=fk(RI[i][3])))
+                             nnofeas=int(r[16]), ninv0=int(r[17]), nfb=int(r[18]), nfq_det=int(r[19]), nfq_band=int(r[20]), nU_det=int(r[21]), nU_band=int(r[22]), n3=int(r[23]), n3det=int(r[24]), d3lo=fk(RI[i][4]), d3hi=fk(RI[i][5]), dmin=fk(RI[i][0]), smin=fk(RI[i][1]), smax=fk(RI[i][2]), pbmax=fk(RI[i][3])))
         h.f.write(json.dumps(dict(c=h.ncall, t=float(t), steps=rows, over=int(TI[12]))) + "\n"); h.f.flush()
         h.ncall += 1
         B["TI"][10:13].zero_()

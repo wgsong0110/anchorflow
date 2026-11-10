@@ -15,6 +15,7 @@
 #         h 결정적 끝 해시 (--det --fhash, 예산 @tb 1000 = 안 걸림; 진단 끔; 새 실행기 씬만)
 #         z 단독 (렌더 포함 '@rr 1'): 계산 프로세스 0 인 카드 하나에 a · b 차례로 (연기 단계는 a 만)
 O=$1; RO=$2; STG=$3; mkdir -p $O
+NOSHM=0; case $STG in s1e*|g3) NOSHM=1; O=/home/dkta/work/tet2_dump; mkdir -p $O;; esac   # 절 CM103 (조정자 11-10): 덤프는 /home (100 GB 안), /dev/shm 대기 없음, 판정 판 덤프는 지표 뒤 지움, 올리기는 뒤에서
 PY=/home/dkta/.conda/envs/af/bin/python
 export PYTHONUTF8=1 OMP_NUM_THREADS=8
 export TMPDIR=/dev/shm/dkta/tmp; mkdir -p $TMPDIR
@@ -107,7 +108,8 @@ PYX
   rm -rf $HD; }
 shm_use() { df --output=pcent /dev/shm | tail -1 | tr -dc '0-9'; }
 log() { echo "[$(date '+%F %T')] $*" >> $O/tet2_$STG.log; rclone copyto $O/tet2_$STG.log $RO/tet2_$STG.log -q; }
-shm_wait() { while [ "$(shm_use)" -ge 65 ]; do log "/dev/shm 사용률 $(shm_use) % -- 기다림"; sleep 120; done; }
+homeok() { [ $(du -s -BG $O 2>/dev/null | cut -f1 | tr -dc 0-9) -lt 90 ] && [ $(df -BG --output=avail /home | tail -1 | tr -dc 0-9) -gt 40 ]; }
+shm_wait() { [ $NOSHM = 1 ] && { while ! homeok; do log "/home 덤프 $(du -sh $O | cut -f1) · 여유 $(df -h --output=avail /home | tail -1) -- 기다림"; sleep 60; done; return; }; while [ "$(shm_use)" -ge 65 ]; do log "/dev/shm 사용률 $(shm_use) % -- 기다림"; sleep 120; done; }
 up() { rclone copy $O/$1 $RO/$1 -q --transfers 8 --exclude pred.pt; }
 CL=/dev/shm/dkta/anerr_claim; mkdir -p $CL                                                   # 다른 묶음과 같은 카드 표식 디렉토리 (서로 비켜감)
 NG=$(nvidia-smi -L | wc -l)
@@ -137,7 +139,7 @@ run() {   # run 이름 씬 방식 카드 플래그
   w8="$(echo " $x " | grep -o '@\(w8\|x1\)[a-z0-9]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"            # 절 CM81 확장 B-스플라인·(K) + 절 CM83 검사 '@x1ck' 
   s9="$(echo " $x " | grep -o '@s9[a-z0-9_]* [0-9.e+,-]*' | sed 's/^@/--/' | tr '\n' ' ')"                # 절 CM76 C·Y
   s5="$(echo " $x " | grep -o '@s6[a-z0-9_]* [0-9.e+,-]*' | sed 's/^@/--/' | tr '\n' ' ')"; s7="$(echo " $x " | grep -o '@s7[a-z0-9_]* [0-9.e+,-]*' | sed 's/^@/--/' | tr '\n' ' ')"; s8="$(echo " $x " | grep -o '@s8[a-z0-9_]* [0-9.e+,-]*' | sed 's/^@/--/' | tr '\n' ' ')"; case " $x " in *" @s6l 1 "*) lean=1;; esac
-  wo="$(echo " $x " | grep -o '@[a-z0-9_]* [0-9.e+,-]*' | grep -v '^@\(t2\|tet\|s13\|gpl\|gphi\|gpw\|w13\|w12\|fi\|w11\|w9\|s12\|e[235]\|g[456]\|hc\|rr\|s4\|s6\|s7\|s8\|s9\|tc\|wf\|mf\|l3\|l4\|w5\|w8\|x1\)' | sed 's/^@/--/' | tr '\n' ' ')"; wf="$(echo " $x " | grep -o '@wf[a-z0-9_]* [0-9.e+,-]*' | sed 's/^@/--/' | tr '\n' ' ')"; mf="$(echo " $x " | grep -o '@mf[a-z0-9_]* [0-9.e+,-]*' | sed 's/^@/--/' | tr '\n' ' ')"; l3="$(echo " $x " | grep -o '@l3[a-z0-9_]* [0-9.e+,-]*' | sed 's/^@/--/' | tr '\n' ' ')"; l4="$(echo " $x " | grep -o '@l4[a-z0-9_]* [0-9.e+,-]*' | sed 's/^@/--/' | tr '\n' ' ')"; wg="$(echo " $x " | grep -o '@g[456][a-z0-9_]* [0-9.e+,-]*' | sed 's/^@/--/' | tr '\n' ' ')"; w5="$(echo " $x " | grep -o '@e5[a-z0-9_]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"; w2="$(echo " $x " | grep -o '@e2[a-z0-9_]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"; w3="$(echo " $x " | grep -o '@e3[a-z0-9_]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"; x="$(echo " $x " | sed 's/@[a-z0-9_]* [0-9.e+,-]*//g')"
+  wo="$(echo " $x " | grep -o '@[a-z0-9_]* [0-9.e+,-]*' | grep -v '^@\(t2\|t3u\|tet\|s13\|gpl\|gphi\|gpw\|w13\|w12\|fi\|w11\|w9\|s12\|e[235]\|g[456]\|hc\|rr\|s4\|s6\|s7\|s8\|s9\|tc\|wf\|mf\|l3\|l4\|w5\|w8\|x1\)' | sed 's/^@/--/' | tr '\n' ' ')"; wf="$(echo " $x " | grep -o '@wf[a-z0-9_]* [0-9.e+,-]*' | sed 's/^@/--/' | tr '\n' ' ')"; mf="$(echo " $x " | grep -o '@mf[a-z0-9_]* [0-9.e+,-]*' | sed 's/^@/--/' | tr '\n' ' ')"; l3="$(echo " $x " | grep -o '@l3[a-z0-9_]* [0-9.e+,-]*' | sed 's/^@/--/' | tr '\n' ' ')"; l4="$(echo " $x " | grep -o '@l4[a-z0-9_]* [0-9.e+,-]*' | sed 's/^@/--/' | tr '\n' ' ')"; wg="$(echo " $x " | grep -o '@g[456][a-z0-9_]* [0-9.e+,-]*' | sed 's/^@/--/' | tr '\n' ' ')"; w5="$(echo " $x " | grep -o '@e5[a-z0-9_]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"; w2="$(echo " $x " | grep -o '@e2[a-z0-9_]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"; w3="$(echo " $x " | grep -o '@e3[a-z0-9_]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"; x="$(echo " $x " | sed 's/@[a-z0-9_]* [0-9.e+,-]*//g')"
   b="$(base_of $s)"; [ -n "$(nw "$x")" ] && b="${b/--newton 2/--newton $(nw "$x")}" && x="$(echo "$x" | sed 's/--newton [0-9]*//g')"
   c="$b $(dg_of $s $md) $x"
   [ $md = g ] && pre="AF_E2_DG=1 AF_E5_DG=1"                                                 # 절 CM43 진단 D2 + 절 CM49 진단 D5 (결과 불변)
@@ -153,8 +155,11 @@ run() {   # run 이름 씬 방식 카드 플래그
   fi   # 절 CM102 T9S: 점유 가중 κ (새 실행기 0.1 · 수박 0) -> 1 (칸 입자 부피·질량을 6 사면체에 고르게)
   c="exe/speed13_wrap.py $s13 exe/speed12_wrap.py $s12 exe/ext2_wrap.py $w8 $l4 $l3 $w5x $s9 $s8 $s7 $s5 $mf $wf $hx $wg $w5 $w3 $w2 $wo $c"; [ -n "$tet" ] && c="exe/tet1_wrap.py $tet $toct $c"
   if [ -n "$t2" ]; then local dg_=1; [ $md = z ] && dg_=0                                       # 절 CM103: 단독 (시간) 판은 기록 끔 (프레임마다 동기화 없음)
-    local tb_; tb_=$(band_of $s) || { log "$n 띠 없음 (단계 g 먼저)"; return; }
-    local t3_=""; [ -s $O/gtdf_$s.json ] && t3_="--t3b $($PY -c "import json; b=json.load(open('$O/gtdf_$s.json'))['band3']; print('%.6e,%.6e' % (b['slo'], b['shi']))")"   # 절 CM103 판 r: 정답 프레임 간 ΔF 범위 (단계 g2)
+    local tb_
+    local GD=$O; [ -s $GD/gtdf_$s.json ] || GD=/dev/shm/dkta/lbours/tet2                     # 절 CM103 s1e: O 가 /home 이면 띠·범위는 /dev/shm 묶음 디렉토리에서
+    tb_=$(O=$GD band_of $s) || { log "$n 띠 없음"; return; }
+    local t3_=""; [ -s $GD/gtdf_$s.json ] && t3_="--t3b $($PY -c "import json; b=json.load(open('$GD/gtdf_$s.json'))['band3']; print('%.6e,%.6e' % (b['slo'], b['shi']))")"
+    [[ " $5 " == *" @t3u 1 "* ]] && t3_="--t3b $($PY -c "import json; b=json.load(open('$GD/gtdfu_$s.json'))['band3u']; print('%.6e,%.6e' % (b['slo'], b['shi']))")"   # 판 u: 상한만   # 절 CM103 판 r: 정답 프레임 간 ΔF 범위 (단계 g2)
     [ "$t2" = 3 ] && [ -z "$t3_" ] && { log "$n ΔF 범위 없음 (단계 g2 먼저)"; return; }
     c="exe/tet2_wrap.py --t2 $t2 --t2b $tb_ $t3_ --t2dg $dg_ $c"; fi
   rm -rf $O/$n; mkdir -p $O/$n; echo "$pre $PY -u $c --out $O/$n" > $O/$n/cmd.txt
@@ -171,7 +176,11 @@ run() {   # run 이름 씬 방식 카드 플래그
     $PY exe/wolfh4_relfall.py $AG/wolf.pt $n=$O/$n/pred.pt > $O/$n/relfall.md 2> $O/$n/relfall.err; fi   # 절 CM68·CM70 방출 뒤 낙하 몫 (읽기만)
   [ $s = F ] && [ -f $O/$n/pred.pt ] && $PY exe/fem_p_period.py --data $FI --pred $O/$n/pred.pt > $O/$n/period.txt 2>&1
   [ -s $O/$n/t2.jsonl ] && $PY -c "import json,sys; sys.path.insert(0,'lib'); from anchorflow import fem_tet2 as T; json.dump(T.summarize('$O/$n/t2.jsonl'), open('$O/$n/t2sum.json','w'), indent=1)" > $O/$n/t2sum.err 2>&1   # 절 CM103 기록 요약
-  [ $md = v ] && [ -f $O/$n/pred.pt ] && vid $n $s $g                                         # 영상 판: 덤프 렌더 (pred.pt 를 지우기 전; exe/stab_ext2v.sh 와 같음)
+  [ $md = v ] && [ -f $O/$n/pred.pt ] && vid $n $s $g
+  if [ $NOSHM = 1 ] && [ $md != v ] && [ -f $O/$n/pred.pt ]; then                            # 판정 판: 지표만 남기고 덤프 지움 (조정자 11-10)
+    case $s in W) HEAP_ROWS=$O/$n/heap_rows.json $PY exe/wolfh10_heap.py $AG/wolf.pt "$n=$O/$n" > $O/$n/heap.md 2> $O/$n/heap.err;;
+               M3) TET1_WM_ROWS=$O/$n/wm_rows.json $PY exe/tet1_wm.py $WMD/wm.pt "$n=$O/$n" > $O/$n/wm.md 2> $O/$n/wm.err;; esac
+    rm -f $O/$n/pred.pt $O/$n/lj.pt; log "$n 지표 뒤 덤프 지움"; fi                                         # 영상 판: 덤프 렌더 (pred.pt 를 지우기 전; exe/stab_ext2v.sh 와 같음)
   [ $md != z ] && [ "$(cat $CL/$g 2>/dev/null)" = "$BASHPID" ] && rm -f $CL/$g && log "$n 카드 $g 놓음 (계산·렌더 끝, 올리기는 카드 없이)"   # 절 CM102: 덤프 올리기 (수박 6.6 GB) 동안 카드를 잡지 않음
   log "$n rc=$rc $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200) hc 줄 $(wc -l < $O/$n/hc.jsonl 2>/dev/null) 렌더 $(wc -l < $O/$n/rr.jsonl 2>/dev/null) $(tail -2 $O/$n/period.txt 2>/dev/null | tr '\n' ' ') $(grep -a 'rror' $O/$n/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
   touch $O/$n/.upl                                                                           # 절 CM102: 올리기는 판 subshell 밖 (카드·동시 판 수 안 잡음), 단계 끝에 .upl 없어질 때까지 기다림
@@ -186,16 +195,17 @@ run() {   # run 이름 씬 방식 카드 플래그
     done
   ) > /dev/null 2>&1 < /dev/null & disown; }
 band_of() { local f=$O/gtsv_$1.json; [ -s $f ] || return 1; $PY -c "import json; b=json.load(open('$f'))['band']; print('%.6e,%.6e,%.6e,%.6e,%.6e' % (b['slo'], b['shi'], b['dlo'], b['dhi'], b['ja']))"; }
-if [ $STG = g2 ]; then                                                                        # 절 CM103 단계 g2: 정답 프레임 간 ΔF 특이값 -> 판 r 범위 (씬마다 빈 카드, 동시)
+GX=""; [ $STG = g3 ] && { GX=u; O=/dev/shm/dkta/lbours/tet2; }
+if [ $STG = g2 ] || [ $STG = g3 ]; then                                                                        # 절 CM103 단계 g2: 정답 프레임 간 ΔF 특이값 -> 판 r 범위 (씬마다 빈 카드, 동시)
   for sc in L W M3 F B; do
     ( me=$BASHPID; g=$(claim_wait $me)
       case $sc in L) D_=$SD/L000.pt; c_=1; n_=80; x_="";; W) D_=$AG/wolf.pt; c_=2; n_=50; x_="";; M3) D_=$WMD/wm.pt; c_=3; n_=100; x_="";; F) D_=$FI; c_=1; n_=125; x_="--region_density";; B) D_=$AG/bread.pt; c_=1; n_=300; x_="";; esac
-      CUDA_VISIBLE_DEVICES=$g $PY -u exe/tet2_gtdf.py --data $D_ --cell $c_ --frames $n_ --tag $sc $x_ --out $O/gtdf_$sc.json < /dev/null > $O/gtdf_$sc.log 2>&1
-      log "gtdf $sc rc=$? $(grep -a '정답 프레임 간' $O/gtdf_$sc.log | tail -1)"
-      rclone copy $O $RO -q --include "gtdf_$sc.*"
+      CUDA_VISIBLE_DEVICES=$g $PY -u exe/tet2_gtdf.py --data $D_ --cell $c_ --frames $n_ --tag $sc $x_ --out $O/gtdf${GX}_$sc.json < /dev/null > $O/gtdf${GX}_$sc.log 2>&1
+      log "gtdf$GX $sc rc=$? $(grep -a '정답 프레임 간\|상한만' $O/gtdf${GX}_$sc.log | tr '\n' ' ')"
+      rclone copy $O $RO -q --include "gtdf${GX}_$sc.*"
       [ "$(cat $CL/$g 2>/dev/null)" = "$me" ] && rm -f $CL/$g ) & sleep 3
   done
-  wait; log "단계 끝 g2"; exit 0
+  wait; log "단계 끝 $STG"; exit 0
 fi
 if [ $STG = g ]; then                                                                         # 절 CM103 단계 g: 정답 사면체 F 특이값 범위 -> 띠 (씬마다 빈 카드 하나, 동시)
   for sc in L W M3 F B; do
@@ -228,7 +238,7 @@ while read -r st n s md x; do
   ( me=$BASHPID; g=$(claim_wait $me); run $n $s $md $g "$x"; [ "$(cat $CL/$g 2>/dev/null)" = "$me" ] && rm -f $CL/$g ) & sleep 3
 done <<< "$SPEC"
 wait
-while ls $O/*/.upl > /dev/null 2>&1; do sleep 20; done                                       # 절 CM102: 뒤에서 올리는 덤프 끝까지
+[ $NOSHM = 1 ] || while ls $O/*/.upl > /dev/null 2>&1; do sleep 20; done                                       # 절 CM102: 뒤에서 올리는 덤프 끝까지
 log "판정 판 끝 $STG"
 # ---- 단독 (렌더 포함): 계산 프로세스 0 인 카드 하나를 잡아 그 카드에 차례로 a · b (연기 단계는 a 만)
 if echo "$SPEC" | awk '$4=="z"' | grep -q .; then

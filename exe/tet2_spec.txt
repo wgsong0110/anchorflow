@@ -126,3 +126,35 @@ s1d rF_1 F nd T9S @t2 3
 s1d rF_2 F nd T9S @t2 3
 s1d rB_1 B nd T9S @t2 3
 s1d rB_2 B nd T9S @t2 3
+# s1e (조정자 11-10): 덤프 /home/dkta/work/tet2_dump (판정 판은 지표 뒤 지움), /dev/shm 대기 없음, 올리기 뒤에서 -- 판 r 남은 판 + 판 u (r 에서 하한 항 뺌: 상한만, s_hi = 정답 칸 σ_max 분포 (gtdfu, 단계 g3))
+s1e rM_6 M3 d T9S @t2 3 @s6l 1
+s1e rM_7 M3 d T9S @t2 3 @s6l 1
+s1e rM_8 M3 d T9S @t2 3 @s6l 1
+s1e rL_1 L v T9S @t2 3
+s1e rL_2 L nd T9S @t2 3
+s1e rL_3 L nd T9S @t2 3
+s1e rL_4 L nd T9S @t2 3
+s1e rF_1 F nd T9S @t2 3
+s1e rF_2 F nd T9S @t2 3
+s1e rB_1 B nd T9S @t2 3
+s1e rB_2 B nd T9S @t2 3
+s1e uW_1 W v T9S @t2 3 @t3u 1
+s1e uW_2 W d T9S @t2 3 @t3u 1
+s1e uW_3 W d T9S @t2 3 @t3u 1
+s1e uW_4 W d T9S @t2 3 @t3u 1
+s1e uM_1 M3 v T9S @t2 3 @t3u 1 @s6l 1
+s1e uM_2 M3 d T9S @t2 3 @t3u 1 @s6l 1
+s1e uM_3 M3 d T9S @t2 3 @t3u 1 @s6l 1
+s1e uM_4 M3 d T9S @t2 3 @t3u 1 @s6l 1
+s1e uM_5 M3 d T9S @t2 3 @t3u 1 @s6l 1
+s1e uM_6 M3 d T9S @t2 3 @t3u 1 @s6l 1
+s1e uM_7 M3 d T9S @t2 3 @t3u 1 @s6l 1
+s1e uM_8 M3 d T9S @t2 3 @t3u 1 @s6l 1
+s1e uL_1 L v T9S @t2 3 @t3u 1
+s1e uL_2 L nd T9S @t2 3 @t3u 1
+s1e uL_3 L nd T9S @t2 3 @t3u 1
+s1e uL_4 L nd T9S @t2 3 @t3u 1
+s1e uF_1 F nd T9S @t2 3 @t3u 1
+s1e uF_2 F nd T9S @t2 3 @t3u 1
+s1e uB_1 B nd T9S @t2 3 @t3u 1
+s1e uB_2 B nd T9S @t2 3 @t3u 1
