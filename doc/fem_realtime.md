@@ -9176,3 +9176,30 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 ### CM94.4 출력·실행
 - R2 lbours/wolfh13/ (판마다 cmd·log·summary·fem.jsonl·fi.jsonl·w12.jsonl·xpinfo.json·bbox·pred.pt (s1 은 F 포함), wolfh13_s0k·s1.log, stab_*.out, go_*.log·END, boot.log, wolfh13_tab_s1.md, wolfh13_heap_s1.md, wolfh13_heap_rows_s1.json, wolfh13_cmp_conv.md, code/ (tar·boot·launch·launch.txt (stop))).
 - 실행: SSH 1 번 (08:02 UTC, 로그인 노드 -> ece-a6gpu9 에서 R2 의 wolfh13_launch.sh 를 /dev/shm/dkta 에 받아 `pbs_attach -j 133077.ECE-util1` 로 떼어 띄움; qstat 안 부름). 판은 계산 프로세스 0 인 카드 3~6 (카드 0~2 는 wmconv, 안 건드림). 노드 / ·/tmp 안 씀. 표는 로컬.
+## CM95. wolf 가 정답보다 높게 쌓임 9 -- ghost penalty 를 모래에서 통째로 빼지 않고 '거의 빈 칸에 맞닿은 면' 에만: P1X 면 가중 w_F = 1 − φ_min (강성·고스트 질량) (사용자 11-10 지시; 절 CM70·CM77·CM87·CM93·CM94: P1X 벌점 강성이 모래를 붙잡고 (H5 f50 바닥 위 120 mm), 강성을 빼면 덜 풀린 걸음으로 부피 붕괴; 바탕 H5 (절 CM79, 확장 B-스플라인 없음, 모래 κ 강성 빼기 없음)) -- 가지 k1new, 커밋 30fbc1a (s0k·s1·v), 묶음 gpw (PBS 잡 133078 ece-a6gpu9 상주 시작점 exe/gpw_boot.sh·gpw_launch.sh, lib/anchorflow/fem_gpw.py, exe/gpw_wrap.py·stab_gpw.sh·go_gpw.sh·gpw_spec.txt·gpw_compose.py, 표 R2 lbours/gpw/gpw_heap_s1.md (exe/wolfh10_heap.py 로 로컬))
+### CM95.0 정의 (lib/anchorflow/fem_gpw.py; 감싸개 exe/gpw_wrap.py `--gpw 1|2 [--gpwdg 1]` -> exe/wolfh13_wrap.py (H5 사슬, 나머지 인자 없음); 새 문턱·클램프 없음)
+- 칸 점유 φ_c = min(1, V_c / h³) -- 절 CM55 정의 그대로 (V_c = 칸 가우스 점 부피 합 = 입자 부피 합, h³ = |det A|; min(1, ·) 은 몫의 정의로 새 것 아님).
+- **면 가중 w_F = 1 − min(φ_a, φ_b)** (덜 찬 칸의 결손 몫), P1X 면 집합 (절 CM53 `@g4 1e-1 @g4t 1 @g4x 1`) 위에서 강성 k 와 고스트 질량 k_M 모두에 곱함: E = ½ Σ_{F∈P1X} w_F [k D_F(y)·M D_F(y) + (k_M/τ²) D_F(y − ŷ)·M D_F(y − ŷ)].
+- 출처: 가중 ghost penalty -- Frei, Knoke, Steinbach, Wenske, Wick 2024, "Modeling and numerical simulation of fully Eulerian fluid-structure interaction using cut finite elements", arXiv:2402.00209, 2.3 절 (면 벌점을 닿는 칸의 잘린 부피 몫 κ_K 로 가중, Σ_{K∋F} ½ w_max^{1−2κ_K}: 거의 빈 칸 쪽이 크고 꽉 찬 칸 쪽이 작음). 벌점의 원래 목적은 잘린 칸 (작은 받침) 조건수 회복 (Burman 2010 CRAS 348:1217; Burman & Hansbo 2012 ANM 62:328) 이라 꽉 찬 칸끼리 면은 벌할 까닭이 없음. 여기서는 그 단조 성질만 쓰고 w_max 같은 값을 안 두려고 1 − φ_min (절 CM55 방식 5 와 같은 식) 을 씀.
+- 모드: (A) `--gpw 1` 모든 씬, (B) `--gpw 2` 재질 응집 몫 κ = 0 (절 CM75 lightg4.kappa_of) 씬만 (wolf). wolf 는 κ 0 이라 (A)·(B) 가 같은 계산.
+- 구현 (커널은 ghost6 것 그대로, 면 가중 버퍼 g5w 를 벌점 커널 넷 (gq_force·gq_mv·gq_ls·gq_phi) 이 이미 읽음): lightg3 가 꺼진 씬 (wolf κ 0, 레고·ficus m̄ 0) 은 첫 rt_gauss 결정 때 ghost6 WMODE = 5 (프레임마다 gq5_w 가 P1X 면에 1 − φ_min); lightg3 가 켜진 씬 (수박·bread, H5 에서 g5w = 1[P1X] + (1 − 1[P1X]) r κ λ_A) 은 lightg3 가 g5w 를 쓸 때마다 바로 뒤 gq_gpw 커널로 fw ← fw − 1[P1X] φ_min (P1X 몫만 w_F 배, 가벼움 몫은 그대로).
+- 진단 (결과 불변, `--gpwdg 1`): gpw.jsonl 프레임 끝 P1X 면 수·w_F 평균·분위·w < ½ 몫·φ_min 분위·실행 가중 대 torch 1 − φ_min 최대 차 (werr).
+### CM95.1 연기 (s0k, 8 프레임, 모두 완주; 연기 판정 OK)
+- wolf (A): 경로 방식 5, P1X 면 33.9 천, w 평균 0.65. 수박 (A): 곱 경로 (gq_gpw 4 회), P1X 면 23.7 천, w 평균 0.51. bread (A): 곱 경로, 56.0 천, 0.32. ficus (A): 방식 5 (구속 면 빼기 뒤 74 면), 0.43. 레고 (A): 방식 5, 16.3 천, 0.32. 레고 (B): 아무것도 안 함 (κ 1). 모든 판 werr ≤ 3e-8 (가중 = 1 − φ_min).
+### CM95.2 결과 -- wolf (s1, 비결정 4 판 동시, 빈 카드 0~3, 렌더 포함, 진단 E1, 입자 F 덤프; 절 CM91 heap 표 형식; 높이 = z − 0.48; H5 줄 = 절 CM93 h5_1 덤프 같은 함수로 다시)
+| 판 | 판 수 | 발산 | 오차 % | 바닥 위 질량중심 f50 mm | 꼭대기 f50 99 % · 최대 mm | 안식각 f50 ° | 면적 f50 cm² | 입자 밀도 f50 /cm³ | det F 중앙 f30 · f50 (det ≤ 0 수) | 이탈 판 · 최대 개수 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 정답 | - | - | - | 53 | 159 · 181 | 26.6 | 12402 | 2.23 | 1 | - |
+| H5 (h5_1) | 1 | 0 | 4.39 | 120 | 308 · 332 | 43.9 | 10786 | 2.05 | 1.00 · 1.00 (0) | 0/1 · 0 |
+| **w_F (A) = (B)** | 4 | 0 | 4.39 [4.18~4.47] | 111 [76~124] | 332 [311~387] · 435 [335~729] | 53.9 [43.9~80.5] | 11617 | 2.08 | 1.00 · 1.00 (w1~w3) · 0.47 (w4, 10.7 천) | 1/4 · 290 |
+- 판별: w1·w2·w3 은 H5 와 같음 (질량중심 122·124·122 mm, 안식각 44~46°, det F 1.00, 오차 4.43~4.47 %, 이탈 3~12 개). w4 만 f40 뒤 무너짐 (질량중심 76 mm 이나 det F 0.47·det ≤ 0 입자 1.07 만, 이탈 290 개 0.42 m, 안식각 80°) -- 정답 쪽이 아니라 절 CM87 꼴의 부피 붕괴 + 흩어짐.
+- 방출 뒤 낙하 몫 (τ [.04,.08)·[.16,.24)·[.32,.48) s): w1~w3 0.09·0.27·0.21 (H5 0.09·0.25·0.20, 정답 0.55·0.72·0.53) -- 매달림 그대로.
+- **가중이 안 줄어드는 까닭 (gpw.jsonl)**: wolf P1X 면의 φ_min 중앙 0.31 (10/90 % 0.13·0.63), 곧 w_F 평균 0.65 (f5)~0.73 (f50), w < ½ 인 면 9~19 %. 셀 2 (h 2 cm) 칸의 입자 부피 합이 칸 부피의 30 % 안팎이라 모래 덩어리 안쪽 칸도 '꽉 찬 칸' 으로 안 보임 -- 벌점 총량이 H5 의 2/3 이상 남아 모래를 그대로 붙잡음 (절 CM55.3 ficus 잎 φ 0.87 과 반대 방향의 같은 문제: 입자 부피 점유가 기하 채움과 다름).
+### CM95.3 결론
+- **통과 판 없음** (기준 바닥 위 질량중심 53±15 mm, 안식각 26.6±5°, det F ≈ 1). wolf 가 정답 쪽으로 가지 않아 할 일 2 (A·B 회귀·렌더 포함 단독) 는 안 돌림 (spec s2a·s2b 는 둠). 공통 후보는 그대로.
+- 원인 (확인): 1 − φ_min 은 정의대로 작동 (werr ≤ 3e-8) 하나 wolf 칸 점유 φ 가 안쪽도 0.3 안팎이라 가중이 0.65~0.73 으로 남음. φ 를 '입자 부피 / 칸 부피' 로 두는 한 이 씬에서 안쪽 면을 풀 수 없음.
+- 남은 갈래 (안 함, 지시 필요): 점유를 입자 부피가 아닌 기하 채움 (예: 칸 안 입자 위치의 기하 덮임) 으로 정의하거나 φ 를 씬 처음 상태의 칸 점유로 나눠 정규화 -- 둘 다 정의 변경이고, 후자는 자체 정규화라 허락 필요.
+### CM95.4 영상·출력
+- 영상: result/anchorflow/v20261009/fem_gpw_wolf_cmp.mp4 = R2 lbours/gpw/vid/fem_gpw_wolf_cmp.mp4 (3DGS, 정답 (fem_ag_wolf/gt/gt_wolf.mp4) | H5 (ext2/vid/vW5) | w_F 판 (vA, --dump_F, 오차 4.50 %), 2400x970, 51 프레임, yuv420p·faststart, ffprobe·전체 디코드 확인), 마지막 프레임 vid/gpw_last.png: H5 와 w_F 판이 같은 높은 덩어리, 정답은 얇은 더미.
+- R2 lbours/gpw/ (판마다 cmd·log·summary·fem.jsonl·gpw.jsonl·gpwinfo.json·e1·hc·rr·bbox·an.json·relfall.md·pred.pt (w1~w4·vA F 포함), 연기 kW·kM·kB·kF·kL1·kL2, gpw_s0k·s1·v.log, stab_*.out, go_*.log·END, boot.log, gpw_heap_s1.md, vid/, code/ (tar·boot·launch·compose·launch.txt (stop))).
+- 실행: SSH 1 번 (02:10 UTC, 로그인 노드 qstat -f 133078 -> ece-a6gpu9 에서 R2 의 gpw_launch.sh 를 /dev/shm/dkta 에 받아 `pbs_attach -j 133078.ECE-util1` 로 떼어 띄움). 상주 시작점이 30fbc1a s0k,s1 (11:10~11:14 노드 시각) -> v (11:18~11:20) 뒤 stop. 코드는 R2 tar 로만, 노드 / ·/tmp 안 씀 (/dev/shm/dkta 30 %), 카드는 계산 프로세스 0 인 카드만. 표·영상 합성은 로컬.
