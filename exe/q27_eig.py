@@ -3,7 +3,7 @@
 헤시안 (y = 0 -> X = F_q, 실행기 rt_elem 의 첫 반복 자리): K = Σ_q V_q G_qᵀ C G_q, G_qn = F_qᵀ ∇w_n(x_q) (실행기 gqn 과 같음), C = 등방 선형 탄성 접선 (씬 μ·λ).
   가우스 점 2x2x2 (팔분, 무게 ⅛) 또는 3x3x3 (fem_q27 정의: 축마다 5/18·8/18·5/18 몫 칸). V_q = (1 − κ) 몫 칸 입자 부피 + κ W_o 칸 입자 부피 (κ = 씬 --gq_oct, 수박 0),
   F_q = 몫 칸 입자 F 산술 평균 (빈 몫 칸은 칸 평균; 실행기는 회전·로그 신장 평균 -- 모드 수에는 영향 거의 없음). 벌점 항 (P1X·가벼움) 은 넣지 않음 (탄성 헤시안만).
-고유값: 야코비 배율 Â = D^-½ K D^-½ (지지 없는 자유도 뺌), 체비쇼프 거름 부분공간 반복 (블록) + 레일리-리츠 (f64). λ̂ < 1e-5 λ̂_max = 영, < 1e-3 = 근사 영.
+고유값: 야코비 배율 Â = D^-½ K D^-½ (지지 없는 자유도 뺌; 칸 81x81 강성을 모은 희소 행렬, cuSPARSE 곱), 체비쇼프 거름 부분공간 반복 (블록) + 레일리-리츠 (f64). λ̂ < 1e-5 λ̂_max = 영, < 1e-3 = 근사 영.
 자리: 영 모드 부분공간의 노드 몫 Σ|u_n|² (u = D^-½ z, 모드마다 단위) 을 노드 '지지 칸 점유 수' (노드를 27 노드 판에 넣는 칸 27 개 중 점유 칸 수) 구간별로.
 사용: python exe/q27_eig.py --pred pred.pt --solver q27solver.pt --frames 0,c --q 8|27 --out out.json [--kb 2400]
 """
@@ -109,41 +109,49 @@ def build(fi, q):
     ids = ids_c[qcell]
     # 노드 지지 칸 점유 수
     occ = torch.zeros(nu.numel(), device=dev, dtype=torch.long).index_add_(0, ids_c.reshape(-1), torch.ones(ids_c.numel(), device=dev, dtype=torch.long))
-    return dict(nc=nc, nq=int(keep.sum()), nn=int(nu.numel()), ids=ids, G=G.float(), V=Vq.float(), occ=occ, np=int(ok.sum()))
+    return dict(nc=nc, nq=int(keep.sum()), nn=int(nu.numel()), ids=ids, G=G.float(), V=Vq.float(), occ=occ, np=int(ok.sum()), qcell=qcell, ids_c=ids_c)
 
 
 def make_op(S):
-    nn = S["nn"]; ids, G, V = S["ids"], S["G"], S["V"]
-    g2 = (G * G)
-    dg = torch.zeros(nn, 3, device=dev, dtype=torch.float64)
-    contrib = V[:, None, None].double() * (lam * g2 + mu * (g2.sum(2, keepdim=True) + g2)).double()
-    dg.index_add_(0, ids.reshape(-1), contrib.reshape(-1, 3))
-    dg = dg.reshape(-1)
+    """칸마다 81x81 강성 (점 합) 을 모아 희소 행렬 (CSR) 로 -- 야코비 배율 Â = D^-½ K D^-½ 곱은 cuSPARSE SpMM."""
+    nn = S["nn"]; ids, G, V = S["ids"], S["G"].double(), S["V"].double()
+    nq = ids.shape[0]
+    qc = S["qcell"]
+    nc = S["nc"]
+    Kc = torch.zeros(nc, 27, 3, 27, 3, device=dev, dtype=torch.float32)
+    I3 = torch.eye(3, device=dev, dtype=torch.float64)
+    CH = 4096
+    for q0 in range(0, nq, CH):
+        q1 = min(nq, q0 + CH)
+        g = G[q0:q1]; v = V[q0:q1]
+        t1 = lam * torch.einsum("qna,qmb->qnamb", g, g)
+        t3 = mu * torch.einsum("qnb,qma->qnamb", g, g)
+        gg = torch.einsum("qnj,qmj->qnm", g, g)
+        t2 = mu * gg[:, :, None, :, None] * I3[None, None, :, None, :]
+        Kc.index_add_(0, qc[q0:q1], ((t1 + t2 + t3) * v[:, None, None, None, None]).float())
+        del t1, t2, t3, gg
+    ic = S["ids_c"]                                                                     # (nc, 27)
+    dof = (ic[:, :, None] * 3 + torch.arange(3, device=dev)[None, None, :]).reshape(nc, 81)
+    rows = dof[:, :, None].expand(nc, 81, 81).reshape(-1)
+    cols = dof[:, None, :].expand(nc, 81, 81).reshape(-1)
+    vals = Kc.reshape(-1)
+    del Kc
+    n = nn * 3
+    K = torch.sparse_coo_tensor(torch.stack([rows, cols]), vals, (n, n)).coalesce()
+    del rows, cols, vals
+    idx = K.indices(); val = K.values()
+    dg = torch.zeros(n, device=dev, dtype=torch.float64)
+    m = idx[0] == idx[1]
+    dg.index_add_(0, idx[0][m], val[m].double())
     act = dg > 1e-12 * dg.max()
     s = torch.zeros_like(dg); s[act] = dg[act].rsqrt()
-    s32 = s.float()
-    nq = ids.shape[0]
-    CH = max(64, int(2.0e8 // (81 * max(1, KB[0]))))
+    val = (val.double() * s[idx[0]] * s[idx[1]]).float()
+    A = torch.sparse_coo_tensor(idx, val, (n, n)).coalesce().to_sparse_csr()
+    S["nnz"] = int(val.numel())
+    del idx, val, K
 
-    def K(U):                                                                           # U: (nn*3, k) f32 -> (nn*3, k)
-        k = U.shape[1]
-        Un = U.reshape(nn, 3, k)
-        out = torch.zeros_like(Un)
-        for q0 in range(0, nq, CH):
-            q1 = min(nq, q0 + CH)
-            ii = ids[q0:q1]; g = G[q0:q1]; vv = V[q0:q1]
-            Ug = Un[ii]                                                                 # (c,27,3,k)
-            H = torch.einsum("cnak,cnj->cajk", Ug, g)                                   # H_aj = Σ u_a g_j
-            tr = H[:, 0, 0] + H[:, 1, 1] + H[:, 2, 2]
-            Sg = mu * (H + H.transpose(1, 2))
-            Sg[:, 0, 0] += lam * tr; Sg[:, 1, 1] += lam * tr; Sg[:, 2, 2] += lam * tr
-            f = torch.einsum("cajk,cnj->cnak", Sg, g) * vv[:, None, None, None]
-            out.index_add_(0, ii.reshape(-1), f.reshape(-1, 3, k))
-            del Ug, H, Sg, f
-        return out.reshape(nn * 3, k)
-
-    def Ah(Z):                                                                          # 야코비 배율 (지지 없는 자유도 0)
-        return s32[:, None] * K(s32[:, None] * Z)
+    def Ah(Z):
+        return torch.sparse.mm(A, Z)
     return Ah, act, s
 
 
@@ -214,7 +222,7 @@ for fi in fr:
                 m = (occ >= lo) & (occ <= hi)
                 row["%d-%d" % (lo, hi)] = dict(node_frac=float(m.float().mean()), mode_frac=float(wn[m].sum()))
         loc[nm] = row
-    rec = dict(frame=fi, frame_label="f%d" % (fi + 1), nc=S["nc"], nq=S["nq"], nn=S["nn"], np=S["np"], ndof_act=int(act.sum()), kb=KB[0], lmax=lmax,
+    rec = dict(frame=fi, frame_label="f%d" % (fi + 1), nc=S["nc"], nq=S["nq"], nn=S["nn"], np=S["np"], nnz=S.get("nnz"), ndof_act=int(act.sum()), kb=KB[0], lmax=lmax,
                n_zero=int(z5.sum()), n_near=int((z3 & ~z5).sum()), n_zero_conv=int((z5 & conv).sum()), all_kb_small=bool(z3.all()),
                ev_head=[float(q) / lmax for q in ev[:12]], ev_at=[float(ev[min(len(ev) - 1, j)]) / lmax for j in (6, 30, 100, 300, 1000)], loc=loc, hist=hist[-3:], sec=round(time.time() - t0, 1))
     OUT["cases"].append(rec)

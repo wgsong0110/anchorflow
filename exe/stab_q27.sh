@@ -183,7 +183,7 @@ if [ $STG = e ]; then
     for qq in 8 27; do
       [ -s $O/eig/${sc}_q$qq.json ] && grep -q '"cases"' $O/eig/${sc}_q$qq.json && [ "$($PY -c "import json; print(len(json.load(open('$O/eig/${sc}_q$qq.json'))['cases']))")" = 2 ] && continue
       while [ $(jobs -rp | wc -l) -ge $NG ]; do sleep 5; done
-      ( me=$BASHPID; g=$(claim_wait $me); log "eig ${sc} q$qq 카드 $g"; CUDA_VISIBLE_DEVICES=$g timeout 7200 $PY -u exe/q27_eig.py --pred $ED/$sc/pred.pt --solver $ED/$sc/q27solver.pt --frames 0,c --q $qq --kb ${Q27KB:-4000} --deg 20 --iters 10 --out $O/eig/${sc}_q$qq.json < /dev/null > $O/eig/${sc}_q$qq.log 2>&1; log "eig ${sc} q$qq rc=$? $(tail -2 $O/eig/${sc}_q$qq.log | head -1 | cut -c1-300)"; rm -f $CL/$g; rclone copy $O/eig $RO/eig -q ) & sleep 3
+      ( me=$BASHPID; g=$(claim_wait $me); log "eig ${sc} q$qq 카드 $g"; CUDA_VISIBLE_DEVICES=$g timeout 7200 $PY -u exe/q27_eig.py --pred $ED/$sc/pred.pt --solver $ED/$sc/q27solver.pt --frames 0,c --q $qq --kb ${Q27KB:-4000} --deg 20 --iters 12 --out $O/eig/${sc}_q$qq.json < /dev/null > $O/eig/${sc}_q$qq.log 2>&1; log "eig ${sc} q$qq rc=$? $(tail -2 $O/eig/${sc}_q$qq.log | head -1 | cut -c1-300)"; rm -f $CL/$g; rclone copy $O/eig $RO/eig -q ) & sleep 3
     done
   done
   wait
