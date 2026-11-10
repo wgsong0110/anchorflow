@@ -47,3 +47,8 @@ c2 P5_d1W W x H8 @xdeg 1 @w13 1 @cwload 5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 
 c2 P5_eks W x H8 @cwload 5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
 c2 P5_h5 W x H5n @cwload 5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 2 --cg 400 --tolP 1e-8 --frames 6
 c2 A5_eksW W x H8 @w13 1 @cwload 5 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
+# s1: 고침 판 H8F = H8 + 확장 외삽 차수 1 (@xdeg 1) + 확장 반영 MG (@w13 1, 절 CM94) -- c2 다시 풀기에서 sv8·sv5 모두 H5n 수준 (κ·끝 r·PCG 상대 잔차). wolf 4 판 동시, 렌더 포함, 입자 F 덤프 (det F)
+s1 f1 W nd H8 @xdeg 1 @w13 1 --dump_F
+s1 f2 W nd H8 @xdeg 1 @w13 1 --dump_F
+s1 f3 W nd H8 @xdeg 1 @w13 1 --dump_F
+s1 f4 W nd H8 @xdeg 1 @w13 1 --dump_F
