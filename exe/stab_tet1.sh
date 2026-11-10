@@ -143,8 +143,13 @@ run() {   # run 이름 씬 방식 카드 플래그
   [ $lean = 1 ] && { pre=""; c="${c/exe\/fem_an_rt_sim.py/exe/s6/fem_an_rt_sim.py}"; c="${c/exe\/fem_ao_rt_sim.py/exe/s6/fem_ao_rt_sim.py}"; }   # 절 CM65 가벼운 판: 실행기 사본 + 진단 끔 (절 CM74 speed8 과 같음)           # 단독 판도 E1 (빠른 노드·이탈, 프레임 사이 읽기만; 절 CM56 단독 판과 같음)                                   # 절 CM42 진단 (결과 불변; 재현·단독 판은 끔)
   local hx=""; [ -n "$hc" ] && hx="--hc $hc"; [ -n "$tc" ] && hx="$hx --tc $tc"
   [ "${rr:-0}" = 1 ] && hx="$hx $(rr_of $s) $w4"
-  [[ " $5 " == *" T9S "* ]] && { c="${c/--gq_oct 0.1 /--gq_oct 1 }"; c="${c/--gq_oct 0 /--gq_oct 1 }"; }   # 절 CM102 T9S: 점유 가중 κ (새 실행기 0.1 · 수박 0) -> 1 (칸 입자 부피·질량을 6 사면체에 고르게)
-  c="exe/speed13_wrap.py $s13 exe/speed12_wrap.py $s12 exe/ext2_wrap.py $w8 $l4 $l3 $w5x $s9 $s8 $s7 $s5 $mf $wf $hx $wg $w5 $w3 $w2 $wo $c"; [ -n "$tet" ] && c="exe/tet1_wrap.py $tet $c"
+  [[ " $5 " == *" T9S "* ]] && c="${c/--gq_oct 0.1 /--gq_oct 1 }"                                # 절 CM102 T9S 새 실행기: 점유 가중 κ 0.1 -> 1
+  local toct=""
+  if [ $s = M3 ] && [[ "$tet" == *"--tet 1"* ]]; then                                       # 절 CM102 (조정자 11-10): 수박 사면체 판 = 입자 -> 자기 사면체 λ 4 노드 질량·운동량 (--gq_mass 끔), HHT ρ 0.8 (다른 씬과 같게),
+    c="${c/ --gq_mass / }"; c="${c/ --gq_oct 0 / }"; c="${c/--rho 0.7 /--rho 0.8 }"      #   점유 가중 κ 는 tet1_wrap --toct (옛 실행기는 --gq_mass 없이 --gq_oct 경로가 없음): T9 0.1 · T9S 1 (새 실행기와 같은 값)
+    toct="--toct 0.1"; [[ " $5 " == *" T9S "* ]] && toct="--toct 1"
+  fi   # 절 CM102 T9S: 점유 가중 κ (새 실행기 0.1 · 수박 0) -> 1 (칸 입자 부피·질량을 6 사면체에 고르게)
+  c="exe/speed13_wrap.py $s13 exe/speed12_wrap.py $s12 exe/ext2_wrap.py $w8 $l4 $l3 $w5x $s9 $s8 $s7 $s5 $mf $wf $hx $wg $w5 $w3 $w2 $wo $c"; [ -n "$tet" ] && c="exe/tet1_wrap.py $tet $toct $c"
   rm -rf $O/$n; mkdir -p $O/$n; echo "$pre $PY -u $c --out $O/$n" > $O/$n/cmd.txt
   nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader > $O/$n/apps_at_start.txt 2>&1; echo "카드 $g 계산 프로세스 $(nvidia-smi -i $g --query-compute-apps=pid --format=csv,noheader | grep -c .)" >> $O/$n/apps_at_start.txt; nvidia-smi --query-gpu=index,uuid,utilization.gpu,memory.used --format=csv,noheader >> $O/$n/apps_at_start.txt; cat /proc/loadavg >> $O/$n/apps_at_start.txt
   shm_wait

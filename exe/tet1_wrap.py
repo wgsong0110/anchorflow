@@ -16,9 +16,14 @@ argv = sys.argv[1:]
 out = argv[argv.index("--out") + 1] if "--out" in argv else "."
 os.makedirs(out, exist_ok=True)
 MODE = None
-while argv and argv[0] == "--tet":
-    MODE = int(float(argv[1]))
+while argv and argv[0] in ("--tet", "--toct"):
+    if argv[0] == "--tet":
+        MODE = int(float(argv[1]))
+    else:
+        os.environ["AF_TET1_OCT"] = argv[1]                                        # 옛 실행기 사면체 점유 가중 κ (--gq_mass 없는 수박 판)
     del argv[:2]
+if MODE == 1:
+    os.environ["AF_TET1"] = "1"                                                     # 옛 실행기 CM30 assert: --gq_mass 없이 --ws_bar 허용
 if MODE is not None:
     from anchorflow import fem_tet1 as TET
     TET.install(out, MODE)

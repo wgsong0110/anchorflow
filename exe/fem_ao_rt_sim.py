@@ -337,7 +337,7 @@ if MATK is not None:                                                            
         WFD["wi"] = dict(mode=("" if a.wi == "rec" else a.wi), R=int(a.wi_r), kj=float(a.wi_kj) * float(mu), rec=bool(a.wi_rec), rec_frames=tuple(int(q) for q in a.wi_rec.split(",") if q))
         print(f"[절 CM29] {WFD['wi']}", flush=True)
     if a.gq_oct >= 0 or a.gq_ored or a.ws_bar > 0:                                     # 절 CM30
-        assert MATK == 7 and WBAR is not None and a.gq_mass and not a.det, "절 CM30 은 수박 --gq_mass --fl_bar 비결정 판"
+        assert MATK == 7 and WBAR is not None and (a.gq_mass or (os.environ.get("AF_TET1") == "1" and a.gq_oct < 0 and not a.gq_ored)) and not a.det, "절 CM30 은 수박 --gq_mass --fl_bar 비결정 판 (절 CM102 사면체 판은 --gq_mass 없이 --ws_bar 만: 점유 가중은 tet1_wrap --toct)"
         assert a.ws_bar == 0 or a.ls_inv, "--ws_bar 는 --ls_inv 위 (필터는 전역 그대로, 장벽만 국소로)"
         WFD["ws"] = dict(oct=(float(a.gq_oct) if a.gq_oct >= 0 else None), red=bool(a.gq_ored), bar=int(a.ws_bar))
         if a.ws_fi or a.w2rec:                                                        # 절 CM32 (끄면 키 없음 -- 그대로)

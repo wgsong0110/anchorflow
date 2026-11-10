@@ -62,3 +62,24 @@ s2 xTM M3 z T9 @s6l 1
 s2 xTSL L z T9S @s6l 1
 s2 xTSW W z T9S @s6l 1
 s2 xTSM M3 z T9S @s6l 1
+# 조정자 11-10 추가 지시: 수박 사면체 판은 --gq_mass 끔 (입자 -> 자기 사면체 λ 4 노드), ρ 0.8, 점유 가중 κ = 새 실행기와 같게 (tet1_wrap --toct) -- 앞 tM·sM·kTM·kTSM·xTM·xTSM (gq_mass·ρ 0.7·κ 0/1) 은 이전 정의 기록
+s1bk kUM M3 d T9 @s6l 1 --frames 8
+s1bk kUSM M3 d T9S @s6l 1 --frames 8
+s1c aM_1 M3 v T9 @s6l 1
+s1c aM_2 M3 d T9 @s6l 1
+s1c aM_3 M3 d T9 @s6l 1
+s1c aM_4 M3 d T9 @s6l 1
+s1c aM_5 M3 d T9 @s6l 1
+s1c aM_6 M3 d T9 @s6l 1
+s1c aM_7 M3 d T9 @s6l 1
+s1c aM_8 M3 d T9 @s6l 1
+s1c bM_1 M3 v T9S @s6l 1
+s1c bM_2 M3 d T9S @s6l 1
+s1c bM_3 M3 d T9S @s6l 1
+s1c bM_4 M3 d T9S @s6l 1
+s1c bM_5 M3 d T9S @s6l 1
+s1c bM_6 M3 d T9S @s6l 1
+s1c bM_7 M3 d T9S @s6l 1
+s1c bM_8 M3 d T9S @s6l 1
+s2b xUM M3 z T9 @s6l 1
+s2b xUSM M3 z T9S @s6l 1

@@ -169,6 +169,10 @@ def transform(src):
         for p_, r_ in YQ:
             s = _sub_fn(s, fn, p_, r_, cnt)
     s = _sub_fn(s, "gq_pq", r"\]\*0\.125f", "]*AF_TVW(q & 7)", cnt)
+    if os.environ.get("AF_TET1_OCT"):                                                # 옛 실행기 (--gq_mass 없음 -> wmsparse 점유 가중 경로 없음): 사면체 몫 = (1 − κ) 사면체 입자 부피 / 칸 부피 + κ/6
+        kap = float(os.environ["AF_TET1_OCT"])
+        s = _sub_fn(s, "rt_gauss", r"Vq\[q\] = ac\[28\]\*AF_TVW\(q & 7\); float mm = ac\[29\]\*AF_TVW\(q & 7\);",
+                    "float tvw_ = ((q & 7) < 6) ? ((1.f - %.9ef)*aq[27]/ac[28] + %.9ef/6.f) : 0.f; Vq[q] = ac[28]*tvw_; float mm = ac[29]*tvw_;" % (kap, kap), cnt)
     cnt = {k: v for k, v in cnt.items() if v}
     if cnt:
         if "bwf(fx" in s:

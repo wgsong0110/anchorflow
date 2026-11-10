@@ -7,7 +7,7 @@ WM=/dev/shm/dkta/ag_data/wm.pt
 [ -s $WM ] || { rclone copyto r2:storage/result/anchorflow/lbours/fem_ag_data/wm.pt $WM.$$ -q && mv $WM.$$ $WM; }
 get() { mkdir -p $D/$1; rclone copy $RO/$1 $D/$1 -q --include summary.json --include log.txt --include pred.pt --include lj.pt; }
 G=""
-for g in "T9:tM" "T9S:sM"; do nm=${g%%:*}; p=${g##*:}; L=""
+for g in "T9:aM" "T9S:bM" "T9_이전:tM" "T9S_이전:sM"; do nm=${g%%:*}; p=${g##*:}; L=""
   for i in 1 2 3 4 5 6 7 8; do get ${p}_$i; L="$L,$D/${p}_$i"; done
   G="$G $nm=${L#,}"; done
 get vH9M; G="$G H9=$D/vH9M"
