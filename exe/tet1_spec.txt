@@ -83,3 +83,6 @@ s1c bM_7 M3 d T9S @s6l 1
 s1c bM_8 M3 d T9S @s6l 1
 s2b xUM M3 z T9 @s6l 1
 s2b xUSM M3 z T9S @s6l 1
+# 조정자 11-10: 레고 영상 판 -- 사면체 판 중 가장 오래 간 sL_3 (T9S, f44 발산) 과 같은 명령 + 덤프 (--dump --dump_F --dump_part, 진단 플래그만 다름), H9 레고 영상 판
+s1d vTSL L v T9S
+s1d vH9L L v H9
