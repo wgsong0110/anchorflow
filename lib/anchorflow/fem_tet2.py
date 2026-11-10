@@ -153,6 +153,7 @@ __global__ void __launch_bounds__(128) t2_band(const int* IP, const int* cb, con
     t2_X(q, IP, cb, BG, Fq, ya, A); t2_X(q, IP, cb, BG, Fq, yb, Xb);
     t2_sv(A, S);
     bool od = (double)S[0]*S[1]*S[2] > 0.0, ol = S[2] > (float)AF_T2_SLO, oh = S[0] < (float)AF_T2_SHI;
+    if (!(ol && oh)) atomicAdd(&TI[3], 1);                                   // 기준점이 이미 띠 밖인 점 수
     float a = fminf(1.f, 0.9f*__int_as_float(TI[0]));
     int kq = nc;
     for (int k=0;k<nc;k++) {
@@ -165,14 +166,15 @@ __global__ void __launch_bounds__(128) t2_band(const int* IP, const int* cb, con
     if (kq > 0) atomicMax(&TI[1], kq);
 }
 // ACC: 0 반복 확인 수 · 1 보폭 자른 수 (a < 1) · 2 최소 a · 3 시작점 섞은 수 · 4 시작점 최소 a · 5 det 근으로 자른 수 · 6 띠로 더 줄인 수 · 7 실현 가능 후보 없음
-//      8 시작점 기준이 뒤집힌 점 최대 · 9 관성 예측 기준이 뒤집혀 y = 0 기준으로 섞은 수
+//      8 시작점 기준이 뒤집힌 점 최대 · 9 관성 예측 기준이 (det·띠) 어겨 y = 0 기준으로 섞은 수 · 10·11 걸음 시작 F_q (y 0) 의 det ≤ 0 · 띠 밖 점 수
 // start: 0 반복 경계, 1 시작점 (기준 = 걸음 시작 관성 예측 Ũ), 2 시작점 대체 (기준 = y 0; 1 의 기준에 뒤집힌 점이 있을 때만 씀)
 __global__ void t2_pick(int* TI, float* T, double* ACC, int start, int apply, int nc) {
-    if (start == 2 && T[2] == 0.f) { T[0] = 1.f; TI[0] = __float_as_int(2.f); TI[1] = 0; TI[2] = 0; return; }
+    if (start == 2) { ACC[10] = fmax(ACC[10], (double)TI[2]); ACC[11] = fmax(ACC[11], (double)TI[3]); }   // y 0 기준 (= 걸음 시작 F_q) 의 det ≤ 0 · 띠 밖 점 수
+    if (start == 2 && T[2] == 0.f) { T[0] = 1.f; TI[0] = __float_as_int(2.f); TI[1] = 0; TI[2] = 0; TI[3] = 0; return; }
     float ad = __int_as_float(TI[0]); float a0 = fminf(1.f, 0.9f*ad); int k = TI[1];
     float a = (k >= nc) ? 0.f : ldexpf(a0, -k);
     bool use = true;
-    if (start == 1) { T[2] = (float)TI[2]; use = (TI[2] == 0); }
+    if (start == 1) { T[2] = (float)(TI[2] + TI[3]); use = (TI[2] == 0 && TI[3] == 0); }   // 관성 예측 기준이 det·띠 어느 쪽이든 어기면 y 0 기준으로
     T[0] = (apply && use) ? a : 1.f; T[1] = a;
     if (use) {
         ACC[0] += 1.0; if (a < 1.f) ACC[1] += 1.0; ACC[2] = fmin(ACC[2], (double)a);
@@ -180,7 +182,7 @@ __global__ void t2_pick(int* TI, float* T, double* ACC, int start, int apply, in
         if (start) { if (a < 1.f) ACC[3] += 1.0; ACC[4] = fmin(ACC[4], (double)a); ACC[8] = fmax(ACC[8], (double)TI[2]); }
         if (start == 2) ACC[9] += 1.0;
     }
-    TI[0] = __float_as_int(2.f); TI[1] = 0; TI[2] = 0;
+    TI[0] = __float_as_int(2.f); TI[1] = 0; TI[2] = 0; TI[3] = 0;
 }
 __global__ void t2_apply(const int* IP, const float* T, const float* ya, const float* ea, float* y, float* eta) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
@@ -246,9 +248,20 @@ __global__ void __launch_bounds__(128) t2_diag(const int* IP, const int* cb, con
     dmin = t2_wmin(dmin); smin = t2_wmin(smin); smax = t2_wmax(smax); pmax = t2_wmax(pmax);
     if ((threadIdx.x & 31) == 0) { atomicMin(&RI[r*4], t2_key(dmin)); atomicMin(&RI[r*4+1], t2_key(smin)); atomicMax(&RI[r*4+2], t2_key(smax)); atomicMax(&RI[r*4+3], t2_key(pmax)); }
 }
+// 걸음 끝 갱신 뒤 U (입자 F 갱신에 쓰이는 걸음 끝 변위) 의 X = F_q + ∇U F_q: det ≤ 0 · 띠 밖 점 수 -> R 21·22
+__global__ void __launch_bounds__(128) t2_diagU(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* U, const int* TI, double* R, int maxrow) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = q < IP[12] && Vq[q < IP[12] ? q : 0] > 0.f;
+    double c0 = 0.0, c1 = 0.0;
+    if (on) { double X[9]; float S[3]; t2_X(q, IP, cb, BG, Fq, U, X); t2_sv(X, S);
+        c0 = ((double)S[0]*S[1]*S[2] <= 0.0) ? 1.0 : 0.0; c1 = (S[2] < (float)AF_T2_SLO || S[0] > (float)AF_T2_SHI) ? 1.0 : 0.0; }
+    int r = TI[10]; if (r >= maxrow) r = maxrow - 1;
+    c0 = t2_ws(c0); c1 = t2_ws(c1);
+    if ((threadIdx.x & 31) == 0) { if (c0 != 0.0) atomicAdd(&R[r*24+21], c0); if (c1 != 0.0) atomicAdd(&R[r*24+22], c1); }
+}
 __global__ void t2_rowfin(int* TI, const double* ACC, double* R, int maxrow) {
     int r = TI[10]; if (r >= maxrow) r = maxrow - 1;
-    for (int k=0;k<10;k++) R[r*24+9+k] = ACC[k];
+    for (int k=0;k<12;k++) R[r*24+9+k] = ACC[k];
     TI[11] += 1; if (TI[10] < maxrow - 1) TI[10] += 1; else TI[12] += 1;
 }
 '''
@@ -414,6 +427,11 @@ class Hook:
         i32, f32 = np.int32, np.float32
         h.L("t2_rowinit", 1, (_P(B["TI"]), _P(B["R"]), _P(B["RI"]), i32(MAXROW)), 1)
         h.L("t2_diag", h.nq(), (_P(s.IP), _P(s.cb), _P(s.BG), _P(s.Fq), _P(s.Vq), _P(s.y), f32(h.mu), f32(h.lam), _P(B["TI"]), _P(B["R"]), _P(B["RI"]), i32(MAXROW)), 128)
+
+    def diag_end(h, Uptr):
+        s, B = h.s, h.buf
+        i32 = np.int32
+        h.L("t2_diagU", h.nq(), (_P(s.IP), _P(s.cb), _P(s.BG), _P(s.Fq), _P(s.Vq), Uptr, _P(B["TI"]), _P(B["R"]), i32(MAXROW)), 128)
         h.L("t2_rowfin", 1, (_P(B["TI"]), _P(B["ACC"]), _P(B["R"]), i32(MAXROW)), 1)
 
     def k(h, name, n, args, b=128):
@@ -442,10 +460,13 @@ class Hook:
                     h.phase = 2
             elif name in ENDK and h.phase == 2:
                 h.check(False)
-                if CFG["dg"]:
-                    h.diag()
                 h.phase = 0
                 hk["end:" + name] = hk.get("end:" + name, 0) + 1
+                if CFG["dg"]:
+                    h.diag()
+                    h.k0(name, n, args, b)
+                    h.diag_end(args[7])                                                     # 걸음 끝 갱신 뒤 U (rt_ga_end*·ao_stepend*: 일곱째 인자)
+                    return
         except Exception as e_:
             INFO["err"] = f"{name}: {e_}"[:600]; _dump(); raise
         return h.k0(name, n, args, b)
@@ -470,7 +491,7 @@ class Hook:
             r = R[i]
             rows.append(dict(nq=int(r[0]), ndet=int(r[1]), nband=int(r[2]), nlo=int(r[3]), nhi=int(r[4]), Eb=float(r[5]), ninf=int(r[6]), Eh=float(r[7]), nact=int(r[8]),
                              nchk=int(r[9]), ncap=int(r[10]), amin=float(r[11]), nstart=int(r[12]), astart=float(r[13]), ndetcap=int(r[14]), nbandcap=int(r[15]),
-                             nnofeas=int(r[16]), ninv0=int(r[17]), nfb=int(r[18]), dmin=fk(RI[i][0]), smin=fk(RI[i][1]), smax=fk(RI[i][2]), pbmax=fk(RI[i][3])))
+                             nnofeas=int(r[16]), ninv0=int(r[17]), nfb=int(r[18]), nfq_det=int(r[19]), nfq_band=int(r[20]), nU_det=int(r[21]), nU_band=int(r[22]), dmin=fk(RI[i][0]), smin=fk(RI[i][1]), smax=fk(RI[i][2]), pbmax=fk(RI[i][3])))
         h.f.write(json.dumps(dict(c=h.ncall, t=float(t), steps=rows, over=int(TI[12]))) + "\n"); h.f.flush()
         h.ncall += 1
         B["TI"][10:13].zero_()
@@ -557,5 +578,5 @@ def summarize(path):
     return dict(nstep=len(S), steps_det=sum(r["ndet"] > 0 for r in S), max_ndet=max(r["ndet"] for r in S), min_det=min(r["dmin"] for r in S),
                 steps_band=sum(r["nband"] > 0 for r in S), max_nband=max(r["nband"] for r in S), min_s=min(r["smin"] for r in S), max_s=max(r["smax"] for r in S),
                 nchk=sum(r["nchk"] for r in S), ncap=sum(r["ncap"] for r in S), amin=min(r["amin"] for r in S), nstart=sum(r["nstart"] for r in S),
-                nnofeas=sum(r["nnofeas"] for r in S), nfb=sum(r.get("nfb", 0) for r in S), eb_share_max=max((r["Eb"] / (r["Eb"] + r["Eh"]) if (r["Eb"] + r["Eh"]) > 0 else 0.0) for r in S),
+                nnofeas=sum(r["nnofeas"] for r in S), nfb=sum(r.get("nfb", 0) for r in S), steps_fq=sum((r.get("nfq_det", 0) + r.get("nfq_band", 0)) > 0 for r in S), max_nfq_det=max(r.get("nfq_det", 0) for r in S), max_nfq_band=max(r.get("nfq_band", 0) for r in S), max_nU_det=max(r.get("nU_det", 0) for r in S), max_nU_band=max(r.get("nU_band", 0) for r in S), eb_share_max=max((r["Eb"] / (r["Eb"] + r["Eh"]) if (r["Eb"] + r["Eh"]) > 0 else 0.0) for r in S),
                 eb_share_mean=float(np.mean([(r["Eb"] / (r["Eb"] + r["Eh"]) if (r["Eb"] + r["Eh"]) > 0 else 0.0) for r in S])), ninf=sum(r["ninf"] for r in S))

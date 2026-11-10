@@ -47,3 +47,39 @@ s2 zW W z T9S @t2 1 @s6l 1
 s2 zM M3 z T9S @t2 1 @s6l 1
 s2 zF F z T9S @t2 1 @s6l 1
 s2 zB B z T9S @t2 1 @s6l 1
+# s1b (v2, 커밋 뒤): 시작점 기준 대체를 det·띠 어느 쪽 위반이든으로, 기록에 걸음 시작 F_q (y 0) 위반·걸음 끝 갱신 U 의 X 위반 추가 -- 새 판 p*, 대조 기록 rT* (T9S)·rH* (H9)
+s1b pW_1 W v T9S @t2 1
+s1b pW_2 W d T9S @t2 1
+s1b pW_3 W d T9S @t2 1
+s1b pW_4 W d T9S @t2 1
+s1b pM_1 M3 v T9S @t2 1 @s6l 1
+s1b pM_2 M3 d T9S @t2 1 @s6l 1
+s1b pM_3 M3 d T9S @t2 1 @s6l 1
+s1b pM_4 M3 d T9S @t2 1 @s6l 1
+s1b pM_5 M3 d T9S @t2 1 @s6l 1
+s1b pM_6 M3 d T9S @t2 1 @s6l 1
+s1b pM_7 M3 d T9S @t2 1 @s6l 1
+s1b pM_8 M3 d T9S @t2 1 @s6l 1
+s1b pL_1 L v T9S @t2 1
+s1b pL_2 L nd T9S @t2 1
+s1b pL_3 L nd T9S @t2 1
+s1b pL_4 L nd T9S @t2 1
+s1b pF_1 F nd T9S @t2 1
+s1b pF_2 F nd T9S @t2 1
+s1b pB_1 B nd T9S @t2 1
+s1b pB_2 B nd T9S @t2 1
+s1b rTW W d T9S @t2 0
+s1b rTM M3 d T9S @t2 0 @s6l 1
+s1b rTL L nd T9S @t2 0
+s1b rTF F nd T9S @t2 0
+s1b rTB B nd T9S @t2 0
+s1b rHW W d H9 @t2 0
+s1b rHM M3 d H9 @t2 0 @s6l 1
+s1b rHL L nd H9 @t2 0
+s1b rHF F nd H9 @t2 0
+s1b rHB B nd H9 @t2 0
+s2b yL L z T9S @t2 1 @s6l 1
+s2b yW W z T9S @t2 1 @s6l 1
+s2b yM M3 z T9S @t2 1 @s6l 1
+s2b yF F z T9S @t2 1 @s6l 1
+s2b yB B z T9S @t2 1 @s6l 1
