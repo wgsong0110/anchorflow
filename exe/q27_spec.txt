@@ -33,14 +33,14 @@ s1 wC_2 W nd H5n @q27 0 --dump_F
 s1 wC_3 W nd H5n @q27 0 --dump_F
 s1 wC_4 W nd H5n @q27 0 --dump_F
 # s2: 회귀 -- 수박 8 (진단 판 g + 덤프 -> 꿈틀거림) · 레고 4 · ficus 2 · bread 2 + 렌더 포함 단독 a·b (다섯 씬, 가벼운 판) -- P · Z · C
-s2 gP_1 M3 g H5n @q27 1 --dump
-s2 gP_2 M3 g H5n @q27 1 --dump
-s2 gP_3 M3 g H5n @q27 1 --dump
-s2 gP_4 M3 g H5n @q27 1 --dump
-s2 gP_5 M3 g H5n @q27 1 --dump
-s2 gP_6 M3 g H5n @q27 1 --dump
-s2 gP_7 M3 g H5n @q27 1 --dump
-s2 gP_8 M3 g H5n @q27 1 --dump
+s2 gP_1 M3 g H5n @q27 1 @q27jit 1
+s2 gP_2 M3 g H5n @q27 1 @q27jit 1
+s2 gP_3 M3 g H5n @q27 1 @q27jit 1
+s2 gP_4 M3 g H5n @q27 1 @q27jit 1
+s2 gP_5 M3 g H5n @q27 1 @q27jit 1
+s2 gP_6 M3 g H5n @q27 1 @q27jit 1
+s2 gP_7 M3 g H5n @q27 1 @q27jit 1
+s2 gP_8 M3 g H5n @q27 1 @q27jit 1
 s2 oPL_1 L nd H5n @q27 1
 s2 oPL_2 L nd H5n @q27 1
 s2 oPL_3 L nd H5n @q27 1
@@ -54,14 +54,14 @@ s2 xPL L z H5n @q27 1 @s6l 1
 s2 xPW W z H5n @q27 1 @s6l 1
 s2 xPF F z H5n @q27 1 @s6l 1
 s2 xPB B z H5n @q27 1 @s6l 1
-s2 gZ_1 M3 g H5z @q27 1 --dump
-s2 gZ_2 M3 g H5z @q27 1 --dump
-s2 gZ_3 M3 g H5z @q27 1 --dump
-s2 gZ_4 M3 g H5z @q27 1 --dump
-s2 gZ_5 M3 g H5z @q27 1 --dump
-s2 gZ_6 M3 g H5z @q27 1 --dump
-s2 gZ_7 M3 g H5z @q27 1 --dump
-s2 gZ_8 M3 g H5z @q27 1 --dump
+s2 gZ_1 M3 g H5z @q27 1 @q27jit 1
+s2 gZ_2 M3 g H5z @q27 1 @q27jit 1
+s2 gZ_3 M3 g H5z @q27 1 @q27jit 1
+s2 gZ_4 M3 g H5z @q27 1 @q27jit 1
+s2 gZ_5 M3 g H5z @q27 1 @q27jit 1
+s2 gZ_6 M3 g H5z @q27 1 @q27jit 1
+s2 gZ_7 M3 g H5z @q27 1 @q27jit 1
+s2 gZ_8 M3 g H5z @q27 1 @q27jit 1
 s2 oZL_1 L nd H5z @q27 1
 s2 oZL_2 L nd H5z @q27 1
 s2 oZL_3 L nd H5z @q27 1
@@ -75,14 +75,14 @@ s2 xZL L z H5z @q27 1 @s6l 1
 s2 xZW W z H5z @q27 1 @s6l 1
 s2 xZF F z H5z @q27 1 @s6l 1
 s2 xZB B z H5z @q27 1 @s6l 1
-s2 gC_1 M3 g H5n @q27 0 --dump
-s2 gC_2 M3 g H5n @q27 0 --dump
-s2 gC_3 M3 g H5n @q27 0 --dump
-s2 gC_4 M3 g H5n @q27 0 --dump
-s2 gC_5 M3 g H5n @q27 0 --dump
-s2 gC_6 M3 g H5n @q27 0 --dump
-s2 gC_7 M3 g H5n @q27 0 --dump
-s2 gC_8 M3 g H5n @q27 0 --dump
+s2 gC_1 M3 g H5n @q27 0 @q27jit 1
+s2 gC_2 M3 g H5n @q27 0 @q27jit 1
+s2 gC_3 M3 g H5n @q27 0 @q27jit 1
+s2 gC_4 M3 g H5n @q27 0 @q27jit 1
+s2 gC_5 M3 g H5n @q27 0 @q27jit 1
+s2 gC_6 M3 g H5n @q27 0 @q27jit 1
+s2 gC_7 M3 g H5n @q27 0 @q27jit 1
+s2 gC_8 M3 g H5n @q27 0 @q27jit 1
 s2 oCL_1 L nd H5n @q27 0
 s2 oCL_2 L nd H5n @q27 0
 s2 oCL_3 L nd H5n @q27 0

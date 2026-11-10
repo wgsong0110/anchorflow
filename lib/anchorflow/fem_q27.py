@@ -107,9 +107,10 @@ def _hook_solvers():
         def init(s, *a, _oi=oi, _C=C, **kw):
             if ST["solver"] is None:
                 try:
-                    names = ["x", "v", "F", "m", "vol", "A", "Ai", "mu", "lam"]
+                    names = ["x", "v", "F", "m", "vol", "A", "Ai", "mu", "lam", "g", "frame_dt"]
                     d = {n: a[i] for i, n in enumerate(names) if i < len(a)}
-                    sv = dict(cls=_C.__name__, goct=kw.get("goct", None))
+                    sv = dict(cls=_C.__name__, goct=kw.get("goct", None), frame_dt=(float(d["frame_dt"]) if "frame_dt" in d else None))
+                    JT["h"] = sv["frame_dt"]
                     for n in ("m", "vol", "A", "Ai", "mu", "lam"):
                         v = d.get(n)
                         sv[n] = v.detach().cpu() if torch.is_tensor(v) else v
@@ -127,14 +128,16 @@ def _hook_solvers():
         C.__init__ = init
 
 
-def install(out, mode, cap, dg, exe):
-    ST.update(mode=int(mode), cap=int(cap), dg=int(dg), exe=exe, out=out)
+def install(out, mode, cap, dg, exe, jit=0):
+    ST.update(mode=int(mode), cap=int(cap), dg=int(dg), exe=exe, out=out, jit=int(jit))
     print("[절 CM101] q27 켬 mode %d cap %d dg %d 실행기 %s" % (ST["mode"], ST["cap"], ST["dg"], exe), flush=True)
     try:
         _hook_rawmodule()
         _hook_solvers()
         if ST["mode"]:
             _install_q27()
+        if ST["jit"]:
+            _install_jit()
     except Exception as e:
         ST["err"] = repr(e) + " " + traceback.format_exc()[-1500:]
         _info()
@@ -437,3 +440,56 @@ def _check(s):
                  Fdet_min=float(torch.linalg.det(s.Fq[:nq][~dmy].double().reshape(-1, 3, 3)).min()))
         with open(os.path.join(ST["out"], "q27.jsonl"), "a") as f_:
             f_.write(json.dumps(r) + "\n")
+
+
+# ---------------------------------------------------------------- 수박 꿈틀거림 (결과 불변, 그래프 밖): exe/q27_jit.py 와 같은 정의를 실행 중에 (덤프 없이)
+JT = dict(h=None, prev=None, ck=None, k=0, rows=[], f0=29, f1=99, err=None)
+
+
+def _jit_frame(s):
+    import torch
+    with torch.no_grad():
+        x = s.x
+        ck = torch.stack([x[::997].double().sum(), x[1::1013].double().sum()])
+        if JT["ck"] is not None and bool(torch.equal(ck, JT["ck"])):
+            return                                                                  # 같은 프레임에서 다시 부름
+        JT["ck"] = ck
+        JT["k"] += 1                                                                # k = 끝난 프레임 수 (덤프 배열 X[k − 1])
+        cur = x.double().clone()
+        prev = JT["prev"]
+        JT["prev"] = cur
+        fi = JT["k"] - 2                                                            # 짝 (X[fi], X[fi + 1]) -- q27_jit.py 의 fi
+        if prev is None or fi < JT["f0"] or fi >= JT["f1"]:
+            return
+        h = JT["h"]
+        m = s.m.double()
+        v = (cur - prev) / h
+        ok = torch.isfinite(v).all(1) & torch.isfinite(prev).all(1)
+        mm, xx, vv = m[ok], prev[ok], v[ok]
+        M = mm.sum()
+        c = (mm[:, None] * xx).sum(0) / M
+        vc = (mm[:, None] * vv).sum(0) / M
+        r = xx - c; u = vv - vc
+        Lm = (mm[:, None] * torch.cross(r, u, dim=1)).sum(0)
+        I = (mm * (r * r).sum(1)).sum() * torch.eye(3, device=x.device, dtype=torch.float64) - (mm[:, None, None] * r[:, :, None] * r[:, None, :]).sum(0)
+        w = torch.linalg.solve(I, Lm)
+        dv = u - torch.cross(w.expand_as(r), r, dim=1)
+        rms = float(torch.sqrt((mm * (dv * dv).sum(1)).sum() / M)) * 1e3
+        JT["rows"].append(dict(fi=fi, vdef_rms_mm_s=rms, vcm_mm_s=float(vc.norm()) * 1e3, w_rad_s=float(w.norm()), nbad=int((~ok).sum())))
+        R = [q["vdef_rms_mm_s"] for q in JT["rows"]]
+        json.dump(dict(src="실행 중 (fem_q27 x_orig)", h=h, f0=JT["f0"], f1=JT["f1"], n=len(R), vdef_rms_mean=sum(R) / len(R), vdef_rms_max=max(R), rows=JT["rows"]),
+                  open(os.path.join(ST["out"], "jit.json"), "w"), indent=1)
+
+
+def _install_jit():
+    from . import fem_an_rt_v0 as V0
+    ox = V0.RTSolver.x_orig
+
+    def x_orig(s, _ox=ox):
+        try:
+            _jit_frame(s)
+        except Exception as e:
+            JT["err"] = repr(e); ST["jit_err"] = repr(e); _info()
+        return _ox(s)
+    V0.RTSolver.x_orig = x_orig
+    ST["jit_on"] = True
