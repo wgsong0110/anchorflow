@@ -1,0 +1,49 @@
+# 절 CM103 묶음 tet2 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_tet2.sh). 새 판 = T9S (절 CM102: 사면체 + 희소 처리, 수박 --gq_mass 끔·ρ 0.8) + '@t2 1' (exe/tet2_wrap.py 장벽·닫힌 꼴 보폭·시작점 섞기),
+# 대조 = T9S '@t2 0' · H9 '@t2 0' (같은 기록만, 결과 불변). 띠 = 단계 g (정답 사면체 F 특이값, gtsv_<씬>.json). 방식: nd 진단 · d 덤프 · v 덤프 + 3DGS 영상 · z 렌더 포함 단독 a·b.
+# s0k 연기 8 프레임 (실패면 뒤 단계 안 함)
+s0k kNL L nd T9S @t2 1 --frames 8
+s0k kNW W d T9S @t2 1 --frames 8
+s0k kNM M3 d T9S @t2 1 @s6l 1 --frames 8
+s0k kNF F nd T9S @t2 1 --frames 8
+s0k kNB B nd T9S @t2 1 --frames 8
+s0k kCL L nd T9S @t2 0 --frames 8
+s0k kHW W d H9 @t2 0 --frames 8
+# s1: 새 판 wolf 4 · 수박 8 · 레고 4 · ficus 2 · bread 2 (_1 은 영상 판), 대조 기록 판 (T9S·H9 '@t2 0'; ficus·bread T9S 는 2 판 -- 절 CM102 에 없음)
+s1 nW_1 W v T9S @t2 1
+s1 nW_2 W d T9S @t2 1
+s1 nW_3 W d T9S @t2 1
+s1 nW_4 W d T9S @t2 1
+s1 nM_1 M3 v T9S @t2 1 @s6l 1
+s1 nM_2 M3 d T9S @t2 1 @s6l 1
+s1 nM_3 M3 d T9S @t2 1 @s6l 1
+s1 nM_4 M3 d T9S @t2 1 @s6l 1
+s1 nM_5 M3 d T9S @t2 1 @s6l 1
+s1 nM_6 M3 d T9S @t2 1 @s6l 1
+s1 nM_7 M3 d T9S @t2 1 @s6l 1
+s1 nM_8 M3 d T9S @t2 1 @s6l 1
+s1 nL_1 L v T9S @t2 1
+s1 nL_2 L nd T9S @t2 1
+s1 nL_3 L nd T9S @t2 1
+s1 nL_4 L nd T9S @t2 1
+s1 nF_1 F nd T9S @t2 1
+s1 nF_2 F nd T9S @t2 1
+s1 nB_1 B nd T9S @t2 1
+s1 nB_2 B nd T9S @t2 1
+s1 cW W d T9S @t2 0
+s1 cM M3 d T9S @t2 0 @s6l 1
+s1 cL L nd T9S @t2 0
+s1 cF_1 F nd T9S @t2 0
+s1 cF_2 F nd T9S @t2 0
+s1 cB_1 B nd T9S @t2 0
+s1 cB_2 B nd T9S @t2 0
+s1 hW W d H9 @t2 0
+s1 hM M3 d H9 @t2 0 @s6l 1
+s1 hL L nd H9 @t2 0
+s1 hF F nd H9 @t2 0
+s1 hB B nd H9 @t2 0
+# s2: 렌더 포함 단독 (카드 하나에 차례로 a · b), 새 판
+s2 zL L z T9S @t2 1 @s6l 1
+s2 zW W z T9S @t2 1 @s6l 1
+s2 zM M3 z T9S @t2 1 @s6l 1
+s2 zF F z T9S @t2 1 @s6l 1
+s2 zB B z T9S @t2 1 @s6l 1
