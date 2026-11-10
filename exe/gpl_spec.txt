@@ -1,0 +1,65 @@
+# 절 CM100 묶음 gpl 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_gpl.sh). '@gpl q' = P1X 강성·고스트 질량 면 가중 q λ_A (lib/anchorflow/fem_gpl.py; λ = 절 CM73 (A),
+# q = γ̄_P/γ̄ (γ̄ 0.1): A = q 1 (γ̄_P 0.1), B = q 10 (γ̄_P 1)). 바탕 H5 (H5n, 확장 없음, κ 강성 빼기 없음). 모든 씬 같은 정의 (레고·ficus m̄ 0 -> λ ≡ 0).
+# s0k 연기 8 프레임: wolf A·B · 수박 A (진단 판 g) · 수박 A 가벼운 판 (exe/s6 실행기) · bread A · ficus A · 레고 A
+s0k kWA W nd H5n @gpl 1 --frames 8
+s0k kWB W nd H5n @gpl 10 --frames 8
+s0k kMA M3 g H5n @gpl 1 --frames 8
+s0k kMAl M3 g H5n @gpl 1 @s6l 1 --frames 8
+s0k kBA B nd H5n @gpl 1 --frames 8
+s0k kFA F nd H5n @gpl 1 --frames 8
+s0k kLA L nd H5n @gpl 1 --frames 8
+# s1: wolf 판마다 4 판 동시 (빈 카드), 모두 입자 F 덤프 (det F)
+s1 wA1 W nd H5n @gpl 1 --dump_F
+s1 wA2 W nd H5n @gpl 1 --dump_F
+s1 wA3 W nd H5n @gpl 1 --dump_F
+s1 wA4 W nd H5n @gpl 1 --dump_F
+s1 wB1 W nd H5n @gpl 10 --dump_F
+s1 wB2 W nd H5n @gpl 10 --dump_F
+s1 wB3 W nd H5n @gpl 10 --dump_F
+s1 wB4 W nd H5n @gpl 10 --dump_F
+# s2: 회귀 -- 수박 8 (진단 판 g: E1·D1·D2·D5) · 레고 4 · ficus 2 · bread 2 + 렌더 포함 단독 a·b (다섯 씬, 가벼운 판) -- A·B 둘 다
+s2 gA_1 M3 g H5n @gpl 1
+s2 gA_2 M3 g H5n @gpl 1
+s2 gA_3 M3 g H5n @gpl 1
+s2 gA_4 M3 g H5n @gpl 1
+s2 gA_5 M3 g H5n @gpl 1
+s2 gA_6 M3 g H5n @gpl 1
+s2 gA_7 M3 g H5n @gpl 1
+s2 gA_8 M3 g H5n @gpl 1
+s2 oAL_1 L nd H5n @gpl 1
+s2 oAL_2 L nd H5n @gpl 1
+s2 oAL_3 L nd H5n @gpl 1
+s2 oAL_4 L nd H5n @gpl 1
+s2 oAF_1 F nd H5n @gpl 1
+s2 oAF_2 F nd H5n @gpl 1
+s2 oAB_1 B nd H5n @gpl 1
+s2 oAB_2 B nd H5n @gpl 1
+s2 xAM3 M3 z H5n @gpl 1 @s6l 1
+s2 xAL L z H5n @gpl 1 @s6l 1
+s2 xAW W z H5n @gpl 1 @s6l 1
+s2 xAF F z H5n @gpl 1 @s6l 1
+s2 xAB B z H5n @gpl 1 @s6l 1
+s2 gB_1 M3 g H5n @gpl 10
+s2 gB_2 M3 g H5n @gpl 10
+s2 gB_3 M3 g H5n @gpl 10
+s2 gB_4 M3 g H5n @gpl 10
+s2 gB_5 M3 g H5n @gpl 10
+s2 gB_6 M3 g H5n @gpl 10
+s2 gB_7 M3 g H5n @gpl 10
+s2 gB_8 M3 g H5n @gpl 10
+s2 oBL_1 L nd H5n @gpl 10
+s2 oBL_2 L nd H5n @gpl 10
+s2 oBL_3 L nd H5n @gpl 10
+s2 oBL_4 L nd H5n @gpl 10
+s2 oBF_1 F nd H5n @gpl 10
+s2 oBF_2 F nd H5n @gpl 10
+s2 oBB_1 B nd H5n @gpl 10
+s2 oBB_2 B nd H5n @gpl 10
+s2 xBM3 M3 z H5n @gpl 10 @s6l 1
+s2 xBL L z H5n @gpl 10 @s6l 1
+s2 xBW W z H5n @gpl 10 @s6l 1
+s2 xBF F z H5n @gpl 10 @s6l 1
+s2 xBB B z H5n @gpl 10 @s6l 1
+# v: 영상 판 (덤프 + F -> 3DGS 렌더): wolf A · B
+v vA W v H5n @gpl 1
+v vB W v H5n @gpl 10
