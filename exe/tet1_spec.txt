@@ -86,3 +86,8 @@ s2b xUSM M3 z T9S @s6l 1
 # 조정자 11-10: 레고 영상 판 -- 사면체 판 중 가장 오래 간 sL_3 (T9S, f44 발산) 과 같은 명령 + 덤프 (--dump --dump_F --dump_part, 진단 플래그만 다름), H9 레고 영상 판
 s1d vTSL L v T9S
 s1d vH9L L v H9
+# 조정자 11-10: 레고 사면체 판 메모리 발산 원인 진단 (결과 불변 기록 판, 수정 없음): nd 진단 + 뉴턴 반복별 기록 (--nrec) + 가우스 점 det 반복별 (--wdiag 0), 대조 = 같은 사슬 B-스플라인 기저 (H9nb = T9 − 사면체, 벌점 없는 H9)
+s1e dLT L nd T9 --nrec --wdiag 0 --frames 20
+s1e dLB L nd H9nb --nrec --wdiag 0 --frames 20
+s1e dLB2 L nd H9nb
+s1e dLB3 L nd H9nb
