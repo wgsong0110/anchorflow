@@ -164,6 +164,7 @@ run() {   # run 이름 씬 방식 카드 플래그
     $PY exe/wolfh4_relfall.py $AG/wolf.pt $n=$O/$n/pred.pt > $O/$n/relfall.md 2> $O/$n/relfall.err; fi   # 절 CM68·CM70 방출 뒤 낙하 몫 (읽기만)
   [ $s = F ] && [ -f $O/$n/pred.pt ] && $PY exe/fem_p_period.py --data $FI --pred $O/$n/pred.pt > $O/$n/period.txt 2>&1
   [ $md = v ] && [ -f $O/$n/pred.pt ] && vid $n $s $g                                         # 영상 판: 덤프 렌더 (pred.pt 를 지우기 전; exe/stab_ext2v.sh 와 같음)
+  [ $md != z ] && [ "$(cat $CL/$g 2>/dev/null)" = "$BASHPID" ] && rm -f $CL/$g && log "$n 카드 $g 놓음 (계산·렌더 끝, 올리기는 카드 없이)"   # 절 CM102: 덤프 올리기 (수박 6.6 GB) 동안 카드를 잡지 않음
   log "$n rc=$rc $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200) hc 줄 $(wc -l < $O/$n/hc.jsonl 2>/dev/null) 렌더 $(wc -l < $O/$n/rr.jsonl 2>/dev/null) $(tail -2 $O/$n/period.txt 2>/dev/null | tr '\n' ' ') $(grep -a 'rror' $O/$n/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
   up $n
   if [ -f $O/$n/pred.pt ]; then                                                              # 덤프: R2 에 올리고 크기 확인 뒤 로컬 사본만 지움 (R2 에 그대로 남음)
@@ -182,10 +183,13 @@ if echo "$SPEC" | grep -q '@rr 1' || [ $STG = v ]; then
   log "렌더 자료: ficus $FGT wolf $GTW ($(ls $GTW/meta.json 2>&1)) bread $GTB ($(ls $GTB/meta.json 2>&1)) 수박 $GTM ($(ls $GTM/meta.json 2>&1)) 모델 $WMM"
 fi
 # ---- 판정·비결정·진단·재현 판 (카드마다 하나)
+for d_ in $O/*/; do n_=$(basename $d_); [ -f $d_/summary.json ] && [ -f $d_/pred.pt ] || continue    # 절 CM102: 앞 단계가 끊겨 R2 확인 전에 남은 덤프 (카드 없이 뒤에서)
+  ( up $n_; rclone copyto $d_/pred.pt $RO/$n_/pred.pt -q; [ "$(rclone size $RO/$n_/pred.pt --json 2>/dev/null | grep -o '"bytes":[0-9]*' | cut -d: -f2)" = "$(stat -c %s $d_/pred.pt)" ] && rm -f $d_/pred.pt && log "$n_ 남은 pred.pt R2 확인 뒤 로컬 사본 지움" ) &
+done
 while read -r st n s md x; do
   [ -z "$n" ] && continue; case $md in z) continue;; esac; [ -f $O/$n/summary.json ] && continue
   while [ $(jobs -rp | wc -l) -ge $NG ]; do sleep 5; done
-  ( me=$BASHPID; g=$(claim_wait $me); run $n $s $md $g "$x"; rm -f $CL/$g ) & sleep 3
+  ( me=$BASHPID; g=$(claim_wait $me); run $n $s $md $g "$x"; [ "$(cat $CL/$g 2>/dev/null)" = "$me" ] && rm -f $CL/$g ) & sleep 3
 done <<< "$SPEC"
 wait
 log "판정 판 끝 $STG"
