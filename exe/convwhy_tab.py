@@ -54,7 +54,8 @@ def step_stats(q):
             if rs[i] > 0 and rs[i - 1] > 0 and rs[i + 1] > 0 and abs(math.log(rs[i] / rs[i - 1])) > 1e-3]
     bk = [o.get("bk") for o in ran if o.get("bk") is not None]
     kap = [o.get("kap") for o in ran if o.get("kap")]
-    return dict(nconv=nconv, nit=len(ran), r0=rs[0] if rs else None, rlast=rs[-1] if rs else None, rmin=min(rs) if rs else None,
+    spk = sum(1 for i in range(len(rs) - 1) if rs[i] > 0 and rs[i + 1] > 5 * rs[i])                  # 튐: 한 반복에 r 5 배 넘게 커짐
+    return dict(spk=spk, nconv=nconv, nit=len(ran), r0=rs[0] if rs else None, rlast=rs[-1] if rs else None, rmin=min(rs) if rs else None,
                 rho=med(rho), rho_tail=med(rho[-5:]) if rho else None, p=med(pord), full=(sum(1 for b in bk if b == 0) / len(bk)) if bk else None,
                 stepmed=med([2.0 ** -b for b in bk]), kap0=(ran[0].get("kap") if ran else None), kapmax=max(kap) if kap else None,
                 nP=med([o.get("nP") for o in ran]), Prel=med([o.get("Prel") for o in ran]), g2end=s.get("g2end"), rs=rs, bks=bk,
@@ -67,23 +68,24 @@ def nc_str(st, cap):
 
 out = []
 out.append("# 절 CM96 convwhy -- wolf 접촉 걸음 수렴 원인 가르기 (진단, 결과 불변)\n")
-out.append("r = 반복 시작 ‖g‖/F, εN = 1e-2 (H8 허용치), 뉴턴 상한 25 (R = H 그대로 6 · xit), 프레임 = 그 프레임을 푸는 걸음 (시작 상태 = 저장 판 그 프레임 앞).\n")
+out.append("r = 반복 시작 ‖g‖/F, εN = 1e-2 (H8 허용치), 뉴턴 상한 25 (R = H 그대로 6 · xit, a4 12, J 3), 프레임 = 그 프레임을 푸는 걸음 (시작 상태 = 저장 판 그 프레임 앞). "
+           "ρ = r_{k+1}/r_k, p = 경험 수렴 차수 (2 = 2 차), 보폭 = 장벽 실현 가능 보폭 2^-bk, κ = PCG 랑초시 (MG 전처리 연산자; 야코비 판은 대각 척도 헤시안) -- PCG 5 판의 κ 는 5 걸음 추정이라 하한.\n")
 for sc, H in (("8", "H8"), ("5", "H5n")):
     out.append(f"\n## {H} -- 판별 요약 (프레임 {', '.join('f%d' % q for q in FR)})\n")
-    out.append("| 판 | εN 도달 반복 (프레임별) | 끝 r 중앙 | 최소 r 중앙 | ρ 중앙 · 끝 5 | 차수 p 중앙 | 온 보폭 몫 · 보폭 중앙 | PCG /반복 · 상대 잔차 | κ 첫 반복 중앙 · 최대 |")
-    out.append("|---|---|---|---|---|---|---|---|---|")
+    out.append("| 판 | εN 도달 반복 (프레임별) | 튐 수 (6 프레임 합) | 끝 r 중앙 | 최소 r 중앙 | ρ 중앙 · 끝 5 | 차수 p 중앙 | 온 보폭 몫 · 보폭 중앙 | PCG /반복 · 상대 잔차 | κ 첫 반복 중앙 · 최대 |")
+    out.append("|---|---|---|---|---|---|---|---|---|---|")
     rows = {}
     for v in VAR:
         L = load(f"r{sc}_{v}")
         if not L:
-            out.append(f"| {VNAME[v]} | (없음) | | | | | | | |")
+            out.append(f"| {VNAME[v]} | (없음) | | | | | | | | |")
             continue
         S = {fr: step_stats(L[fr]) for fr in FR if fr in L}
         rows[v] = S
         cap = 6 if v == "R" else (3 if v.startswith("J") else (12 if v.startswith("a4") else 25))
         nc = " · ".join(nc_str(S[fr], cap) for fr in FR if fr in S)
         g = lambda k: med([S[fr][k] for fr in S])
-        out.append(f"| {VNAME[v]} | {nc} | {f(g('rlast'))} | {f(g('rmin'))} | {f(g('rho'))} · {f(g('rho_tail'))} | {f(g('p'))} | {f(g('full'))} · {f(g('stepmed'))} | "
+        out.append(f"| {VNAME[v]} | {nc} | {sum(S[fr]['spk'] for fr in S)} | {f(g('rlast'))} | {f(g('rmin'))} | {f(g('rho'))} · {f(g('rho_tail'))} | {f(g('p'))} | {f(g('full'))} · {f(g('stepmed'))} | "
                    f"{f(g('nP'), 0)} · {f(g('Prel'))} | {f(g('kap0'), 0)} · {f(max([S[fr]['kapmax'] or 0 for fr in S]) or None, 0)} |")
     for v in ("B", "a", "c", "ac", "abcd"):
         if v not in rows:
