@@ -6,3 +6,91 @@ s0d dL L d H5n @q27cap 1
 s0d dM M3 d H5n @q27cap 1
 s0d dF F d H5n @q27cap 1 --frames 4
 s0d dB B d H5n @q27cap 1 --frames 4
+# s0k 연기 8 프레임: 27 점 (i) H5 · (ii) 벌점 끔 (H5z) 다섯 씬 + 수박 가벼운 판 + 대조 경로 ('@q27 0' = 모듈만, 2x2x2)
+s0k kW27 W nd H5n @q27 1 --frames 8
+s0k kW27z W nd H5z @q27 1 --frames 8
+s0k kM27 M3 g H5n @q27 1 --frames 8 --dump
+s0k kM27z M3 g H5z @q27 1 --frames 8
+s0k kM27l M3 g H5n @q27 1 @s6l 1 --frames 8
+s0k kL27 L nd H5n @q27 1 --frames 8
+s0k kF27 F nd H5n @q27 1 --frames 8
+s0k kB27 B nd H5n @q27 1 --frames 8
+s0k kW5 W nd H5n @q27 0 --frames 8
+# s1: wolf 판마다 4 판 동시 (빈 카드), 입자 F 덤프 -- P = 3x3x3 + H5, Z = 3x3x3 + 벌점 끔, C = 대조 H5 2x2x2
+s1 wP_1 W nd H5n @q27 1 --dump_F
+s1 wP_2 W nd H5n @q27 1 --dump_F
+s1 wP_3 W nd H5n @q27 1 --dump_F
+s1 wP_4 W nd H5n @q27 1 --dump_F
+s1 wZ_1 W nd H5z @q27 1 --dump_F
+s1 wZ_2 W nd H5z @q27 1 --dump_F
+s1 wZ_3 W nd H5z @q27 1 --dump_F
+s1 wZ_4 W nd H5z @q27 1 --dump_F
+s1 wC_1 W nd H5n @q27 0 --dump_F
+s1 wC_2 W nd H5n @q27 0 --dump_F
+s1 wC_3 W nd H5n @q27 0 --dump_F
+s1 wC_4 W nd H5n @q27 0 --dump_F
+# s2: 회귀 -- 수박 8 (진단 판 g + 덤프 -> 꿈틀거림) · 레고 4 · ficus 2 · bread 2 + 렌더 포함 단독 a·b (다섯 씬, 가벼운 판) -- P · Z · C
+s2 gP_1 M3 g H5n @q27 1 --dump
+s2 gP_2 M3 g H5n @q27 1 --dump
+s2 gP_3 M3 g H5n @q27 1 --dump
+s2 gP_4 M3 g H5n @q27 1 --dump
+s2 gP_5 M3 g H5n @q27 1 --dump
+s2 gP_6 M3 g H5n @q27 1 --dump
+s2 gP_7 M3 g H5n @q27 1 --dump
+s2 gP_8 M3 g H5n @q27 1 --dump
+s2 oPL_1 L nd H5n @q27 1
+s2 oPL_2 L nd H5n @q27 1
+s2 oPL_3 L nd H5n @q27 1
+s2 oPL_4 L nd H5n @q27 1
+s2 oPF_1 F nd H5n @q27 1
+s2 oPF_2 F nd H5n @q27 1
+s2 oPB_1 B nd H5n @q27 1
+s2 oPB_2 B nd H5n @q27 1
+s2 xPM3 M3 z H5n @q27 1 @s6l 1
+s2 xPL L z H5n @q27 1 @s6l 1
+s2 xPW W z H5n @q27 1 @s6l 1
+s2 xPF F z H5n @q27 1 @s6l 1
+s2 xPB B z H5n @q27 1 @s6l 1
+s2 gZ_1 M3 g H5z @q27 1 --dump
+s2 gZ_2 M3 g H5z @q27 1 --dump
+s2 gZ_3 M3 g H5z @q27 1 --dump
+s2 gZ_4 M3 g H5z @q27 1 --dump
+s2 gZ_5 M3 g H5z @q27 1 --dump
+s2 gZ_6 M3 g H5z @q27 1 --dump
+s2 gZ_7 M3 g H5z @q27 1 --dump
+s2 gZ_8 M3 g H5z @q27 1 --dump
+s2 oZL_1 L nd H5z @q27 1
+s2 oZL_2 L nd H5z @q27 1
+s2 oZL_3 L nd H5z @q27 1
+s2 oZL_4 L nd H5z @q27 1
+s2 oZF_1 F nd H5z @q27 1
+s2 oZF_2 F nd H5z @q27 1
+s2 oZB_1 B nd H5z @q27 1
+s2 oZB_2 B nd H5z @q27 1
+s2 xZM3 M3 z H5z @q27 1 @s6l 1
+s2 xZL L z H5z @q27 1 @s6l 1
+s2 xZW W z H5z @q27 1 @s6l 1
+s2 xZF F z H5z @q27 1 @s6l 1
+s2 xZB B z H5z @q27 1 @s6l 1
+s2 gC_1 M3 g H5n @q27 0 --dump
+s2 gC_2 M3 g H5n @q27 0 --dump
+s2 gC_3 M3 g H5n @q27 0 --dump
+s2 gC_4 M3 g H5n @q27 0 --dump
+s2 gC_5 M3 g H5n @q27 0 --dump
+s2 gC_6 M3 g H5n @q27 0 --dump
+s2 gC_7 M3 g H5n @q27 0 --dump
+s2 gC_8 M3 g H5n @q27 0 --dump
+s2 oCL_1 L nd H5n @q27 0
+s2 oCL_2 L nd H5n @q27 0
+s2 oCL_3 L nd H5n @q27 0
+s2 oCL_4 L nd H5n @q27 0
+s2 oCF_1 F nd H5n @q27 0
+s2 oCF_2 F nd H5n @q27 0
+s2 oCB_1 B nd H5n @q27 0
+s2 oCB_2 B nd H5n @q27 0
+s2 xCM3 M3 z H5n @q27 0 @s6l 1
+s2 xCL L z H5n @q27 0 @s6l 1
+s2 xCW W z H5n @q27 0 @s6l 1
+s2 xCF F z H5n @q27 0 @s6l 1
+s2 xCB B z H5n @q27 0 @s6l 1
+# e: 모래시계 모드 세기 (s0d 덤프, exe/q27_eig.py) + 정답 수박 꿈틀거림 -- stab 안 따로 (판 줄 없음)

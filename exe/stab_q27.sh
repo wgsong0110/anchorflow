@@ -41,8 +41,9 @@ dfl() { local s=$1 x=" $2 "
   x="${x// H8N / H8 @w11 1 }"; x="${x// H5KN / H5n @w8k 1 @w11 1 }"                             # 절 CM91: N = 노드별 뒤집힘 보폭 (옛 --ws_bar 4 --ws_fi 정의), H5KN = H5n + P1X 강성 × κ (확장 없음) + N
   x="${x// H9a / H8 @w9 1 }"; x="${x// H9b / H8 @w9 2 }"                                          # 절 CM87
   x="${x// H6np / H5nP $W8 }"; x="${x// H6 / H5n $W8 }"; x="${x// H7np / H5nP $W8 }"; x="${x// H8 / H5n $W8 @s12z 1 }"; x="${x// H7 / H5n $W8 }"   # 절 CM84: H7 = H6 와 같은 글자, 감싸개 ext2 가 κ 로 확장을 고름
-  case $s in M*) ;; *) [[ "$x" == *" H4n "* || "$x" == *" H5n"* ]] && x="$x --cap_mul 4";; esac  # 새 실행기 첫 할당 배수 4 (절 CM72 H2) -- 속도 판에만 (Gk = 절 CM75 판은 없음)
+  case $s in M*) ;; *) [[ "$x" == *" H4n "* || "$x" == *" H5n"* || "$x" == *" H5z "* ]] && x="$x --cap_mul 4";; esac  # 새 실행기 첫 할당 배수 4 (절 CM72 H2) -- 속도 판에만 (Gk = 절 CM75 판은 없음)
   local SPD="@s6o 1 @s6b 1 @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s9c 1 @s9y 1" KAP="@l4 1 @l3 10 @l3sc 1 @l3fr 1"   # 절 CM81: H5 = H4 + C·Y; R = 벽시계 예산 Rw '@s6rw 1', X = X3g '@s8g 1e6'
+  x="${x// H5z / F A3 @hc 5 @rr 1 @tc 8 @mf2 1 $SPD @s6rw 1 @s8g 1e6 }"                       # 절 CM101 (ii): H5 − P1X (강성·고스트 질량) − 가벼움 벌점 × κ = 벌점 모두 끔
   x="${x// H5nP / Gpp $SPD @s6rw 1 @s8g 1e6 }"; x="${x// H5n / Gpp $SPD @s6rw 1 @s8g 1e6 $KAP }"; x="${x// H5nR / Gpp $SPD @s8g 1e6 $KAP }"; x="${x// H5nX / Gpp $SPD @s6rw 1 $KAP }"; x="${x// H5nRX / Gpp $SPD $KAP }"
   x="${x// Gk / Gpp $KAP }"                                                                    # 절 CM75 판 (G'' + 가벼움 벌점 × κ, 속도 판 없음)
   x="${x// H4n / Gpp @s6o 1 @s6b 1 @s6rw 1 @s7nm 1 @s7z 1 @s7p 1 @s8w 1 @s8g 1e6 @l4 1 @l3 10 @l3sc 1 @l3fr 1 }"; x="${x// Gpp / Gp @mf2 1 }"; x="${x// Gp / F P1X A3 @hc 5 @rr 1 @tc 8 }"
@@ -153,6 +154,7 @@ run() {   # run 이름 씬 방식 카드 플래그
     $PY exe/speed1_bbox.py $AG/wolf.pt $CELLW $O/$n/pred.pt > $O/$n/bbox.txt 2>&1
     $PY exe/wolfh1_an.py $AG/wolf.pt $O/$n/an.json $O/$n > $O/$n/an.log 2>&1                    # 절 CM52 진단 (높이·면적·회전 반경; 읽기만)
     $PY exe/wolfh4_relfall.py $AG/wolf.pt $n=$O/$n/pred.pt > $O/$n/relfall.md 2> $O/$n/relfall.err; fi   # 절 CM68·CM70 방출 뒤 낙하 몫 (읽기만)
+  [ $s = M3 ] && [ -f $O/$n/pred.pt ] && [ -f $O/$n/q27solver.pt ] && $PY exe/q27_jit.py --data $WMD/wm.pt --pred $O/$n/pred.pt --mass $O/$n/q27solver.pt --out $O/$n/jit.json > $O/$n/jit.log 2>&1   # 절 CM101 꿈틀거림 (읽기만)
   [ $s = F ] && [ -f $O/$n/pred.pt ] && $PY exe/fem_p_period.py --data $FI --pred $O/$n/pred.pt > $O/$n/period.txt 2>&1
   [ $md = v ] && [ -f $O/$n/pred.pt ] && vid $n $s $g                                         # 영상 판: 덤프 렌더 (pred.pt 를 지우기 전; exe/stab_ext2v.sh 와 같음)
   log "$n rc=$rc $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200) hc 줄 $(wc -l < $O/$n/hc.jsonl 2>/dev/null) 렌더 $(wc -l < $O/$n/rr.jsonl 2>/dev/null) $(tail -2 $O/$n/period.txt 2>/dev/null | tr '\n' ' ') $(grep -a 'rror' $O/$n/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
@@ -171,6 +173,22 @@ if echo "$SPEC" | grep -q '@rr 1' || [ $STG = v ]; then
   mkgt bread $GTB --h5_dir $W/topo/pg_bread_plastic --config $W/topo/bread_plastic_config.json
   mkgt wm $GTM --h5_dir $W/wm2/gf/simulation_ply --config $W/wm2/gf/config.json --allow_nonfinite
   log "렌더 자료: ficus $FGT wolf $GTW ($(ls $GTW/meta.json 2>&1)) bread $GTB ($(ls $GTB/meta.json 2>&1)) 수박 $GTM ($(ls $GTM/meta.json 2>&1)) 모델 $WMM"
+fi
+# ---- 절 CM101 단계 e: 모래시계 모드 세기 (exe/q27_eig.py, s0d 덤프) + 정답 수박 꿈틀거림 (exe/q27_jit.py --gt) -- 읽기만
+if [ $STG = e ]; then
+  ED=/dev/shm/dkta/q27_eig; mkdir -p $ED $O/eig
+  [ -f $O/gt_jit.json ] || { rclone copyto $RO/dM/q27solver.pt $ED/dM_solver.pt -q; $PY exe/q27_jit.py --data $WMD/wm.pt --gt --mass $ED/dM_solver.pt --out $O/gt_jit.json > $O/gt_jit.log 2>&1; log "정답 꿈틀거림 $(tail -1 $O/gt_jit.log)"; }
+  for sc in dW dL dM; do
+    [ -s $ED/$sc/pred.pt ] || { mkdir -p $ED/$sc; rclone copyto $RO/$sc/pred.pt $ED/$sc/pred.pt -q; rclone copyto $RO/$sc/q27solver.pt $ED/$sc/q27solver.pt -q; }
+    for qq in 8 27; do
+      [ -s $O/eig/${sc}_q$qq.json ] && grep -q '"cases"' $O/eig/${sc}_q$qq.json && [ "$($PY -c "import json; print(len(json.load(open('$O/eig/${sc}_q$qq.json'))['cases']))")" = 2 ] && continue
+      while [ $(jobs -rp | wc -l) -ge $NG ]; do sleep 5; done
+      ( me=$BASHPID; g=$(claim_wait $me); log "eig ${sc} q$qq 카드 $g"; CUDA_VISIBLE_DEVICES=$g timeout 7200 $PY -u exe/q27_eig.py --pred $ED/$sc/pred.pt --solver $ED/$sc/q27solver.pt --frames 0,c --q $qq --kb ${Q27KB:-4000} --deg 20 --iters 10 --out $O/eig/${sc}_q$qq.json < /dev/null > $O/eig/${sc}_q$qq.log 2>&1; log "eig ${sc} q$qq rc=$? $(tail -2 $O/eig/${sc}_q$qq.log | head -1 | cut -c1-300)"; rm -f $CL/$g; rclone copy $O/eig $RO/eig -q ) & sleep 3
+    done
+  done
+  wait
+  rclone copy $O $RO -q --include "eig/**" --include "gt_jit.*"
+  log "단계 끝 e"; exit 0
 fi
 # ---- 판정·비결정·진단·재현 판 (카드마다 하나)
 while read -r st n s md x; do
@@ -206,6 +224,7 @@ case $STG in *k)                                                                
     case "$s $x " in M*" @s12"*) grep -q "절 CM85\] speed12 켬" $O/$n/log.txt && grep -q "절 CM85\] 시작점 기준 패치 \[" $O/$n/log.txt && [ ! -s $O/$n/s12_err.txt ] || { OK=0; log "[연기] $n CM85 줄 없음/s12_err"; };; esac
     case " $x " in *" @w12 "*) case $s in W) grep -q "절 CM93\] wolfh12 켬" $O/$n/log.txt && $PY -c "import json,sys,os; i=json.load(open('$O/$n/w12info.json')); print('$n w12', i); L=[json.loads(l) for l in open('$O/$n/w12.jsonl')] if os.path.exists('$O/$n/w12.jsonl') else []; print('$n w12.jsonl', len(L), L[-1] if L else None); sys.exit(0 if i['nsrc'] >= 1 and i['nalloc'] >= 1 and i['ncall'] > 0 and not i.get('err') and (len(L) >= 5 or not i['dg']) else 1)" >> $O/q27_$STG.log 2>&1 || { OK=0; log "[연기] $n CM93 줄·w12info·w12.jsonl 없음/오류"; };; esac;; esac
     case " $x " in *" @gpl "*) grep -q "절 CM100\] gpl 켬" $O/$n/log.txt && grep -q "절 CM100 gpl\] 씬 결정" $O/$n/log.txt && $PY -c "import json,sys,os; i=json.load(open('$O/$n/gplinfo.json')); print('$n gpl', i); L=[json.loads(l) for l in open('$O/$n/gpl.jsonl')] if os.path.exists('$O/$n/gpl.jsonl') else []; print('$n gpl.jsonl', len(L), L[-1] if L else None); R=[q for q in L if 'rerr' in q]; ok=i['dec'] and i['nmul'] > 0 and i['nmul0'] > 0 and ((i.get('npre_tot') or 0) == 0 or i['mbar'] == 0.0) and len(L) >= 5 and max(q['werr'] for q in L) < 1e-5 and len(R) >= 1 and max(q['rerr'] for q in R) < 1e-4 and all(q.get('set_eq') for q in R) and L[-1]['np1x'] > 0 and not any('ref_err' in q for q in L); ok = ok and not os.path.exists('$O/$n/gpl_err.txt'); sys.exit(0 if ok else 1)" >> $O/q27_$STG.log 2>&1 || { OK=0; log "[연기] $n CM100 줄·gplinfo·gpl.jsonl 없음/오류 (가중 대 참값)"; };; esac
+    case " $x " in *" @q27 1"*) grep -q "절 CM101\] q27 켬 mode 1" $O/$n/log.txt && $PY -c "import json,sys,os; i=json.load(open('$O/$n/q27info.json')); print('$n q27', {k: i.get(k) for k in ('installed','ntr','nalloc','capQc','tab','left','err','chk_err','ncoarse')}); L=[json.loads(l) for l in open('$O/$n/q27.jsonl')] if os.path.exists('$O/$n/q27.jsonl') else []; print('$n q27.jsonl', len(L), L[:2], L[-1:] if L else None); dg='$md' in ('g','nd','v','d') and ' @s6l 1 ' not in ' $x '; t=i.get('tab') or {}; ok=i.get('installed') and i['ntr'] >= 1 and i['nalloc'] >= 1 and not i.get('err') and not i.get('chk_err') and not i.get('left') and abs(t.get('bw_rowsum_min',0)-1) < 1e-9 and abs(t.get('bw_rowsum_max',0)-1) < 1e-9 and abs(t.get('w_sum',0)-1) < 1e-12 and (not dg or (len(L) >= 3 and all(q['nq_ok'] == 1 and q['dummyV'] == 0 and q['dummym'] == 0 and abs(q['sumV']/q['sumvol']-1) < 2e-3 and abs(q['summ']/q['summp']-1) < 2e-3 for q in L))); sys.exit(0 if ok else 1)" >> $O/q27_$STG.log 2>&1 || { OK=0; log "[연기] $n CM101 q27 줄·q27info·q27.jsonl 없음/오류"; };; esac
     case " $x " in *" @w13 "*) grep -q "절 CM94\] wolfh13 켬" $O/$n/log.txt && $PY -c "import json,sys; i=json.load(open('$O/$n/xpinfo.json')); print('$n xp', i); w=('$s'=='W'); ok=(i['nsrc'] >= 1 and not i.get('err')) and ((i['nalloc'] >= 1 and i['ngrad'] > 0 and i['nvc'] > 0 and i['npw0'] > 0 and (i['mode'] != 1 or (i['ncls'] > 0 and i['npwl'] + i['nbuild'] > 0)) and (i.get('dev') or {}).get('d0_mod', 0) > 0) if w else (i['nalloc'] == 0 and i['ngrad'] == 0 and i['nvc'] == 0 and i['npw0'] == 0 and i['ncls'] == 0)); sys.exit(0 if ok else 1)" >> $O/q27_$STG.log 2>&1 || { OK=0; log "[연기] $n CM94 줄·xpinfo 없음/오류 (wolf 는 훅 수 > 0, κ 1 씬은 0)"; };; esac
     case " $x " in *" @fi "*) grep -q "절 CM92\] finterp 켬" $O/$n/log.txt && $PY -c "import json,sys,os; i=json.load(open('$O/$n/fiinfo.json')); print('$n fi', i); L=[json.loads(l) for l in open('$O/$n/fi.jsonl')] if os.path.exists('$O/$n/fi.jsonl') else []; print('$n fi.jsonl', len(L), L[-1] if L else None); sys.exit(0 if i['nsrc'] >= 1 and i['nalloc'] >= 1 and i['nfpi'] > 0 and not i.get('err') and (len(L) >= 5 or not i['dg']) else 1)" >> $O/q27_$STG.log 2>&1 || { OK=0; log "[연기] $n CM92 줄·fiinfo·fi.jsonl 없음/오류"; };; esac
     case " $x " in *" @w11 "*) grep -q "절 CM91\] wolfh11 켬" $O/$n/log.txt && $PY -c "import json,sys; i=json.load(open('$O/$n/w11info.json')); print('$n w11', i); sys.exit(0 if i['nsrc'] >= 1 and i['nalloc'] >= 1 and i['nnewton'] > 0 and i['nstart'] > 0 and not i.get('err') else 1)" >> $O/wolfh11_$STG.log 2>&1 && [ -s $O/$n/w11.jsonl ] || { OK=0; log "[연기] $n CM89 줄·w11info (훅 수) 없음"; };; esac
