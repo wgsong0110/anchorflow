@@ -50,6 +50,11 @@ s1 sL_2 L nd T9S
 s1 sL_3 L nd T9S
 s1 sL_4 L nd T9S
 s1 vH9M M3 v H9 @s6l 1
+# 끈 판 값 대조 (결정적 판은 H9 사슬 (--e3w·P1X) 이 막음, f76c550 s0h): H9 + tet1_wrap --tet 0 레고 4 판 -> 절 CM86 H9 레고 5.42 [5.25~5.69] 범위와 대조
+s1 oL0_1 L nd H9 @tet 0
+s1 oL0_2 L nd H9 @tet 0
+s1 oL0_3 L nd H9 @tet 0
+s1 oL0_4 L nd H9 @tet 0
 # s2: 렌더 포함 단독 (카드 하나에 차례로 a · b)
 s2 xTL L z T9 @s6l 1
 s2 xTW W z T9 @s6l 1
