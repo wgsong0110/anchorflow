@@ -24,7 +24,7 @@ import numpy as np
 MAXROW = 64
 NCMAX = 24
 STEP0 = {"rt_step0", "rt_step0g", "rt_ga_step0", "ao_step0_ga", "ao_step0_th"}
-ENDK = {"rt_stepend", "rt_stepend_g", "rt_ga_end", "rt_ga_end_uf", "rt_ga_end_ufl", "ao_stepend_ga", "ao_stepend_th", "ao_stepend_uf", "ao_stepend_ufl", "en_stepend"}
+ENDK = {"rt_stepend", "rt_stepend_g", "rt_ga_end", "rt_ga_end_uf", "rt_ga_end_ufl", "rt_ga_end_hc", "ao_stepend_ga", "ao_stepend_th", "ao_stepend_uf", "ao_stepend_ufl", "ao_stepend_hc", "en_stepend"}   # _hc = fem_hhtc2 가 장벽 씬에서 _ufl 대신 부르는 복사본
 ELEM = ("rt_elem", "ao_elem", "ao_elem_s", "aq_elem")
 MV = ("rt_mv", "rt_mv2", "rt_mv2s", "ao_mv_q", "ao_mv_h", "ao_mv_c", "ao_mv_s")
 CFG = dict(mode=None, c=None, kscale=1.0, dg=1, ck=0)
@@ -414,14 +414,35 @@ def selfcheck(h, out):
     out["ls_kernel_rel"] = max(abs(float(SC[40 + i]) - Ec_ref[i]) / max(abs(Ec_ref[i]), 1e-300) for i in range(NC))
     out["ls_E"] = [[float(SC[40 + i]), Ec_ref[i]] for i in range(NC)]
     out["phi_kernel_rel"] = abs(float(PH[1]) - float(e_r)) / max(abs(float(e_r)), 1e-300)
-    # (2) 참값 (f64) 기울기·헤시안 곱 대 중심 유한차분: y ± ε v (v ~ L0 크기)
+    # (2) 참값 (f64) 기울기·헤시안 곱 대 중심 유한차분: y ± ε v (v ~ L0 크기). 헤시안은 상한 d = cL0 에서 끊기므로 (기울기는 연속)
+    #     헤시안 곱 차분은 y0 에서 |d − cL0| < 1e-3 L0 인 변 (ε 흔들림에 활성이 바뀔 수 있는 변) 을 뺀 같은 에너지로 비교 (뺀 변 수 기록).
+    kink = []
+    for n_, j_, a in E_list:
+        r = A[:, a][None, :] + y0[j_] - y0[n_]
+        kink.append((torch.linalg.norm(r, dim=1) - ct * h.L0[a]).abs() >= 1e-3 * h.L0[a])
+
+    def Emask(y):
+        e = torch.zeros((), dtype=torch.float64, device=dev)
+        for (n_, j_, a), km in zip(E_list, kink):
+            r = A[:, a][None, :] + y[j_[km]] - y[n_[km]]
+            e = e + kk * torch.clamp(torch.linalg.norm(r, dim=1) - ct * h.L0[a], min=0.0).pow(2).sum()
+        return e
+
+    def gmask(y):
+        yy_ = y.clone().requires_grad_(True)
+        gg_, = torch.autograd.grad(Emask(yy_), yy_, create_graph=True)
+        return gg_, yy_
+
+    gm0, ym0 = gmask(y0)
+    Hvm, = torch.autograd.grad((gm0 * v).sum(), ym0)
+    out["n_kink_excl"] = int(sum(int((~km).sum()) for km in kink))
     fd = {}
     gv = float((g_r * v).sum())
     for eps in (1e-4, 1e-6):
         Ep, Em = float(Eref(y0 + eps * v)), float(Eref(y0 - eps * v))
-        _, gp, _ = gref(y0 + eps * v); _, gm, _ = gref(y0 - eps * v)
-        Hfd = (gp.detach() - gm.detach()) / (2 * eps)
-        fd["%g" % eps] = dict(gv=gv, gv_fd=(Ep - Em) / (2 * eps), gv_rel=abs((Ep - Em) / (2 * eps) - gv) / max(abs(gv), 1e-300), Hv_rel=rel(Hfd, Hv_r.detach()))
+        gp, _ = gmask(y0 + eps * v); gmn, _ = gmask(y0 - eps * v)
+        Hfd = (gp.detach() - gmn.detach()) / (2 * eps)
+        fd["%g" % eps] = dict(gv=gv, gv_fd=(Ep - Em) / (2 * eps), gv_rel=abs((Ep - Em) / (2 * eps) - gv) / max(abs(gv), 1e-300), Hv_rel=rel(Hfd, Hvm.detach()))
     out["fd_ref"] = fd
     # (3) 커널 유한차분 (f32 y): E_k(y ± ε v) 중심 차분 대 커널 기울기 · v
     eps = 1e-3

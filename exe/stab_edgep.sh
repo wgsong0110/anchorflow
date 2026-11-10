@@ -160,7 +160,8 @@ run() {   # run 이름 씬 방식 카드 플래그
   c="exe/speed13_wrap.py $s13 exe/speed12_wrap.py $s12 exe/ext2_wrap.py $w8 $l4 $l3 $w5x $s9 $s8 $s7 $s5 $mf $wf $hx $wg $w5 $w3 $w2 $wo $c"; [ -n "$tet" ] && c="exe/tet1_wrap.py $tet $toct $c"
   if [ -n "$ep" ]; then                                                                     # 절 CM105: 변 길이 상한 c = 단계 g 정답 노드 변 늘어남 (gtc_<씬>.json)
     local c_; c_=$($PY -c "import json; print('%.6e' % json.load(open('$O/gtc_$s.json'))['c'])" 2>/dev/null) || { log "$n 상한 c 없음 (단계 g 먼저)"; return; }
-    if [ $s = M3 ]; then c="${c/ --gq_mass / }"; c="${c/--sp2 31/--sp2 23}"; fi             # 수박 --gq_mass 끔 (다른 씬과 같게), --sp2 비트 8 은 --gq_mass 전용
+    if [ $s = M3 ]; then c="${c/ --gq_mass / }"; c="${c/ --gq_oct 0 / }"; c="${c/--sp2 31/--sp2 23}"; pre="$pre AF_TET1=1"; fi   # 수박 --gq_mass 끔 (다른 씬과 같게): --gq_oct (점유 가중 κ) 는 --gq_mass 경로 전용 (H9 κ 0 = 팔분 실제 몫 = 끈 경로와 같음), --sp2 비트 8 도 --gq_mass 전용,
+                                                                                            #   AF_TET1=1 은 실행기 절 CM30 assert ('--ws_bar 는 --gq_mass 판만', 절 CM102 X9 와 같은 열쇠) 만 풂 -- 다른 곳에서 안 읽음
     c="exe/edgep_wrap.py --ep $ep --epc $c_ --epdg 1 --epck ${epck:-0} $c"; fi
   rm -rf $O/$n; mkdir -p $O/$n; echo "$pre $PY -u $c --out $O/$n" > $O/$n/cmd.txt
   [ -n "$DRY" ] && { echo "$n: $(cat $O/$n/cmd.txt)"; return; }                                # 로컬 글자 확인 (실행 안 함)
