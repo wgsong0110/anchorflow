@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 argv = sys.argv[1:]
 C = dict(v="0")
 while argv and argv[0].startswith("--wy"):
-    C[argv[0][3:]] = argv[1]
+    C[argv[0][4:]] = argv[1]                                                           # --wyv -> v
     del argv[:2]
 out = argv[argv.index("--out") + 1] if "--out" in argv else "."
 os.makedirs(out, exist_ok=True)

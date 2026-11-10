@@ -4,13 +4,31 @@
 #   탄성: snh = Stable Neo-Hookean (우리 판) · nhb = GF NHB 그대로 (--elx 없음)
 #   반환 사상: gq = 가우스 점 RM + 입자 F·logJp 보간 교체 (--fp_interp --lj_interp, 우리 판) · pp = 입자별 RM (G2P 걸음마다 입자 F ← RM(ΔF F), 보간 교체 없음)
 # 큰 판 먼저 (셀 1)
-s1 B1 1 16 bar snh gq 200
-s1 S1 1 16 slip snh gq 200
-s1 B2 2 16 bar snh gq 150
-s1 S2 2 16 slip snh gq 150
-s1 B3 3 16 bar snh gq 100
-s1 B3k32 3 32 bar snh gq 100
-s1 S3 3 16 slip snh gq 100
-s1 X3 3 16 stick snh gq 100
-s1 N3 3 16 bar nhb gq 100
-s1 P3 3 16 bar snh pp 100
+s1 B1 1 16 bar snh gq 200 40 -
+s1 S1 1 16 slip snh gq 200 40 -
+s1 B2 2 16 bar snh gq 150 40 -
+s1 S2 2 16 slip snh gq 150 40 -
+s1 B3 3 16 bar snh gq 100 40 -
+s1 B3k32 3 32 bar snh gq 100 40 -
+s1 S3 3 16 slip snh gq 100 40 -
+s1 X3 3 16 stick snh gq 100 40 -
+s1 N3 3 16 bar nhb gq 100 40 -
+s1 P3 3 16 bar snh pp 100 40 -
+# 열 더함: ... PCG상한 뉴턴상한 추가플래그 (쉼표 = 빈칸, - = 없음)
+# s1 결과 (2222a4f): gq 판 모두 f4 에 모든 입자 비유한 (B3·S3·X3·N3, 장벽·노드 바닥 무관), 셀 1·2 와 K 32 는 그래프 잡기에서 메모리 넘침 (K x 뉴턴 x PCG 가 64 천 넘으면), pp (P3) 만 8 프레임 완주.
+# s2: 입자 RM (pp) 바탕에서 한 갈래씩 + gq 가 살아나는지 둘 (B3w = 우리 판 실행기 필터 --gq_oct 0 --ws_bar 4 --ws_fi, B3n6 = 뉴턴 6).
+# 셀 1·1.5·2·K 32 는 뉴턴 20 · PCG 100 (그래프 상한).
+s2 P1 1 16 bar snh pp 100 20 -
+s2 PS1 1 16 slip snh pp 100 20 -
+s2 P15 1.5 16 bar snh pp 100 20 -
+s2 PS15 1.5 16 slip snh pp 100 20 -
+s2 P2 2 16 bar snh pp 100 20 -
+s2 PS2 2 16 slip snh pp 100 20 -
+s2 P3 3 16 bar snh pp 100 40 -
+s2 P3n20 3 16 bar snh pp 100 20 -
+s2 P3k32 3 32 bar snh pp 100 20 -
+s2 PS3 3 16 slip snh pp 100 40 -
+s2 PX3 3 16 stick snh pp 100 40 -
+s2 PN3 3 16 bar nhb pp 100 40 -
+s2 B3w 3 16 bar snh gq 100 40 --gq_oct,0,--ws_bar,4,--ws_fi
+s2 B3n6 3 16 bar snh gq 100 6 -

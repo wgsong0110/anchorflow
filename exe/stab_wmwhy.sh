@@ -25,12 +25,13 @@ claim() { local me=$1 g f p
     ( set -o noclobber; echo $me > $f ) 2>/dev/null && { echo $g; return 0; }
   done; return 1; }
 claim_wait() { local g; while :; do g=$(claim $1) && { echo $g; return; }; sleep 30; done; }
-cmd_of() { local c=$1 K=$2 fl=$3 el=$4 rm=$5 cg=$6 Od=$7 x
+cmd_of() { local c=$1 K=$2 fl=$3 el=$4 rm=$5 cg=$6 nt=$7 ex=$8 Od=$9 x
   x="exe/wmwhy_wrap.py --wyv 1 exe/s6/fem_ao_rt_sim.py --data $AG/wm.pt --frames 8 --floor vel --floor_plane 1,1,0.02,0,0,1 --cell $c --mlow 1e-3 --integ mid --ga hht --rho 0.7 --ga_y0ut"
-  x="$x --tolN 1e-3 --tolP 1e-2 --newton 40 --cg $cg --ls_inv --y0u --y0l --fq_rl --ls_end --gq_mass --tag wm --K $K"
+  x="$x --tolN 1e-3 --tolP 1e-2 --newton $nt --cg $cg --ls_inv --y0u --y0l --fq_rl --ls_end --gq_mass --tag wm --K $K"
   case $fl in bar) x="$x --fl_bar --fl_bst 1 --y0eb";; slip) x="$x --floor_slip";; stick) ;; esac
   case $el in snh) x="$x --elx snh";; nhb) ;; esac
   case $rm in gq) x="$x --lj_interp --fp_interp";; pp) ;; esac
+  [ "$ex" = "-" ] || x="$x ${ex//,/ }"
   echo "$PY -u $x --erec --nrec --ufrec --wsh_rec 8 --wsh_sv 3,4,5,6,8 --out $Od"; }
 one() { local n=$1 g=$2 Od=$O/$1 c
   shift 2
@@ -45,9 +46,9 @@ one() { local n=$1 g=$2 Od=$O/$1 c
   local rc=$?
   log "$n rc=$rc $(( $(date +%s) - T0 )) s $(grep -a '프레임 8/8' $Od/log.txt | tail -1 | cut -c1-160) $(grep -a 'rror\|Killed\|memory' $Od/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
   rclone copy $Od $RO/$n -q --transfers 8; }
-while read -r s n a1 a2 a3 a4 a5 a6; do [ -z "$s" ] && continue; case $s in \#*) continue;; esac
+while read -r s n a1 a2 a3 a4 a5 a6 a7 a8; do [ -z "$s" ] && continue; case $s in \#*) continue;; esac
   [ "$s" = "$STG" ] || continue
-  ( me=$BASHPID; g=$(claim_wait $me); one $n $g $a1 $a2 $a3 $a4 $a5 $a6; rm -f $CL/$g ) & sleep 20
+  ( me=$BASHPID; g=$(claim_wait $me); one $n $g $a1 $a2 $a3 $a4 $a5 $a6 $a7 $a8; rm -f $CL/$g ) & sleep 20
 done < exe/wmwhy_spec.txt
 wait
 NS=$(for d in $O/*/; do n=$(basename $d); [ -s $d/wsh/fs_004.npz ] && echo $n; done | tr '\n' ',')
