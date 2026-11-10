@@ -1,0 +1,8 @@
+# 절 CM101 묶음 q27 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_q27.sh). '@q27 1' = 칸마다 가우스 3x3x3 (27 점) 적분 (lib/anchorflow/fem_q27.py), '@q27cap 1' = 컴파일 소스 갈무리 (결과 불변).
+# 바탕 H5 (H5n: 확장 없음, κ 강성 빼기 없음, P1X 벌점 켬); 벌점 끔 = H5nP (가벼움 벌점 × κ 뺌) 에서 P1X 도 뺌 -> 아래 '@g4 0' 처리 (stab).
+# s0d: 2x2x2 H5 덤프 (모드 분석용, 렌더 없음) + 소스 갈무리 -- wolf · 레고 · 수박 · ficus · bread
+s0d dW W d H5n @q27cap 1
+s0d dL L d H5n @q27cap 1
+s0d dM M3 d H5n @q27cap 1
+s0d dF F d H5n @q27cap 1 --frames 4
+s0d dB B d H5n @q27cap 1 --frames 4
