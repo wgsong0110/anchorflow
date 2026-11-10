@@ -206,7 +206,7 @@ if echo "$SPEC" | grep -q '@rr 1' || [ $STG = v ]; then
   log "렌더 자료: ficus $FGT wolf $GTW ($(ls $GTW/meta.json 2>&1)) bread $GTB ($(ls $GTB/meta.json 2>&1)) 수박 $GTM ($(ls $GTM/meta.json 2>&1)) 모델 $WMM"
 fi
 # ---- 판정·비결정·진단·재현 판 (카드마다 하나)
-for d_ in $O/*/; do n_=$(basename $d_); [ -f $d_/summary.json ] && [ -f $d_/pred.pt ] || continue    # 절 CM102: 앞 단계가 끊겨 R2 확인 전에 남은 덤프 (카드 없이 뒤에서)
+[ $STG = u1 ] || for d_ in $O/*/; do n_=$(basename $d_); [ -f $d_/summary.json ] && [ -f $d_/pred.pt ] && [ ! -f $d_/.upl ] || continue   # 절 CM103: 올리는 중 (.upl) 은 건너뜀, u1 단계는 하나씩 (앞 단계 스크립트)    # 절 CM102: 앞 단계가 끊겨 R2 확인 전에 남은 덤프 (카드 없이 뒤에서)
   touch $d_/.upl; ( trap "rm -f $d_/.upl" EXIT; up $n_; rclone copyto $d_/pred.pt $RO/$n_/pred.pt -q; [ "$(rclone size $RO/$n_/pred.pt --json 2>/dev/null | grep -o '"bytes":[0-9]*' | cut -d: -f2)" = "$(stat -c %s $d_/pred.pt)" ] && rm -f $d_/pred.pt && log "$n_ 남은 pred.pt R2 확인 뒤 로컬 사본 지움" ) > /dev/null 2>&1 < /dev/null & disown
 done
 while read -r st n s md x; do

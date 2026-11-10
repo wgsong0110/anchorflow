@@ -54,6 +54,7 @@ def run_stats(d):
                  exlo=max(slo / r["smin"] - 1 if r["smin"] > 0 else float("inf") for r in st), exhi=max(r["smax"] / shi - 1 for r in st),
                  ncap=sum(r["ncap"] for r in st), nchk=sum(r["nchk"] for r in st), amin=min(r["amin"] for r in st), nstart=sum(r["nstart"] for r in st),
                  nnofeas=sum(r["nnofeas"] for r in st), ninf=max(r["ninf"] for r in st), nact=max(r["nact"] for r in st), nq=max(r["nq"] for r in st),
+                 fqd=max(r.get("nfq_det", 0) for r in st), fqb=max(r.get("nfq_band", 0) for r in st), ud=max(r.get("nU_det", 0) for r in st), ub=max(r.get("nU_band", 0) for r in st), nfb=sum(r.get("nfb", 0) for r in st),
                  shmax=max(r["Eb"] / (r["Eb"] + r["Eh"]) if r["Eb"] + r["Eh"] > 0 else 0.0 for r in st),
                  shmean=float(np.mean([r["Eb"] / (r["Eb"] + r["Eh"]) if r["Eb"] + r["Eh"] > 0 else 0.0 for r in st])), nstep=len(st))
     pp = os.path.join(d, "period.txt")
@@ -84,8 +85,8 @@ def main():
             nm, runs = g.split(":", 1)
             groups.append((nm, [r for r in runs.split(",") if r]))
         print(f"\n#### {scene}\n")
-        print("| 판 | 발산 | 오차 % | det≤0 사면체 (걸음 최대) · 걸린 걸음 | 최소 det | 띠 밖 (최대) · 걸린 걸음 | 최대 넘침 아래 · 위 | 보폭 자른 반복 / 확인 | 최소 보폭 | 시작점 섞기 | 실현 가능 후보 없음 | 장벽 에너지 몫 최대 · 평균 |")
-        print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+        print("| 판 | 발산 | 오차 % | det≤0 사면체 (걸음 최대) · 걸린 걸음 | 최소 det | 띠 밖 (최대) · 걸린 걸음 | 최대 넘침 아래 · 위 | 보폭 자른 반복 / 확인 | 최소 보폭 | 시작점 섞기 (y 0 기준) | 실현 가능 후보 없음 | 걸음 시작 F_q det≤0 · 띠 밖 (최대) | 갱신 U 의 X det≤0 · 띠 밖 (최대) | 장벽 에너지 몫 최대 · 평균 |")
+        print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
         fig, ax = plt.subplots(2, 3, figsize=(15, 7.5))
         ax = ax.ravel()
         for gi, (nm, runs) in enumerate(groups):
@@ -102,9 +103,9 @@ def main():
                 mn = lambda k: min(q[k] for q in Q)
                 sm = lambda k: sum(q[k] for q in Q)
                 print(f"| {nm} | {dv} | {es} | {mx('ndet')} · {sm('steps_det')}/{sm('nstep')} | {fmt(mn('dmin'))} | {mx('nband')} · {sm('steps_band')}/{sm('nstep')} | "
-                      f"{fmt(mx('exlo'))} · {fmt(mx('exhi'))} | {sm('ncap')} / {sm('nchk')} | {fmt(mn('amin'))} | {sm('nstart')} | {sm('nnofeas')} | {fmt(mx('shmax'))} · {fmt(np.mean([q['shmean'] for q in Q]))} |")
+                      f"{fmt(mx('exlo'))} · {fmt(mx('exhi'))} | {sm('ncap')} / {sm('nchk')} | {fmt(mn('amin'))} | {sm('nstart')} ({sm('nfb')}) | {sm('nnofeas')} | {mx('fqd')} · {mx('fqb')} | {mx('ud')} · {mx('ub')} | {fmt(mx('shmax'))} · {fmt(np.mean([q['shmean'] for q in Q]))} |")
             else:
-                print(f"| {nm} | {dv} | {es} | - | - | - | - | - | - | - | - | - |")
+                print(f"| {nm} | {dv} | {es} | - | - | - | - | - | - | - | - | - | - | - |")
             q = Q[0] if Q else None
             if q is None:
                 continue

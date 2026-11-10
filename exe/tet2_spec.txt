@@ -83,3 +83,4 @@ s2b yW W z T9S @t2 1 @s6l 1
 s2b yM M3 z T9S @t2 1 @s6l 1
 s2b yF F z T9S @t2 1 @s6l 1
 s2b yB B z T9S @t2 1 @s6l 1
+# u1: 남은 덤프 하나씩 올리기 (exe/tet2_pre_u1.sh)
