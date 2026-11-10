@@ -173,7 +173,7 @@ for st, n, s, md, x in spec:
         runs.append((st, n, s, md, x))
 G = {}
 for st, n, s, md, x in runs:
-    if md in ("z", "v") or st.endswith("k"):
+    if md in ("z", "v", "d") or st.endswith("k"):
         continue
     G.setdefault((s, lab(x)), []).append(n)
 

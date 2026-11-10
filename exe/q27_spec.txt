@@ -97,3 +97,8 @@ s2 xCW W z H5n @q27 0 @s6l 1
 s2 xCF F z H5n @q27 0 @s6l 1
 s2 xCB B z H5n @q27 0 @s6l 1
 # e: 모래시계 모드 세기 (s0d 덤프, exe/q27_eig.py) + 정답 수박 꿈틀거림 -- stab 안 따로 (판 줄 없음)
+# v: 영상 판 (덤프 + F -> 3DGS 렌더): 대조 H5 2x2x2 · 최선 3x3x3 판 (= 3x3x3 + H5: wolf 발산 0/4 (벌점 끔 1/4·부피 붕괴), 수박 이탈 0/8 (벌점 끔 4/6·손상 14.8 %))
+v vWC W v H5n @q27 0
+v vWP W v H5n @q27 1
+v vMC M3 v H5n @q27 0
+v vMP M3 v H5n @q27 1
