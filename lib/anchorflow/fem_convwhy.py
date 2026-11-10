@@ -141,6 +141,8 @@ def _patch_src(code):
 
 def install(out, save="", load="", ks=1.0, nopl=0):
     from . import fem_an_rt as ART
+    if load and str(load).isdigit():                                                   # 묶음 표기 (경로는 묶음 셸이 지우므로 숫자): 0 = 연기 저장 판 k8, n = 저장 판 sv<n> (출력 디렉토리 옆)
+        load = os.path.join(os.path.dirname(os.path.abspath(out)), {"0": "k8"}.get(str(load), "sv" + str(load)))
     ST.update(out=out, save=[int(q) for q in str(save).split(",") if q.strip() != ""], load=load, ks=float(ks), nopl=int(nopl))
     LOG[0] = open(os.path.join(out, "cw.jsonl"), "w")
     if ST["load"]:
