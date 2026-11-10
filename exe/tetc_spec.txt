@@ -33,3 +33,14 @@ s1 cSM M3 d T9S @tcm 0 @s6l 1
 s1 cSL L nd T9S @tcm 0
 s1 cSF F nd T9S @tcm 0
 s1 cSB B nd T9S @tcm 0
+# s2 (조정자 11-10 정정): 발산 시작 노드 진단 (결과 불변 '@tcdg 2' -> tetc.jsonl dv) -- 레고 TC 4 · wolf TC 4 (cW_3·cW_4 발산 재현용, 비결정) · 레고 T9S 2
+s2 dL_1 L nd TC @tcdg 2
+s2 dL_2 L nd TC @tcdg 2
+s2 dL_3 L nd TC @tcdg 2
+s2 dL_4 L nd TC @tcdg 2
+s2 dW_1 W nd TC @tcdg 2
+s2 dW_2 W nd TC @tcdg 2
+s2 dW_3 W nd TC @tcdg 2
+s2 dW_4 W nd TC @tcdg 2
+s2 dSL_1 L nd T9S @tcm 0 @tcdg 2
+s2 dSL_2 L nd T9S @tcm 0 @tcdg 2

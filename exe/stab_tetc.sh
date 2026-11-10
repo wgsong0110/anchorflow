@@ -149,7 +149,8 @@ run() {   # run 이름 씬 방식 카드 플래그
     else c="${c/--gq_oct 0.1 /--gq_oct 0 } --gq_mass"; fi
   fi   # 절 CM102 T9S: 점유 가중 κ (새 실행기 0.1 · 수박 0) -> 1 (칸 입자 부피·질량을 6 사면체에 고르게)
   c="exe/speed13_wrap.py $s13 exe/speed12_wrap.py $s12 exe/ext2_wrap.py $w8 $l4 $l3 $w5x $s9 $s8 $s7 $s5 $mf $wf $hx $wg $w5 $w3 $w2 $wo $c"; [ -n "$tet" ] && c="exe/tet1_wrap.py $tet $toct $c"
-  [ -n "$tcm" ] && c="exe/tetc_wrap.py --tcm $tcm --tcdg 1 $c"
+  local tcdg=1; [[ " $5 " == *" @tcdg 2 "* ]] && tcdg=2                                   # 절 CM106.D 발산 노드 진단 (결과 불변)
+  [ -n "$tcm" ] && c="exe/tetc_wrap.py --tcm $tcm --tcdg $tcdg $c"
   if [ -n "$t2" ]; then local dg_=1; [ $md = z ] && dg_=0                                       # 절 CM103: 단독 (시간) 판은 기록 끔 (프레임마다 동기화 없음)
     local tb_
     local GD=$O; [ -s $GD/gtdf_$s.json ] || GD=/dev/shm/dkta/lbours/tet2                     # 절 CM103 s1e: O 가 /home 이면 띠·범위는 /dev/shm 묶음 디렉토리에서

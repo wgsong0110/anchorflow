@@ -100,6 +100,100 @@ def _ratio(sv):
     return o
 
 
+def _q_nodes(sv, Q, nb1, nb2):
+    """적분점 q 의 27 자리 노드 번호 [Q,27] 과 기저 기울기 [Q,27,3] (BG 표, 사면체는 4 자리만 0 아님)."""
+    dev = sv.Vq.device
+    cb = sv.cb[:Q // 8].long()
+    q = torch.arange(Q, device=dev); c, oc = q >> 3, q & 7
+    o = torch.arange(27, device=dev); i, j, k = o // 9, (o // 3) % 3, o % 3
+    nid = ((cb[c, 0:1] + i) * nb1 + (cb[c, 1:2] + j)) * nb2 + (cb[c, 2:3] + k)
+    bg = sv.BG.float().view(8, 27, 3)[oc]
+    return nid, bg
+
+
+def _divdiag(sv, x0):
+    """절 CM106.D (조정자 11-10 정정): 발산 시작 노드 진단 (결과 불변, 프레임 끝 버퍼 읽기만).
+    고르는 노드: (a) |U| (프레임 노드 이동) 최대 5 개, (b) 걸음 끝 det X ≤ 0 사면체 (X = (I + Σ U ⊗ ∇w) F_q, V_q > 0) 중 det 작은 4 개의 꼭짓점,
+    (c) 이탈 입자 (걸음 끝 위치가 0.1/99.9 % 분위 상자 밖 4 칸 넘게) 중 먼 8 개가 프레임 시작에 속한 사면체의 꼭짓점.
+    노드마다: m_i, 질량 > 0 노드 중 백분위·중앙 대비 비, λ_max(K_ii) (K_ii = Σ_q V_q (μ|g|² I + (μ+λ) g gᵀ), g = F_qᵀ∇w_i -- 등방 선형 접선),
+    이웃 사면체 입자 수, 바닥 장벽 (이 프레임 걸린 표본점 bcf&1 또는 걸음 시작 활성 bact) 이웃 사면체 수, |U|·|v|."""
+    IP = sv.IP.detach().cpu().numpy().astype(np.int64)
+    Q, nN, nb1, nb2 = int(IP[12]), int(IP[9]), int(IP[7]), int(IP[8])
+    if Q > 4_000_000:
+        return dict(skip=Q, nN=nN)
+    dev = sv.Vq.device
+    nid, bg = _q_nodes(sv, Q, nb1, nb2)
+    Vq = sv.Vq[:Q].float(); Fq = sv.Fq[:Q].float().view(Q, 3, 3)
+    U = sv.U[:nN].float(); vk = sv.vk[:nN].float(); mn = sv.mn[:nN].float()
+    ok = (bg.abs().sum(-1) > 0) & (nid >= 0) & (nid < nN)
+    nidc = nid.clamp(0, nN - 1)
+    Gd = torch.einsum("qoa,qob->qab", U[nidc] * ok[..., None], bg)                     # Σ_o U_o ⊗ ∇w_o
+    X = (torch.eye(3, device=dev) + Gd) @ Fq
+    dX = torch.linalg.det(X.double()).float()
+    act = Vq > 0
+    inv = act & (dX <= 0)
+    # 입자 -> 프레임 시작 적분점 (fx·pcd 는 프레임 시작 값)
+    N = int(sv.N)
+    fx = sv.fx[:N].float(); cidx = sv.cidx.long(); pcd = sv.pcd[:N].long()
+    srt = torch.sort(fx, dim=1, descending=True, stable=True).indices
+    tt = 2 * srt[:, 0] + (srt[:, 1] > srt[:, 2]).long()
+    pq = cidx[pcd] * 8 + tt
+    pq = torch.where((pq >= 0) & (pq < Q), pq, torch.full_like(pq, -1))
+    npq = torch.bincount(pq[pq >= 0], minlength=Q)[:Q]
+    x = sv.x[:N].float(); okx = torch.isfinite(x).all(1)
+    far_i = torch.empty(0, dtype=torch.long, device=dev); nfar = 0
+    if bool(okx.any()):
+        xs = x[okx][::7]
+        q0, q1 = torch.quantile(xs, 0.001, dim=0), torch.quantile(xs, 0.999, dim=0)
+        cell = float(torch.linalg.norm(torch.linalg.inv(sv.Ai.double().reshape(3, 3).cpu())[:, 0]))
+        d = torch.linalg.norm(torch.clamp(torch.maximum(q0 - x, x - q1), min=0), dim=1)
+        d = torch.where(okx, d, torch.zeros_like(d))
+        fm = d > 4 * cell; nfar = int(fm.sum())
+        if nfar:
+            far_i = torch.nonzero(fm).flatten()
+            far_i = far_i[torch.argsort(d[far_i], descending=True)[:8]]
+    bar = None
+    if getattr(sv, "bcf", None) is not None:
+        bar = (sv.bcf[:Q] & 1) > 0
+    if getattr(sv, "bact", None) is not None:
+        b2 = sv.bact[:Q] > 0
+        bar = b2 if bar is None else (bar | b2)
+    sel = {}
+    un = torch.linalg.norm(U, dim=1); un = torch.where(torch.isfinite(un), un, torch.full_like(un, 3e38))
+    for n_ in torch.topk(un, min(5, nN)).indices.tolist():
+        sel.setdefault(n_, []).append("U")
+    if bool(inv.any()):
+        qi = torch.nonzero(inv).flatten(); qi = qi[torch.argsort(dX[qi])[:4]]
+        for q_ in qi.tolist():
+            for n_ in nid[q_][ok[q_]].tolist():
+                sel.setdefault(n_, []).append("inv")
+    for p_ in far_i.tolist():
+        q_ = int(pq[p_])
+        if q_ >= 0:
+            for n_ in nid[q_][ok[q_]].tolist():
+                sel.setdefault(n_, []).append("far")
+    mpos = mn[mn > 0]; med = float(mpos.median()) if mpos.numel() else 0.0
+    msort = torch.sort(mpos).values
+    mu_, la_ = float(sv.mu), float(sv.lam)
+    nodes = []
+    for n_, why in sel.items():
+        hit = (nid == n_) & ok                                                             # [Q,27]
+        qs, os_ = torch.nonzero(hit, as_tuple=True)
+        g = torch.einsum("qba,qb->qa", Fq[qs], bg[qs, os_])
+        V = Vq[qs]
+        K = (V[:, None, None] * (mu_ * (g * g).sum(-1)[:, None, None] * torch.eye(3, device=dev) + (mu_ + la_) * g[:, :, None] * g[:, None, :])).sum(0)
+        lmax = float(torch.linalg.eigvalsh(K.double()).max()) if qs.numel() else 0.0
+        m = float(mn[n_])
+        rank = float(torch.searchsorted(msort, torch.tensor([m], device=dev)).item()) / max(1, msort.numel())
+        aq = qs[V > 0]
+        nodes.append(dict(n=int(n_), why=sorted(set(why)), m=m, m_pct=100 * rank, m_rel=(m / med if med > 0 else None), lmax=lmax,
+                          ntet=int(qs.numel()), ntet_act=int(aq.numel()), npart=[int(v) for v in npq[qs].tolist()],
+                          nbar=(int(bar[qs].sum()) if bar is not None else None), U=float(un[n_]), v=float(torch.linalg.norm(vk[n_]))))
+    lm_all = None
+    return dict(nN=nN, m_med=med, Umax=float(un.max()), ninv=int(inv.sum()), dmin=float(dX[act].min()) if bool(act.any()) else None,
+                nfar=nfar, nodes=nodes)
+
+
 def _write(rec):
     try:
         with open(os.path.join(OUT[0], "tetc.jsonl"), "a") as f:
@@ -147,6 +241,11 @@ def _wrap_step(st0):
             mp, Pp, Pa, mN, PN = float(b[0]), b[1:4], float(b[4]), float(b[5]), b[6:9]
             rec = dict(t=float(t), f=fr, m_p=mp, m_n=mN, P_p=[float(x) for x in Pp], P_n=[float(x) for x in PN], Pabs=Pa, nm=int(b[9]),
                        em=abs(mN - mp) / mp if mp > 0 else None, eP=float(np.abs(PN - Pp).max() / Pa) if Pa > 0 else None)
+            if d.dg >= 2:
+                try:
+                    rec["dv"] = _divdiag(s, None)
+                except Exception as e_:
+                    rec["dv_err"] = repr(e_)[:300]
             if d.dg and fr in DGF and bool(torch.isfinite(s.x[:1]).all()):
                 try:
                     rec["rat"] = _ratio(s)
