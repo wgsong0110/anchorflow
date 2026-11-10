@@ -64,10 +64,12 @@ __device__ __noinline__ double t2_psi(const float* Sf, double kap, double* g, do
         b = t2_b(S[i] - AF_T2_SLO, AF_T2_DLO, &b1, &b2); if (!isfinite(b)) bad = true; e += b; g[i] += b1; D[i*4] += b2;
         b = t2_b(AF_T2_SHI - S[i], AF_T2_DHI, &b1, &b2); if (!isfinite(b)) bad = true; e += b; g[i] -= b1; D[i*4] += b2;
     }
+#if AF_T2 != 2                                                                     // 모드 2 (판 q): det 로그 장벽 뺌 (특이값 띠 장벽만)
     double J = S[0]*S[1]*S[2];
     b = t2_b(J, AF_T2_JA, &b1, &b2); if (!isfinite(b)) bad = true; e += b;
     double cj[3] = {S[1]*S[2], S[0]*S[2], S[0]*S[1]};
     for (int i=0;i<3;i++) { g[i] += b1*cj[i]; for (int j=0;j<3;j++) D[i*3+j] += b2*cj[i]*cj[j] + ((i != j) ? b1*S[3-i-j] : 0.0); }
+#endif
     if (bad || !isfinite(e)) { for (int i=0;i<3;i++) g[i] = 0.0; for (int k=0;k<9;k++) D[k] = 0.0; return T2_INF; }
     for (int i=0;i<3;i++) g[i] *= kap;
     for (int k=0;k<9;k++) D[k] *= kap;
@@ -138,6 +140,9 @@ __global__ void __launch_bounds__(128) t2_cap(const int* IP, const int* cb, cons
     for (int k=0;k<9;k++) B[k] = Xb[k] - A[k];
     double c0 = t2_det(A);
     if (!(c0 > 0.0)) { atomicAdd(&TI[2], 1); return; }
+#if AF_T2 == 2
+    return;                                                                     // 모드 2 (판 q): det > 0 닫힌 꼴 보폭 제한 뺌
+#endif
     t2_cof(A, CA); t2_cof(B, CB);
     double c1 = 0.0, c2 = 0.0; for (int k=0;k<9;k++) { c1 += CA[k]*B[k]; c2 += CB[k]*A[k]; }
     double c3 = t2_det(B);
@@ -159,7 +164,7 @@ __global__ void __launch_bounds__(128) t2_band(const int* IP, const int* cb, con
     for (int k=0;k<nc;k++) {
         for (int i=0;i<9;i++) X[i] = A[i] + (double)a*(Xb[i] - A[i]);
         t2_sv(X, S);
-        bool ok = (!od || (double)S[0]*S[1]*S[2] > 0.0) && (!ol || S[2] > (float)AF_T2_SLO) && (!oh || S[0] < (float)AF_T2_SHI);
+        bool ok = (AF_T2 == 2 || !od || (double)S[0]*S[1]*S[2] > 0.0) && (!ol || S[2] > (float)AF_T2_SLO) && (!oh || S[0] < (float)AF_T2_SHI);
         if (ok) { kq = k; break; }
         a *= 0.5f;
     }
@@ -319,7 +324,7 @@ def transform(src):
         return src, None
     cnt = {}
     s = src
-    if CFG["mode"] == 1:
+    if CFG["mode"] >= 1:
         for name, a, b in reversed(_bodies(s)):
             R = _rules(name)
             if R is None:
@@ -404,7 +409,7 @@ class Hook:
     def check(h, start):
         s, B = h.s, h.buf
         i32, f32 = np.int32, np.float32
-        ap = 1 if CFG["mode"] == 1 else 0
+        ap = 1 if CFG["mode"] >= 1 else 0
         fl = getattr(s, "floor", None)
         nr = fl["NR"] if fl else [0.0, 0.0, 1.0]
         for st in ((1, 2) if start else (0,)):
@@ -561,7 +566,7 @@ def install(out, mode, band, c=1.0, dg=1):
                 _install_hook(s)
             init._tet2 = True
             C.__init__ = init
-    print(f"[절 CM103] tet2 켬 -- 모드 {mode} ({'장벽·보폭' if mode == 1 else '기록만 (결과 불변)'}), 띠 σ [{band[0]:.4f}, {band[1]:.4f}] 활성 폭 {band[2]:.4f}·{band[3]:.4f}, "
+    print(f"[절 CM103] tet2 켬 -- 모드 {mode} ({'장벽·보폭' if mode == 1 else ('특이값 띠 장벽만 (det 장벽·det 보폭 뺌)' if mode == 2 else '기록만 (결과 불변)')}), 띠 σ [{band[0]:.4f}, {band[1]:.4f}] 활성 폭 {band[2]:.4f}·{band[3]:.4f}, "
           f"det 활성 {band[4]:.4f}, κ = {c} (2μ+λ), 기록 {dg}", flush=True)
     _dump()
 

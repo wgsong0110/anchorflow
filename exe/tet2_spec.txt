@@ -84,3 +84,24 @@ s2b yM M3 z T9S @t2 1 @s6l 1
 s2b yF F z T9S @t2 1 @s6l 1
 s2b yB B z T9S @t2 1 @s6l 1
 # u1: 남은 덤프 하나씩 올리기 (exe/tet2_pre_u1.sh)
+# s1c (판 q, 조정자 11-10): v2 (p) 에서 det 로그 장벽·det > 0 닫힌 꼴 보폭 제한만 뺌 ('@t2 2'), 특이값 띠 장벽·띠 보폭·시작점 섞기 그대로, 기록 켬
+s1c qW_1 W v T9S @t2 2
+s1c qW_2 W d T9S @t2 2
+s1c qW_3 W d T9S @t2 2
+s1c qW_4 W d T9S @t2 2
+s1c qM_1 M3 v T9S @t2 2 @s6l 1
+s1c qM_2 M3 d T9S @t2 2 @s6l 1
+s1c qM_3 M3 d T9S @t2 2 @s6l 1
+s1c qM_4 M3 d T9S @t2 2 @s6l 1
+s1c qM_5 M3 d T9S @t2 2 @s6l 1
+s1c qM_6 M3 d T9S @t2 2 @s6l 1
+s1c qM_7 M3 d T9S @t2 2 @s6l 1
+s1c qM_8 M3 d T9S @t2 2 @s6l 1
+s1c qL_1 L v T9S @t2 2
+s1c qL_2 L nd T9S @t2 2
+s1c qL_3 L nd T9S @t2 2
+s1c qL_4 L nd T9S @t2 2
+s1c qF_1 F nd T9S @t2 2
+s1c qF_2 F nd T9S @t2 2
+s1c qB_1 B nd T9S @t2 2
+s1c qB_2 B nd T9S @t2 2
