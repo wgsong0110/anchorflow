@@ -48,6 +48,7 @@ dfl() { local s=$1 x=" $2 "
   x="${x// P1X / @g4 1e-1 @g4t 1 @g4x 1 }"; x="${x// A3 / @s4w 1 @s4y 1 @s4x 2 }"; x="${x// F / E @e3w 1 @e5r 2 @e5a 2 }"
   case $s in M*) x="${x// E / D @tb 16.7 @tb_m 0.8 @tb_w 2 @inv 1 }";; *) x="${x// E / D @tb 16.7 @tb_m 0.8 @tb_w 2 }";; esac
   case "$x " in *" @noext 1 "*) x="${x/@w8e 1 @w8d 2 @w8t 1/}"; x="${x// @noext 1 / }";; esac                         # 절 CM93 (b): 확장만 뺌 (P1X 강성 × κ 는 그대로)
+  case "$x " in *" @xdeg "[0-9]" "*) local xd=$(echo " $x " | grep -o '@xdeg [0-9]' | awk '{print $2}'); x="${x/@w8d 2/@w8d $xd}"; x="${x// @xdeg $xd / }";; esac   # 절 CM98: 확장 외삽 차수 (@w8d 2 -> n)
   case "$x " in *" @nok 1 "*) x="${x/@w8k 1/}"; x="${x// @nok 1 / }";; esac                                                 # 절 CM98: P1X 강성 × κ (K) 만 뺌
   case "$x " in *" @nosc 1 "*) x="${x/@w5s 1 @w5c 1/}"; x="${x// @nosc 1 / }";; esac                                     # 절 CM93 (d): S_구속·C 만 뺌
   x="${x// D / $DFL }"; case "$x " in *" @nxit 1 "*) x="${x/--xit_from 2/}"; x="${x/--xg 1 / }"; x="${x// @nxit 1 / }";; esac   # 절 CM90 수렴 판: 반복 xit 문과 그 위 그래프 나눔 끔
