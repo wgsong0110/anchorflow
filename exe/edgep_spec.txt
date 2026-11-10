@@ -1,12 +1,12 @@
 # 절 CM105 묶음 edgep 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_edgep.sh). 새 판 E = 'H9nb' (H9 − B-스플라인 전용 정규화 전부, 절 CM102 와 같은 글자) + '@ep 1' (exe/edgep_wrap.py 노드 변 길이 상한 벌점),
 # 대조 N = 'H9nb @ep 0' (같은 설정에서 변 벌점만 0 = 정규화 전부 끈 판, 같은 기록), H9 = 절 CM86 글자 그대로 (영상 판만; 판정 수치는 절 CM86). 수박 '@ep' 판은 --gq_mass 끔 (stab 에서).
 # 방식: nd 진단 · d 덤프 (지표 뒤 지움) · v 덤프 + 3DGS 영상 (덤프 남김). 단계: g 정답 상한 c · gv 정답 bread 영상 · s0k 연기 8 프레임 (+ 유한차분 검사 @epck 1) · s1 판정·영상
-s0k keL L nd H9nb @ep 1 @epck 1 --frames 8
-s0k keW W d H9nb @ep 1 @epck 1 --frames 8
-s0k keM M3 d H9nb @ep 1 @epck 1 @s6l 1 --frames 8
-s0k keF F nd H9nb @ep 1 @epck 1 --frames 8
-s0k keB B nd H9nb @ep 1 @epck 1 --frames 8
-s0k knL L nd H9nb @ep 0 @epck 1 --frames 8
+s0k keLb L nd H9nb @ep 1 @epck 1 --frames 8
+s0k keWb W d H9nb @ep 1 @epck 1 --frames 8
+s0k keMb M3 d H9nb @ep 1 @epck 1 @s6l 1 --frames 8
+s0k keFb F nd H9nb @ep 1 @epck 1 --frames 8
+s0k keBb B nd H9nb @ep 1 @epck 1 --frames 8
+s0k knLb L nd H9nb @ep 0 @epck 1 --frames 8
 s1 eW_1 W v H9nb @ep 1
 s1 eW_2 W d H9nb @ep 1
 s1 eW_3 W d H9nb @ep 1
