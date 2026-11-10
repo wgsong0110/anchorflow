@@ -1,0 +1,77 @@
+# 절 CM99 묶음 gpw2 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_gpw2.sh). '@gpw 1|2' = 절 CM95 면 가중 w_F = 1 − φ_min ((A) 모든 씬 | (B) κ 0 씬 (wolf) 만),
+# '@gphi 1' = (G) 칸 점유 φ = 팔분 기하 채움, '@gphi 2' = (N) φ = min(1, φ/φ_0) 첫 프레임 정규화 (lib/anchorflow/fem_gpw2.py). 바탕 H5 (H5n, 확장 없음). wolf 는 κ 0 이라 (A)·(B) 가 같은 계산.
+# s0k 연기 8 프레임: wolf G·N (방식 5 경로) · 수박 G·N (lightg3 곱 경로) · bread G (곱) · ficus N (방식 5 + 구속 면 빼기) · 레고 G (A 방식 5) · 레고 N (B 아무것도 안 함)
+s0k kWG W nd H5n @gpw 1 @gphi 1 --frames 8
+s0k kWN W nd H5n @gpw 1 @gphi 2 --frames 8
+s0k kMG M3 g H5n @gpw 1 @gphi 1 @s6l 1 --frames 8
+s0k kMN M3 g H5n @gpw 1 @gphi 2 @s6l 1 --frames 8
+s0k kBG B nd H5n @gpw 1 @gphi 1 --frames 8
+s0k kFN F nd H5n @gpw 1 @gphi 2 --frames 8
+s0k kLG L nd H5n @gpw 1 @gphi 1 --frames 8
+s0k kLN L nd H5n @gpw 2 @gphi 2 --frames 8
+# s1: wolf 판마다 4 판 동시 (빈 카드), 모두 입자 F 덤프 (det F)
+s1 wG1 W nd H5n @gpw 1 @gphi 1 --dump_F
+s1 wG2 W nd H5n @gpw 1 @gphi 1 --dump_F
+s1 wG3 W nd H5n @gpw 1 @gphi 1 --dump_F
+s1 wG4 W nd H5n @gpw 1 @gphi 1 --dump_F
+s1 wN1 W nd H5n @gpw 1 @gphi 2 --dump_F
+s1 wN2 W nd H5n @gpw 1 @gphi 2 --dump_F
+s1 wN3 W nd H5n @gpw 1 @gphi 2 --dump_F
+s1 wN4 W nd H5n @gpw 1 @gphi 2 --dump_F
+# s2aG·s2aN: (A) 모든 씬 회귀 -- 수박 8 · 레고 4 · ficus 2 · bread 2 + 렌더 포함 단독 a·b (다섯 씬) (wolf 가 통과한 정의만)
+s2aG gAG_1 M3 g H5n @gpw 1 @gphi 1 @s6l 1
+s2aG gAG_2 M3 g H5n @gpw 1 @gphi 1 @s6l 1
+s2aG gAG_3 M3 g H5n @gpw 1 @gphi 1 @s6l 1
+s2aG gAG_4 M3 g H5n @gpw 1 @gphi 1 @s6l 1
+s2aG gAG_5 M3 g H5n @gpw 1 @gphi 1 @s6l 1
+s2aG gAG_6 M3 g H5n @gpw 1 @gphi 1 @s6l 1
+s2aG gAG_7 M3 g H5n @gpw 1 @gphi 1 @s6l 1
+s2aG gAG_8 M3 g H5n @gpw 1 @gphi 1 @s6l 1
+s2aG oAGL_1 L nd H5n @gpw 1 @gphi 1
+s2aG oAGL_2 L nd H5n @gpw 1 @gphi 1
+s2aG oAGL_3 L nd H5n @gpw 1 @gphi 1
+s2aG oAGL_4 L nd H5n @gpw 1 @gphi 1
+s2aG oAGF_1 F nd H5n @gpw 1 @gphi 1
+s2aG oAGF_2 F nd H5n @gpw 1 @gphi 1
+s2aG oAGB_1 B nd H5n @gpw 1 @gphi 1
+s2aG oAGB_2 B nd H5n @gpw 1 @gphi 1
+s2aG xAGM M3 z H5n @gpw 1 @gphi 1 @s6l 1
+s2aG xAGL L z H5n @gpw 1 @gphi 1 @s6l 1
+s2aG xAGW W z H5n @gpw 1 @gphi 1 @s6l 1
+s2aG xAGF F z H5n @gpw 1 @gphi 1 @s6l 1
+s2aG xAGB B z H5n @gpw 1 @gphi 1 @s6l 1
+s2aN gAN_1 M3 g H5n @gpw 1 @gphi 2 @s6l 1
+s2aN gAN_2 M3 g H5n @gpw 1 @gphi 2 @s6l 1
+s2aN gAN_3 M3 g H5n @gpw 1 @gphi 2 @s6l 1
+s2aN gAN_4 M3 g H5n @gpw 1 @gphi 2 @s6l 1
+s2aN gAN_5 M3 g H5n @gpw 1 @gphi 2 @s6l 1
+s2aN gAN_6 M3 g H5n @gpw 1 @gphi 2 @s6l 1
+s2aN gAN_7 M3 g H5n @gpw 1 @gphi 2 @s6l 1
+s2aN gAN_8 M3 g H5n @gpw 1 @gphi 2 @s6l 1
+s2aN oANL_1 L nd H5n @gpw 1 @gphi 2
+s2aN oANL_2 L nd H5n @gpw 1 @gphi 2
+s2aN oANL_3 L nd H5n @gpw 1 @gphi 2
+s2aN oANL_4 L nd H5n @gpw 1 @gphi 2
+s2aN oANF_1 F nd H5n @gpw 1 @gphi 2
+s2aN oANF_2 F nd H5n @gpw 1 @gphi 2
+s2aN oANB_1 B nd H5n @gpw 1 @gphi 2
+s2aN oANB_2 B nd H5n @gpw 1 @gphi 2
+s2aN xANM M3 z H5n @gpw 1 @gphi 2 @s6l 1
+s2aN xANL L z H5n @gpw 1 @gphi 2 @s6l 1
+s2aN xANW W z H5n @gpw 1 @gphi 2 @s6l 1
+s2aN xANF F z H5n @gpw 1 @gphi 2 @s6l 1
+s2aN xANB B z H5n @gpw 1 @gphi 2 @s6l 1
+# s2bG·s2bN: (B) wolf 만 회귀 -- 수박·레고·ficus·bread 각 1 판 (H5 와 같은지만) + 렌더 포함 단독 a·b (wolf)
+s2bG gBG_1 M3 g H5n @gpw 2 @gphi 1 @s6l 1
+s2bG oBGL_1 L nd H5n @gpw 2 @gphi 1
+s2bG oBGF_1 F nd H5n @gpw 2 @gphi 1
+s2bG oBGB_1 B nd H5n @gpw 2 @gphi 1
+s2bG xBGW W z H5n @gpw 2 @gphi 1 @s6l 1
+s2bN gBN_1 M3 g H5n @gpw 2 @gphi 2 @s6l 1
+s2bN oBNL_1 L nd H5n @gpw 2 @gphi 2
+s2bN oBNF_1 F nd H5n @gpw 2 @gphi 2
+s2bN oBNB_1 B nd H5n @gpw 2 @gphi 2
+s2bN xBNW W z H5n @gpw 2 @gphi 2 @s6l 1
+# v: 영상 판 (덤프 + F -> 3DGS 렌더): wolf G · N
+v vG W v H5n @gpw 1 @gphi 1
+v vN W v H5n @gpw 1 @gphi 2
