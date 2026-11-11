@@ -1,9 +1,9 @@
 # 절 CM108 묶음 wolfct 판 목록: 단계 이름 씬 방식 글자 (exe/stab_wolfct.sh). H8F = H8 @xdeg 1 @w13 1 (절 CM98 고침 판), '@ct 1' = 모래 일관 접선 (대칭 몫 + PSD), '@ctfd 1' = 가우스 점 유한 차분 대조 (결과 불변)
 # 다시 풀기 진단 D = @tb 1000 @nxit 1 --tolN 1e-5 (절 CM96·CM98 과 같음), A = --newton 25 --cg 100 --tolP 1e-6; 상태 8 = 절 CM96 sv8 (H8 궤적 f10·12·15·20·25·30), 9 = 이 묶음 sv9 (H8F 궤적 f5·8·10·15·20·25·30)
-c0k kS W x H8 @xdeg 1 @w13 1 @cwsave 4 --frames 5
-c0k kE W x H8 @xdeg 1 @w13 1 @ctfd 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 1
-c0k kC W x H8 @xdeg 1 @w13 1 @ct 1 @ctfd 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 1
-c0k kW W x H8 @xdeg 1 @w13 1 @ct 1 --frames 8
+c0k jS W x H8 @xdeg 1 @w13 1 @cwsave 4 --frames 5
+c0k jE W x H8 @xdeg 1 @w13 1 @ctfd 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 1
+c0k jC W x H8 @xdeg 1 @w13 1 @ct 1 @ctfd 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 1
+c0k jW W x H8 @xdeg 1 @w13 1 @ct 1 --frames 8
 c1 sv9 W x H8 @xdeg 1 @w13 1 @cwsave 4,7,9,14,19,24,29 --frames 30
 c1 A8_el W x H8 @xdeg 1 @w13 1 @ctfd 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
 c1 A8_ct W x H8 @xdeg 1 @w13 1 @ct 1 @ctfd 1 @cwload 8 @tb 1000 @nxit 1 --tolN 1e-5 --newton 25 --cg 100 --tolP 1e-6 --frames 6
