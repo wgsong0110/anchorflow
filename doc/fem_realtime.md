@@ -9746,3 +9746,35 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 ### CM108.4 출력·실행
 - R2 lbours/wolfct/ (저장 판 sv9: st_f05·08·10·15·20·25·30.pt·fem.jsonl·cw.jsonl; 다시 풀기 A8_el·A8_ct·A9_el·A9_ct 와 연기 jS·jE·jC·jW (kS·kE·kC·kW = 실패한 첫 연기): cmd·log·summary·fem.jsonl·cw.jsonl (반복마다 fd)·cwinfo·ctinfo.json; wolfct_c0k·c1·c2.log, stab_*.out, go_*.log·END, boot.log, wolfct_table.md, code/ (tar 넷·boot·launch·launch.txt (stop))). wolfct.FAIL 은 f73d5db 연기 실패의 남은 표식. 덤프 없음.
 - 실행: SSH 2 번 -- 06:23 UTC 로그인 노드 qstat (133078 R, ece-a6gpu9) + 노드에서 R2 의 wolfct_launch.sh 를 /dev/shm/dkta 에 받아 `pbs_attach -j 133078.ECE-util1` 로 떼어 띄움; 06:38 UTC 첫 띄움 (29e7dfc) 의 /dev/shm 대기에 멈춘 go·stab·sleep 12 개 (cwd /dev/shm/dkta/wolfct_code/29e7dfc 인 내 프로세스, PID·명령줄 확인, 상주 시작점 2738555 제외) 만 끔. 뒤는 R2 launch.txt 로만 (f73d5db -> 6bb1465 c0k,c1,c2 -> stop). 판은 공용 표식 디렉토리로 계산 프로세스 0 인 카드에. 노드 / ·/tmp 안 씀. 시간 측정 안 함. 표는 로컬.
+
+## CM109. 입자↔격자 전달 정의로 wolf 무너짐·높이 쌓임 막기 -- (A) P2G 받침 판정 · (B) G2P APIC, 정규화 벌점 없이 (사용자 11-11 지시; 바탕 = H9 사슬에서 B-스플라인 전용 정규화 (P1X 강성·질량 · 가벼움 벌점 · (K) · 확장 T1E2) 를 모두 뺀 'H9nb' = 절 CM105 N 과 같은 명령 (가장 바깥 감싸개만 다름, cmd.txt 대조 확인)) -- 가지 k1new, 커밋 af83d03 (첫 띄움, /home 여유 문턱에 멈춤) · 307d5f5 (판정 판 /dev/shm) · 915e2d0 (φ 정규화, s0k·s1·m), 묶음 xfer (PBS 잡 133078 ece-a6gpu9 상주 시작점 exe/xfer_boot.sh·xfer_launch.sh, lib/anchorflow/fem_xfer.py, exe/xfer_wrap.py·stab_xfer.sh·go_xfer.sh·xfer_spec.txt·xfer_esc.py·xfer_tab.py (로컬 표), 표 R2 lbours/xfer/xfer_table.md)
+### CM109.0 정의 (lib/anchorflow/fem_xfer.py, 감싸개 exe/xfer_wrap.py `--xa 0|1 --xb 0|1`, 실행기 runpy 순간 설치 = 훅이 가장 바깥; 새 실행기 RTSolver·MatRT 만, 수박 안 돌림)
+- **(A) P2G 받침 판정**. 받침 덮임 몫 φ_i = Σ_p V_p w_i(x_p) / (|det A| φ̄_full). |det A| = 칸 부피 = 이차 B-스플라인 기저 적분 ∫N_i (받침이 다 차면 Σ V w -> |det A|). φ̄_full = 그 프레임에 받침 27 칸 (매듭 칸 [n−2, n]³) 이 모두 점유된 활성 노드의 Σ V w / |det A| 평균 (입자 부피 정의가 씬마다 달라서: 레고 1.03 · ficus 0.96 · bread 0.97 · wolf 0.45 (PG 가우스 부피); 첫 연기 (af83d03) 는 φ̄_full 없이 wolf 묶는 질량 57 % 라 고침).
+- 판정 (새 문턱 없음): φ_i < ½ 인 활성 노드 = 묶는 노드. 근거: 기저가 노드 중심 대칭이라 평평한 물질 경계 위 노드는 φ = ½, 중심이 물질 밖이면 < ½ -- '받침의 빈 몫이 찬 몫보다 큰 노드'.
+- 가중 이웃 = 그 노드와 입자를 함께 덮는 독립 노드 (φ_j ≥ ½, 오프셋 |Δ| ≤ 2) 전부, c_oj = M_oj / Σ_j M_oj, M_oj = Σ_p m_p w_o(x_p) w_j(x_p) (일관 질량 결합) -- 모두 ≥ 0, 합 1 (볼록 결합; 2 차 외삽 안 씀). 그런 이웃이 없으면 고립 (원래 자유도·질량).
+- P2G: m_j += c_oj m_o, (mv)_j += c_oj (mv)_o, (ma)_j += c_oj (ma)_o, o 는 0 (= E^T M E 행 합 lumping, 질량·운동량 합 그대로). 위치·속도: 걸음 시작 (rt_ga_step0 앞)·걸음 끝 (rt_ga_end* 뒤, G2P·걸음 변위 보관 앞) 에 U_o, v_o, a_o = Σ c_oj (·)_j. 풀이: 바닥 노드 커널 뒤 o 를 자유 노드 (T = I, ŷ = Ũ) 로 두어 시작점 규칙을 이웃과 같이, 뉴턴 증분 y_o − y0_o = Σ c (y_j − y0_j) (잔차·r0 접기, |g|² 다시, PCG 방향 펼치기, 헤시안 곱 접기 -- 절 CM81 줄어든 문제와 같은 꼴, 가중만 볼록). 고정 구속 노드 (ficus 화분) 는 안 묶음.
+- **(B) G2P APIC** (Jiang, Schroeder, Selle, Teran, Stomakhin 2015, "The Affine Particle-In-Cell Method", ACM TOG 34(4) SIGGRAPH): G2P 에서 C_p = B_p D_p⁻¹, B_p = Σ_i w_ip v_i (x_i − x_p)ᵀ, 이차 B-스플라인 D_p = ¼ A Aᵀ -> C_p = 4 Σ_i w_ip v_i d_iᵀ A⁻¹ (d_i = 격자 단위 i − f_p, v_i = 프레임 끝 노드 속도 = G2P 의 v 와 같은 것). P2G 에서 (mv)_i += w_ip m_p (v_p + C_p (x_i − x_p)). 가속도 (HHT) 전달·질량은 그대로, 순차 방출 전 구속 입자는 C_p = 0, C_p 는 프레임 백업·되돌림 (_bk/_rs) 에 포함.
+### CM109.1 검사 (연기 s0k j*, 8 프레임, 네 씬 × A·B, 통과)
+- 보존 (판 최대 상대 차, 모든 프레임; Δm = |Σm_n − Σm_p|/Σm_p, ΔP = max_a |ΣP_n − ΣP_p| / Σ m_p|v_p|_1): s1 모든 판 Δm ≤ 4.7e-7, ΔP ≤ 5.7e-7 (float32 원자 합 수준).
+- (A) 가중 행 합 −1 최대 1e-7 대, 음의 가중 0; 훅 (합침·자유 노드·ctl1·rt_grad·rt_ap 접기·rt_pinit·rt_cg2 펼치기·걸음 시작·끝 사영) 모두 걸림. (B) 아핀 속도장 v_i = c + G x_i 를 xb_g2p 에 넣어 C_p = G 재현 상대 차 4e-6~1.4e-5.
+### CM109.2 결과 (s1; A·B 각 wolf 4 · 레고 4 · ficus 2 · bread 2 판 동시, 대조 N·H9 = 절 CM105 판, 대조 이탈 수는 단계 m 이 그 영상 판 덤프로; 이탈 = 0.1~99.9 백분위 몸 상자 밖 4 칸 넘는 입자 수의 프레임 최대 (exe/xfer_esc.py), 이탈 판 = > 20 개)
+
+| 씬 | H9 | 정규화 끔 N | (A) P2G 받침 판정 | (B) G2P APIC |
+|---|---|---|---|---|
+| wolf 발산 · 오차 % | 0/1 · 4.35 | 3/4 · 3.71 | 2/4 (f49 · f49) · 6.39 [4.35~7.85] | 2/4 (f25 · f42) · 3.89 [1.18~5.59] |
+| 레고 | 0/1 · 5.86 | 0/4 · 4.96 | 0/4 · **9.22** [8.97~9.42] | **2/4 (f63 · f78)** · 5.53 [4.52~6.99], 이탈 2/4 (최대 802 개) |
+| ficus (주기 비, 진폭 비) | 3.76 (1.07, 1.30) | 3.83 (1.09, 1.37) | 1.75 (**1.64, 0.12**) | 4.83 (1.07, 1.75) |
+| bread | 2.06 | 6.62 | 7.50 | 7.07 |
+
+- wolf heap (exe/wolfh10_heap.py; 바닥 위 질량중심 질량 가중 f50 · 안식각 f50 · 입자 det F 중앙 f30 · f50 · 이탈 최대 개수; 정답 53 mm · 26.6° · 1 · 1): H9 23 · 18.7 · 0.09 · 0.02 · 0; N 57 (완주 1 판) · 76.5 · 0.20 · 0.14 (f40) · 488~543; **A 완주 2 판 47 · 162 mm, 59.8 · 86.8°, det F 0.99 · 0.18~0.31, 이탈 4/4 (205~366)**; B 완주 2 판 52 · 28 mm, 86.8 · 88.6°, det F 0.13~0.19 · 0.00~0.02, 이탈 4/4 (373~616).
+- A 묶는 질량 몫 (프레임 평균, 최대): wolf 15.7 % (50 %) · 레고 11.9 · ficus 14.0 · bread 11.1, 고립 wolf 5.5 % (나머지 0).
+- 영상 (마지막 프레임): A wolf 는 납작한 판 대신 바닥 위에 조각이 서 있는 모양 (부피는 남으나 흐르지 않음), B wolf 는 f24 에 몸 일부가 기둥으로 남은 채 흩어지며 발산.
+### CM109.3 결론
+- 둘 다 질량·운동량 합은 정의대로 보존하나 **통과 판 없음**.
+- (A): 부피 붕괴는 막음 (wolf det F f30 0.99, N 0.20 · H9 0.09) 그러나 모래가 흐르지 않아 높게 쌓이고 (f50 47·162 mm, 안식각 60~87°) 발산 2/4·이탈 4/4. 묶음이 겉층 운동을 이웃에 잠가 레고 9.2 % (N 5.0), ficus 진폭 0.12 배 (거의 안 흔들림 -- 오차 1.75 % 는 덜 움직여서), bread 7.5 %.
+- (B): N 과 같은 꼴 (det F 0.0~0.2 붕괴, 이탈 4/4, 발산 2/4) 에 레고 발산 2/4 가 새로 생김; ficus 진폭 1.75 배.
+- 전달 단계만으로 (벌점 없이) wolf 의 붕괴와 흩어짐을 함께 막지는 못함: 판정 (A) 은 붕괴를 막는 대신 굳히고, APIC (B) 는 가벼운 노드 튐을 막지 않음.
+### CM109.4 영상·출력
+- 영상 (3DGS, 2400x630, yuv420p, faststart, 전체 디코드 오류 0; 정답 | H9 | 정규화 끔 N | (A) | (B); 발산 판은 발산 프레임까지 그리고 끝 프레임 정지): R2 result/anchorflow/v20261009/fem_xfer_{wolf,lego,ficus,bread}_cmp.mp4 · _last.png, 같은 것 lbours/xfer/vid/. 칸: (A)·(B) = 이 묶음 aX_1·bX_1, H9·N = edgep hX·nX_1 (절 CM105), 정답 = 절 CM105 와 같은 파일. 합성은 로컬 (exe/tet1_compose.py).
+- R2 lbours/xfer/ (판마다 cmd·log·summary·fem.jsonl·xf.jsonl·xfinfo.json·esc.json, wolf heap.md·heap_rows.json·bbox, ficus period.txt, 영상 판 pred.pt·vj/; 연기 j*·k* (k* 는 φ 정규화 전), ctl/ (대조 이탈), xfer_s0k·s1·m.log, go_*.log·END, boot.log, xfer_table.md, code/ (tar 셋·boot·launch·launch.txt stop)). 영상 판 덤프는 노드 /home/dkta/work/xfer_dump, 판정 판은 /dev/shm/dkta/xfer_runs (지표 뒤 덤프 지움).
+- 실행: 잡 133078 안 pbs_attach 상주 시작점 1 개, SSH 2 번 (11:16 UTC 띄움; 11:32 UTC 첫 띄움 af83d03 의 go·stab·sleep 등 19 개 (cwd /dev/shm/dkta/xfer_code/af83d03, PID·명령줄 확인, 상주 시작점 2892205 제외) 끔 -- /home 여유 21 GB < 문턱 40 GB 에 카드 7 장 표식을 잡고 기다리던 것), 뒤는 R2 launch.txt 로만. 코드 R2 tar, 노드 / ·/tmp 안 씀, 카드는 공용 표식으로 빈 카드만 (wolfct 것 안 건드림), 올리기는 뒤에서. 시간 측정 안 함.
