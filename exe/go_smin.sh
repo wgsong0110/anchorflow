@@ -7,6 +7,7 @@ O=/dev/shm/dkta/smin; mkdir -p $O /dev/shm/dkta/tmp; export TMPDIR=/dev/shm/dkta
 PY=/home/dkta/.conda/envs/af/bin/python
 L=$O/go_$STG.log; say() { echo "[go $(date '+%F %T')] $*" >> $L; rclone copyto $L $R/go_$STG.log -q; }
 say "시작 $(hostname) 커밋 $H; /dev/shm $(df -h /dev/shm | tail -1 | awk '{print $4}') 남음"
+if [ "$STG" = gtd ]; then $PY -u exe/smin_gtdiag.py /dev/shm/dkta/ag_data/gt_wolf > $O/gtd.log 2>&1; rclone copyto $O/gtd.log $R/gtd.log -q; say "gtd 끝"; exit 0; fi
 [ -s $O/pred.pt ] || rclone copyto r2:storage/result/anchorflow/lbours/wolfh12/h8_1/pred.pt $O/pred.pt
 say "pred.pt $(du -sh $O/pred.pt | cut -f1)"
 $PY -u exe/smin_an.py $O/pred.pt /dev/shm/dkta/ag_data/gt_wolf $O/smin.json > $O/smin.log 2>&1
