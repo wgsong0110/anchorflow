@@ -1,0 +1,35 @@
+# 절 CM109 묶음 xfer 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_xfer.sh). 바탕 'H9nb' (H9 − B-스플라인 전용 정규화 전부, 절 CM105 N 과 같은 글자) + 가장 바깥 exe/xfer_wrap.py:
+# A = '@xa 1' (P2G 받침 판정), B = '@xb 1' (G2P APIC). 대조 N·H9 = 절 CM105 (묶음 edgep) 판 그대로 (단계 m 이 그 영상 판 덤프 이탈 수).
+# 방식: nd 진단 · d 덤프 (지표 뒤 지움) · v 덤프 + 3DGS 영상 (덤프 남김). 단계: s0k 연기 8 프레임 (+ 검사 @xck 1) · s1 판정·영상 · m 대조 이탈 수
+s0k kaL L nd H9nb @xa 1 @xck 1 --frames 8
+s0k kaW W d H9nb @xa 1 @xck 1 --frames 8
+s0k kaF F nd H9nb @xa 1 @xck 1 --frames 8
+s0k kaB B nd H9nb @xa 1 @xck 1 --frames 8
+s0k kbL L nd H9nb @xb 1 @xck 1 --frames 8
+s0k kbW W d H9nb @xb 1 @xck 1 --frames 8
+s0k kbF F nd H9nb @xb 1 @xck 1 --frames 8
+s0k kbB B nd H9nb @xb 1 @xck 1 --frames 8
+s1 aW_1 W v H9nb @xa 1
+s1 aW_2 W d H9nb @xa 1
+s1 aW_3 W d H9nb @xa 1
+s1 aW_4 W d H9nb @xa 1
+s1 aL_1 L v H9nb @xa 1
+s1 aL_2 L d H9nb @xa 1
+s1 aL_3 L d H9nb @xa 1
+s1 aL_4 L d H9nb @xa 1
+s1 aF_1 F v H9nb @xa 1
+s1 aF_2 F d H9nb @xa 1
+s1 aB_1 B v H9nb @xa 1
+s1 aB_2 B d H9nb @xa 1
+s1 bW_1 W v H9nb @xb 1
+s1 bW_2 W d H9nb @xb 1
+s1 bW_3 W d H9nb @xb 1
+s1 bW_4 W d H9nb @xb 1
+s1 bL_1 L v H9nb @xb 1
+s1 bL_2 L d H9nb @xb 1
+s1 bL_3 L d H9nb @xb 1
+s1 bL_4 L d H9nb @xb 1
+s1 bF_1 F v H9nb @xb 1
+s1 bF_2 F d H9nb @xb 1
+s1 bB_1 B v H9nb @xb 1
+s1 bB_2 B d H9nb @xb 1
