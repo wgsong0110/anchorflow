@@ -7,6 +7,7 @@
 O=$1; RO=$2; STG=$3; mkdir -p $O
 NOSHM=1; O=/home/dkta/work/tetc_dump; mkdir -p $O   # 절 CM106 (사용자 11-10): 판 디렉토리·덤프는 /home/dkta/work/tetc_dump, 판정 판 덤프는 지표 뒤 지움, 영상 판 덤프는 남김, 올리기는 뒤에서
 PY=/home/dkta/.conda/envs/af/bin/python
+[ "$STG" = en ] && { bash exe/tetc_en.sh $RO; exit $?; }   # 절 CM106.7: 에너지 색 렌더 단계 (실행기·판 설정 안 부름)
 export PYTHONUTF8=1 OMP_NUM_THREADS=8
 export TMPDIR=/dev/shm/dkta/tmp; mkdir -p $TMPDIR
 source exe/fem_cm2_scn.sh
