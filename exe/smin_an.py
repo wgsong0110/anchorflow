@@ -18,7 +18,7 @@ def stats(F):
     sv = torch.linalg.svdvals(F); s = sv[:, -1]
     d = torch.linalg.det(F)
     sg = torch.where(d < 0, -s, s)
-    ep = torch.log(s.clamp_min(1e-14))                       # Hencky (모래 탄성, exe/fem_an_rt_sim.py 의 PR.lame + 절 AO 응력식): ψ = μ Σε² + λ/2 (Σε)², ε = log σ_i
+    ep = torch.log(sv.clamp_min(1e-14))                       # Hencky (모래 탄성, exe/fem_an_rt_sim.py 의 PR.lame + 절 AO 응력식): ψ = μ Σε² + λ/2 (Σε)², ε = log σ_i
     ST["svmax"] = float(sv[:, 0].max()); ST["svmin"] = float(s.min()); ST["dmaxv"] = float(d.max())
     ST["psi"] = (MU * (ep ** 2).sum(-1) + 0.5 * LAM * ep.sum(-1) ** 2).numpy()
     return sg.numpy(), d.numpy()
