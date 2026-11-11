@@ -43,9 +43,9 @@ chk) mkcmd c9_1 speed13/oXW_1 exe/speed13_wrap.py; mkcmd c9_2 speed13/oXW_1 exe/
 run) for n in c9_1 c9_2 c5_1; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk 먼저"; exit 1; }; done
   rm -f $O/go_run.END
   ( while [ ! -f $O/go_run.END ]; do sleep 120; for n in c9_1 c9_2 c5_1; do [ -f $O/$n/log.txt ] && { { tail -c 3000 $O/$n/log.txt; echo; echo "노드 덤프 $(ls $O/$n/nodes 2>/dev/null | wc -l) 개 $(cat $O/$n/nodepen_err.txt 2>/dev/null | tail -2)"; } | rclone rcat $R/$n/log_tail.txt; }; done; done ) &
-  for n in c9_1 c9_2 c5_1; do runone $n & sleep 20; done; wait;;
+  PIDS=""; for n in c9_1 c9_2 c5_1; do runone $n & PIDS="$PIDS $!"; sleep 20; done; wait $PIDS; touch $O/go_run.END;;
 an)  for n in c9_1 c9_2 c5_1; do
-       [ -s $O/$n/pred.pt ] || { say "$n pred.pt 없음"; continue; }
+       [ -d $O/$n/nodes ] || { say "$n 노드 덤프 없음"; continue; }
        $PY -u exe/cellh_an.py $n $O/$n $CFG $O/cellh_$n.json > $O/cellh_$n.log 2>&1
        say "$n an rc=$? $(tail -1 $O/cellh_$n.log | cut -c1-200)"
      done
