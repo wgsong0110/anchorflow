@@ -36,11 +36,11 @@ try:
     for i, f in enumerate(fs[:L + 1]):
         with h5py.File(f, "r") as h:
             if i == 0: print("[gt] h5 키", list(h.keys()), flush=True)
-            F = torch.from_numpy(np.array(h["f_tensor"]).T.reshape(-1, 3, 3).copy()).float()
+            F = torch.from_numpy(np.array(h["F" if "F" in h else "f_tensor"]).T.reshape(-1, 3, 3).copy()).float()
         if i == 0 and float(F.abs().max()) == 0.0: F = torch.eye(3).expand_as(F).clone(); print("[gt] 프레임 0 F 가 0 -> 항등", flush=True)
         assert F.shape[0] == Np, (F.shape, Np)
         gt.append(rec(*stats(F)))
-    out["gt"] = gt; out["gt_note"] = f"정답 h5 {len(fs)} 프레임의 f_tensor"
+    out["gt"] = gt; out["gt_note"] = f"정답 h5 {len(fs)} 프레임의 F"
 except Exception as e:  # noqa: BLE001
     out["gt_note"] = f"정답 F 없음: {e!r}"; print("[gt 실패]", repr(e), flush=True)
 json.dump(out, open(outp, "w"))
