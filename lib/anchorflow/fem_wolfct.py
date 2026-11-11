@@ -6,7 +6,7 @@
   비틀림·뒤집기 쌍 계수도 반환 뒤 τ̂ 로 (p_i ± p_j)/(σ_i ± σ_j) (음수 0, 지금과 같은 클램프). 힘·커밋·G2P 는 그대로 (헤시안만 바뀜).
   watermelon (NACC) 은 aq_elem 경로라 이 바꿈을 안 받음 (소스에 ao_elem_s 가 있어도 모래만 부름).
 --ctfd 1 (진단, 결과 불변): 다시 풀기 판에서 뉴턴 반복마다 ao_elem_s 바로 뒤 같은 그래프·스트림에서 가우스 점마다
-  X = F_q + (Σ y⊗∇w) F_q 와 무작위 노드 방향 dX (점마다 ‖dX‖ = h‖X‖, h = --cth) 로 P 의 중앙 차분 FD = (P(X+dX) − P(X−dX))/2 를
+  X = F_q + (Σ y⊗∇w) F_q 와 무작위 노드 방향 dX (점마다 ‖dX‖ = h σ_min(X), h = --cth) 로 P 의 중앙 차분 FD = (P(X+dX) − P(X−dX))/2 를
   세 접선 곱과 대조: T0 = 지금 판 (탄성·투영), T1 = 정확한 야코비안 (일관 접선 비대칭·투영 없음), T2 = 새 판 (대칭 몫 + PSD).
   상태 (탄성 0 · 꼬리 1 · 꼭짓점 2) 별 합: 점 수, Σ‖FD‖², Σ‖Ti − FD‖², Σ‖T0‖², Σ‖T2‖², X±dX 가 상태를 넘는 점 수 (꺾인 점, 제외). 기록 cw.jsonl 반복마다 'fd'.
 출력 ctinfo.json (소스 바꿈 수·훅 수·오류).
@@ -80,7 +80,7 @@ __device__ void ct_act(int var, const float* U, const float* V, const float* ss,
         Ph[i*3+j] = c1*Xh[i*3+j] + c2*Xh[j*3+i]; Ph[j*3+i] = c2*Xh[i*3+j] + c1*Xh[j*3+i]; }
     for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float t = 0.f; for (int i=0;i<3;i++) for (int j=0;j<3;j++) t += U[a*3+i]*Ph[i*3+j]*V[b*3+j]; dP[a*3+b] = t; }
 }
-// 가우스 점마다 FD 대 세 접선; acc[상태*12 + k]: 0 점 수, 1 Σ‖FD‖², 2·3·4 Σ‖T0·T1·T2 − FD‖², 5 Σ‖T0‖², 6 Σ‖T2‖², 7 꺾인 점 수, 8 Σ‖T1‖²
+// 가우스 점마다 FD 대 세 접선; acc[상태*12 + k]: 0 점 수, 1 Σ‖FD‖², 2·3·4 Σ‖T0·T1·T2 − FD‖², 5 Σ‖T0‖², 6 Σ‖T2‖², 7 꺾인 점 수, 8 Σ‖T1‖², 9·10·11 Σ 점 상대 오차 T0·T1·T2 (≤ 10)
 __global__ void ct_fd(const int* IP, const int* cb, const float* BG, const float* Fq, const float* y, const float* dy, float mu, float lam, float cdp, float hrel, double* acc) {
     int q = blockIdx.x*blockDim.x + threadIdx.x;
     if (q >= IP[12]) return;
@@ -92,10 +92,11 @@ __global__ void ct_fd(const int* IP, const int* cb, const float* BG, const float
         for (int a=0;a<3;a++) { float ya = y[id*3+a], da = dy[id*3+a]; for (int b=0;b<3;b++) { A[a*3+b] += ya*bg[b]; dA[a*3+b] += da*bg[b]; } } }
     float X[9], dX[9];
     for (int a=0;a<3;a++) for (int b=0;b<3;b++) { X[a*3+b] = F[a*3+b] + A[a*3]*F[b] + A[a*3+1]*F[3+b] + A[a*3+2]*F[6+b]; dX[a*3+b] = dA[a*3]*F[b] + dA[a*3+1]*F[3+b] + dA[a*3+2]*F[6+b]; }
-    float nX = 0.f, nd = 0.f; for (int k=0;k<9;k++) { nX += X[k]*X[k]; nd += dX[k]*dX[k]; }
-    if (!(nd > 0.f) || !isfinite(nX)) return;
-    float sc = hrel*sqrtf(nX/nd); for (int k=0;k<9;k++) dX[k] *= sc;
+    float nd = 0.f; for (int k=0;k<9;k++) nd += dX[k]*dX[k];
     float U[9], S[3], V[9]; ssvdf(X, U, S, V);
+    float smin = fminf(fabsf(S[0]), fminf(fabsf(S[1]), fabsf(S[2])));                // 섭동 크기 = h x 최소 특이값 (얇은 방향에서도 선형 영역)
+    if (!(nd > 0.f) || !(smin > 0.f) || !isfinite(smin)) return;
+    float sc = hrel*smin/sqrtf(nd); for (int k=0;k<9;k++) dX[k] *= sc;
     float sgn[3], sg[3], ep[3], e[3], tr, rho, s;
     int st = ao_dpf(S, cdp, sgn, sg, ep, e, tr, rho, s);
     float Xp[9], Xm[9], Pp[9], Pm[9];
@@ -114,6 +115,7 @@ __global__ void ct_fd(const int* IP, const int* cb, const float* BG, const float
     for (int k=0;k<9;k++) { double fd = 0.5*((double)Pp[k] - (double)Pm[k]);
         f2 += fd*fd; e0 += (T0[k]-fd)*(T0[k]-fd); e1 += (T1[k]-fd)*(T1[k]-fd); e2 += (T2[k]-fd)*(T2[k]-fd); n0 += (double)T0[k]*T0[k]; n2 += (double)T2[k]*T2[k]; n1 += (double)T1[k]*T1[k]; }
     if (!isfinite(f2) || !isfinite(e0) || !isfinite(e1) || !isfinite(e2)) { atomicAdd(&ac[7], 1.0); return; }
+    if (f2 > 0.0) { atomicAdd(&ac[9], fmin(sqrt(e0/f2), 10.0)); atomicAdd(&ac[10], fmin(sqrt(e1/f2), 10.0)); atomicAdd(&ac[11], fmin(sqrt(e2/f2), 10.0)); }   // 점마다 상대 오차 (10 에서 자름) 합
     atomicAdd(&ac[0], 1.0); atomicAdd(&ac[1], f2); atomicAdd(&ac[2], e0); atomicAdd(&ac[3], e1); atomicAdd(&ac[4], e2); atomicAdd(&ac[5], n0); atomicAdd(&ac[6], n2); atomicAdd(&ac[8], n1);
 }
 '''
@@ -132,10 +134,12 @@ def _patch(code):
         return code
     if ST["ct"] or ST["fd"]:
         code = code.replace(ANCHOR, TAN_SRC + ANCHOR, 1)
-    if ST["ct"]:
-        n1, n2 = code.count(OLD1), code.count(OLD2)
+    if ST["ct"]:                                                                       # ao_elem_s 본문 안에서만 (같은 쌍 줄이 재질 커널 aq_elem 에도 있음)
+        a_ = code.index(ANCHOR); b_ = code.index("__global__", a_ + len(ANCHOR))
+        body = code[a_:b_]
+        n1, n2 = body.count(OLD1), body.count(OLD2)
         assert n1 == 1 and n2 == 1, f"절 CM108 바꿀 자리 수 {n1} {n2}"
-        code = code.replace(OLD1, NEW1).replace(OLD2, NEW2)
+        code = code[:a_] + body.replace(OLD1, NEW1).replace(OLD2, NEW2) + code[b_:]
         ST["n_src_ct"] += 1
     if ST["fd"]:
         i_ = code.rstrip().rfind("}")                                                  # extern "C" 닫는 괄호 앞
@@ -205,6 +209,7 @@ def install(out, ct=0, fd=0, h=1e-3):
             if getattr(s, "ctacc", None) is None:
                 return steps
             A = _fd_read(s)
+            _dump()
             nt = int(s.nt)
             for stp in steps:
                 for o in stp["its"]:
