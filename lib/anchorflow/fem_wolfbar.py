@@ -242,7 +242,7 @@ def _analyze(s, W, t):
     K = int(getattr(s, "nstage", s.K))
     nc = nq // 8
     dev = s.Fq.device
-    cb = s.cb[:nc * 3].view(nc, 3).long()
+    cb = s.cb.reshape(-1)[:nc * 3].view(nc, 3).long()                                   # s.cb 는 [capC, 3]
     o3 = torch.arange(27, device=dev); oi, oj, ok_ = o3 // 9, (o3 // 3) % 3, o3 % 3
     nid = ((cb[:, 0:1] + oi) * nb1 + (cb[:, 1:2] + oj)) * nb2 + (cb[:, 2:3] + ok_)               # [nc, 27]
     nid = nid.clamp(0, max(nn - 1, 0))
