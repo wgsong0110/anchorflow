@@ -119,7 +119,9 @@ for g in range(1, T + 1):
                      depth_max_C_mm=float(max(0.0, -torch.where(uC, hE, torch.zeros_like(hE)).min())) * 1e3,
                      mass_under_E=float(mn[uE].sum() / mn.sum()), frac_part_under_E=float((dE > 0).float().mean()), frac_part_under_M=float((dM > 0).float().mean()),
                      frac_part_cross_C=float((dC > 0).float().mean()), n_part_under_E_dh=int((dE > DH * 1e3).sum()),
-                     frac_part_wshare_gt_half=float((wsh > 0.5).float().mean()), redo=int(z["redo"]), ksK=int(z["ksK"]), dxL_mm=float(np.linalg.norm(A[:, 0])) * 1e3))
+                     frac_part_wshare_gt_half=float((wsh > 0.5).float().mean()), redo=int(z["redo"]), ksK=int(z["ksK"]), dxL_mm=float(np.linalg.norm(A[:, 0])) * 1e3,
+                     n_deep_E=int((hE < -1.5 * float(np.linalg.norm(A[:, 0]))).sum()), mass_deep_E=float(mn[hE < -1.5 * float(np.linalg.norm(A[:, 0]))].sum() / mn.sum()),
+                     masspct_med_under_E=(float(pct[uE].median()) if bool(uE.any()) else None)))
     if g % 5 == 0 or g == T:
         print(f"[{name}] f{g}: " + json.dumps({k: (round(v_, 4) if isinstance(v_, float) else v_) for k, v_ in rows[-1].items()}), flush=True)
 
@@ -147,38 +149,68 @@ def q(x, qs=(0.5, 0.9, 1.0)):
     return [float(torch.quantile(x, p)) for p in qs] if x.numel() else []
 
 
-def cohort(masks, title):
-    """masks: f -> 마스크 (그 프레임에서 튄 입자). 창별로 바닥 밑 노드 받침 비율·깊이·몫·질량 백분위"""
+BE = torch.tensor([0.0, 5e-3, 10e-3, 20e-3, 30e-3, 50e-3, 100e-3, 200e-3])      # 입자 높이 구간 경계 (m): 구간 = bucketize
+DEEP = 1.5 * rows[0]["dxL_mm"]      # mm: 입자가 다 바닥 위면 격자만으로는 닿을 수 없는 깊이 (받침 최대 1.5 칸 아래)
+hP = [(frames[f].double() @ torch.from_numpy(NR) - PN).float() for f in range(len(frames))]
+print(f"[{name}] 깊은 노드 문턱 {DEEP:.1f} mm (1.5 칸)", flush=True)
+
+
+def metr(f, kind):
+    """창 안 입자별 [E 어느 걸음이든 바닥 밑 받침 노드, C 내려간 노드, 깊은 노드] 불리언 (3, N) 과 깊이 mm"""
+    e = winmax(depE, f, kind)
+    if e is None: return None, None
+    cc = winmax(depC, f, kind)
+    return torch.stack([e > 0, cc > 0, e > DEEP]), e
+
+
+MN = ["E", "C", "deep"]
+
+
+def cohort(masks, excl):
+    """masks: f -> 그 프레임에서 튄 입자. 창별: 관측 수, 같은 프레임·같은 높이 구간 (직전 프레임 입자 높이) 의 튀지 않은 입자 비율로 기대한 수, 깊이·가중 몫·질량 백분위"""
     o = dict(n=sum(int(m.sum()) for m in masks.values()))
+    own = []
+    for f, m in masks.items():
+        if f >= 2 and bool(m.any()): own.append(hP[f - 1][m])
+    own = torch.cat(own) if own else torch.zeros(0)
+    o["own_below_floor_prev"] = int((own < 0).sum()); o["own_h_mm_q50_90"] = [float(torch.quantile(own, p)) * 1e3 for p in (0.5, 0.9)] if own.numel() else []
     for kind in WIN:
-        cE = cM = cC = c_dh = 0; n = 0; dep, wsl, mpl = [], [], []
+        obs = [0, 0, 0]; exp = [0.0, 0.0, 0.0]; n = 0; dep, wsl, mpl = [], [], []; ddep, dws, dmp = [], [], []
         for f, m in masks.items():
-            if not bool(m.any()): continue
-            e = winmax(depE, f, kind)
-            if e is None: continue
-            mm = winmax(depM, f, kind); cc = winmax(depC, f, kind); wa = winarg(f, kind)
-            n += int(m.sum()); cE += int((e[m] > 0).sum()); cM += int((mm[m] > 0).sum()); cC += int((cc[m] > 0).sum()); c_dh += int((e[m] > DH * 1e3).sum())
-            sel = m & (e > 0)
-            dep.append(wa[0][sel]); wsl.append(wa[1][sel]); mpl.append(wa[2][sel])
-        dep = torch.cat(dep) if dep else torch.zeros(0); wsl = torch.cat(wsl) if wsl else torch.zeros(0); mpl = torch.cat(mpl) if mpl else torch.zeros(0)
-        o[kind] = dict(n=n, under_E=cE, under_M=cM, cross_C=cC, under_E_deeper_dh=c_dh, depth_mm_q50_90_max=q(dep), wshare_q50_90_max=q(wsl), masspct_q50_90_max=q(mpl))
+            if f < 2 or not bool(m.any()): continue
+            M, e = metr(f, kind)
+            if M is None: continue
+            wa = winarg(f, kind)
+            n += int(m.sum())
+            bi = torch.bucketize(hP[f - 1], BE, right=True)
+            nm = ~excl[f]
+            for bb in range(len(BE) + 1):
+                ev = m & (bi == bb); ne = int(ev.sum())
+                if ne == 0: continue
+                ref = nm & (bi == bb)
+                if int(ref.sum()) == 0: continue
+                for i in range(3): exp[i] += ne * float(M[i][ref].float().mean())
+            for i in range(3): obs[i] += int(M[i][m].sum())
+            sel = m & (e > 0); dep.append(wa[0][sel]); wsl.append(wa[1][sel]); mpl.append(wa[2][sel])
+            sd = m & (e > DEEP); ddep.append(wa[0][sd]); dws.append(wa[1][sd]); dmp.append(wa[2][sd])
+        cat = lambda L_: torch.cat(L_) if L_ else torch.zeros(0)
+        o[kind] = dict(n=n, obs={k_: obs[i] for i, k_ in enumerate(MN)}, exp={k_: exp[i] for i, k_ in enumerate(MN)},
+                       depth_mm_q50_90_max=q(cat(dep)), wshare_q50_90_max=q(cat(wsl)), masspct_q50_90_max=q(cat(mpl)),
+                       deep_depth_mm_q50_90_max=q(cat(ddep)), deep_wshare_q50_90_max=q(cat(dws)), deep_masspct_q50_90_max=q(cat(dmp)))
     return o
 
 
 def baseline(excl):
-    """사건이 아닌 (입자, 프레임) 쌍: 같은 창 정의로 바닥 밑 노드 받침 비율. excl: f -> 제외할 마스크"""
+    """사건이 아닌 (입자, 프레임) 쌍: 같은 창 정의로 비율 (프레임 범위 f0.. 전부)"""
     o = {}
     for kind in WIN:
-        n = cE = cM = cC = c_dh = 0; dep = []
+        n = 0; c = [0, 0, 0]
         for f in range(2, T + 1):
-            e = winmax(depE, f, kind)
-            if e is None: continue
-            mm = winmax(depM, f, kind); cc = winmax(depC, f, kind)
-            keep = ~excl[f]
-            n += int(keep.sum()); cE += int((e[keep] > 0).sum()); cM += int((mm[keep] > 0).sum()); cC += int((cc[keep] > 0).sum()); c_dh += int((e[keep] > DH * 1e3).sum())
-            dep.append(e[keep][e[keep] > 0][::97])
-        dep = torch.cat(dep) if dep else torch.zeros(0)
-        o[kind] = dict(n=n, under_E=cE, under_M=cM, cross_C=cC, under_E_deeper_dh=c_dh, rate_E=cE / max(n, 1), rate_M=cM / max(n, 1), rate_C=cC / max(n, 1), depth_mm_q50_90_max=q(dep))
+            M, e = metr(f, kind)
+            if M is None: continue
+            keep = ~excl[f]; n += int(keep.sum())
+            for i in range(3): c[i] += int(M[i][keep].sum())
+        o[kind] = dict(n=n, **{f"rate_{k_}": c[i] / max(n, 1) for i, k_ in enumerate(MN)})
     return o
 
 
@@ -187,12 +219,12 @@ excl = {f: torch.zeros(N, dtype=torch.bool) for f in range(2, T + 1)}
 for f in excl:
     for t in THR: excl[f] |= jump[t][f]
     excl[f] |= newfar[f]
-out["cohort_jump3"] = cohort({f: m for f, m in jump[3.0].items()}, "jump3")
-out["cohort_jump1"] = cohort({f: m for f, m in jump[1.0].items()}, "jump1")
-out["cohort_newfar"] = cohort({f: m for f, m in newfar.items() if f >= 2}, "newfar")
+out["deep_mm"] = DEEP
+out["cohort_jump3"] = cohort(jump[3.0], excl)
+out["cohort_jump1"] = cohort(jump[1.0], excl)
+out["cohort_newfar"] = cohort({f: m for f, m in newfar.items() if f >= 2}, excl)
 out["baseline_nonevent"] = baseline(excl)
 # 모든 입자 기준 (사건 포함)
-out["baseline_all"] = baseline({f: torch.zeros(N, dtype=torch.bool) for f in range(2, T + 1)})
 # 사건 프레임 목록 (프레임별 튄 수)
 out["events_per_frame"] = dict(jump3=[int(jump[3.0][f].sum()) if f in jump[3.0] else 0 for f in range(1, T + 1)],
                                 jump1=[int(jump[1.0][f].sum()) if f in jump[1.0] else 0 for f in range(1, T + 1)],

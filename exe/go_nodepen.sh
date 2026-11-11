@@ -42,7 +42,7 @@ chk) mkcmd nA1 aC_1; mkcmd nA2 aC_1; mkcmd nH1 h8_1; for n in nA1 nA2 nH1; do sa
 run) for n in nA1 nA2 nH1; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk 먼저"; exit 1; }; done
   rm -f $O/go_run.END
   ( while [ ! -f $O/go_run.END ]; do sleep 120; for n in nA1 nA2 nH1; do [ -f $O/$n/log.txt ] && { { tail -c 3000 $O/$n/log.txt; echo; echo "노드 덤프 $(ls $O/$n/nodes 2>/dev/null | wc -l) 개 $(cat $O/$n/nodepen_err.txt 2>/dev/null | tail -2)"; } | rclone rcat $R/$n/log_tail.txt; }; done; done ) &
-  for n in nA1 nA2 nH1; do runone $n & sleep 20; done; wait;;
+  PIDS=""; for n in nA1 nA2 nH1; do runone $n & PIDS="$PIDS $!"; sleep 20; done; wait $PIDS;;
 an)  for n in nA1 nA2 nH1; do
        [ -s $O/$n/pred.pt ] || { say "$n pred.pt 없음"; continue; }
        $PY -u exe/nodepen.py $n $O/$n $CFG $DATA $O/nodepen_$n.json > $O/nodepen_$n.log 2>&1
