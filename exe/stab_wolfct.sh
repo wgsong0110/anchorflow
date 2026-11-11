@@ -106,7 +106,7 @@ PYX
   rm -rf $HD; }
 shm_use() { df --output=pcent /dev/shm | tail -1 | tr -dc '0-9'; }
 log() { echo "[$(date '+%F %T')] $*" >> $O/wolfct_$STG.log; rclone copyto $O/wolfct_$STG.log $RO/wolfct_$STG.log -q; }
-shm_wait() { while [ "$(shm_use)" -ge 65 ]; do log "/dev/shm 사용률 $(shm_use) % -- 기다림"; sleep 120; done; }
+shm_wait() { while [ "$(shm_use)" -ge 92 ]; do log "/dev/shm 사용률 $(shm_use) % -- 기다림"; sleep 120; done; }
 up() { rclone copy $O/$1 $RO/$1 -q --transfers 8 --exclude pred.pt --exclude "e2_f*.npz"; }
 CL=/dev/shm/dkta/anerr_claim; mkdir -p $CL                                                   # 다른 묶음과 같은 카드 표식 디렉토리 (서로 비켜감)
 NG=$(nvidia-smi -L | wc -l)
