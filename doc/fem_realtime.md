@@ -9671,6 +9671,11 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 - 그러나 판정은 나아지지 않음: 레고 4/4 발산 (T9S 와 같은 메모리 발산, 조금 늦게), wolf 2/4 발산·부피 붕괴 그대로, ficus 진폭 3.5 배 (16 %), bread 10.98 % (T9S 6.94). 수박만 오차 11.72 % (T9S 12.33, H9 11.68) 로 비슷.
 - 가설 (질량·강성 불일치가 레고 첫 프레임 뒤집힘의 원인) 은 T9S 의 f0 뒤집힘에는 맞으나 (TC 는 f0 뒤집힘 0), 레고 발산 자체는 바닥 접촉 뒤 장벽 걸린 사면체 뒤집힘에서 시작해 남음.
 
+### CM106.6 첫 뒤집힘 사면체 (사용자 11-11 지시; TC 수박 2 · ficus 2 · bread 2 판, 커밋 791f421 단계 s4k·s4, 결과 불변 '@tcdg 2', 덤프 없음, R2 lbours/tetc/first_inv.md · tM_*·tF_*·tB_*)
+- 방법은 절 CM106.4 와 같음 (프레임 끝 det X ≤ 0 사면체, 한 프레임 = 한 걸음) + 그 사면체의 꼭짓점 질량 백분위·입자 수·바닥 장벽·위치·고정 구속 거리 기록 (fem_tetc.py `dv.tets`).
+- **6 판 모두 뒤집힌 사면체 없음** (수박 100/100 · ficus 125/125 · bread 300/300 프레임; 최소 det 수박 0.224 · 8.5e-8 (f22 이후 그대로, 부호 +), ficus 0.71 · 0.76, bread 0.69 · 0.69). ficus·bread 는 바닥 없음. 오차는 이전 TC 와 같음 (수박 11.6·12.0, ficus 16.3·16.0, bread 11.0·11.0 %).
+- 한계: 프레임 끝 det 만 봄 (뉴턴 중간 반복 아님), 사면체 기록 코드는 뒤집힘이 없어 실행 안 됨. 레고·wolf 의 바닥 접촉 직후 장벽 걸린 사면체 뒤집힘 (절 CM106.4) 은 이 세 씬에서 안 나타남.
+
 ## CM107. wolf 육면체 판 부피 붕괴·덜 풀린 걸음이 바닥 장벽 걸린 칸에서 시작하는가 -- 칸별 기록 (H8 · H5 · 정규화 끔 N) + 장벽 진단 판 (κ × 0.1·10, d̂ × ½·2, 단순 미끄럼 바닥) (사용자 11-11 지시; 절 CM106.4 사면체 TC 첫 뒤집힘이 장벽 걸린 사면체였음) -- 가지 k1new, 커밋 2449ef8 (첫 띄움: /dev/shm 71 % 라 대기 문턱 65 % 에 멈춤) · bb4f026 (문턱 92 %) · e4644a7 (cb 모양 [capC,3] 고침) · 1f95b0f·8dff19c (연기 12 프레임·이름; s0k·s1·s2k·s2), 묶음 wolfbar (PBS 잡 133078 ece-a6gpu9 상주 시작점 exe/wolfbar_boot.sh·wolfbar_launch.sh, lib/anchorflow/fem_wolfbar.py, exe/wolfbar_wrap.py·stab_wolfbar.sh·go_wolfbar.sh·wolfbar_spec.txt·wolfbar_tab.py (로컬 표), 표 R2 lbours/wolfbar/wolfbar_table_s1.md·wolfbar_table_s2.md)
 ### CM107.0 기록 정의 (lib/anchorflow/fem_wolfbar.py, 가장 바깥 감싸개, 결과 불변 -- 별도 cupy 모듈이 같은 스트림·그래프 안에서 풀이 버퍼를 읽기만)
 - 걸음마다 (ao_commit 앞·뒤) 가우스 점: J0 = det F_q, JX = det(F_q + Σ U ⊗ g) (풀이 걸음 끝, 절 CM92 J_qX), 커밋 뒤 JY (반환 사상 뒤), 걸음 끝 높이 d, 장벽 힘 |b'(d)|, V_q·m_q, bact·bcf (--bar_cnt).
