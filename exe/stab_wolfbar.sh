@@ -118,7 +118,7 @@ PYX
 shm_use() { df --output=pcent /dev/shm | tail -1 | tr -dc '0-9'; }
 log() { echo "[$(date '+%F %T')] $*" >> $O/wolfbar_$STG.log; rclone copyto $O/wolfbar_$STG.log $RO/wolfbar_$STG.log -q; }
 homeok() { [ $(du -s -BG $O 2>/dev/null | cut -f1 | tr -dc 0-9) -lt 90 ] && [ $(df -BG --output=avail /home | tail -1 | tr -dc 0-9) -gt 40 ]; }
-shm_wait() { [ $NOSHM = 1 ] && { while ! homeok; do log "/home 덤프 $(du -sh $O | cut -f1) · 여유 $(df -h --output=avail /home | tail -1) -- 기다림"; sleep 60; done; return; }; while [ "$(shm_use)" -ge 65 ]; do log "/dev/shm 사용률 $(shm_use) % -- 기다림"; sleep 120; done; }
+shm_wait() { [ $NOSHM = 1 ] && { while ! homeok; do log "/home 덤프 $(du -sh $O | cut -f1) · 여유 $(df -h --output=avail /home | tail -1) -- 기다림"; sleep 60; done; return; }; while [ "$(shm_use)" -ge 92 ]; do log "/dev/shm 사용률 $(shm_use) % -- 기다림"; sleep 120; done; }   # 절 CM107: 덤프 없는 작은 기록 판이라 문턱 65 -> 92 % (/dev/shm 은 다른 묶음 자료로 71 %)
 up() { rclone copy $O/$1 $RO/$1 -q --transfers 8 --exclude pred.pt; }
 CL=/dev/shm/dkta/anerr_claim; mkdir -p $CL                                                   # 다른 묶음과 같은 카드 표식 디렉토리 (서로 비켜감)
 NG=$(nvidia-smi -L | wc -l)
