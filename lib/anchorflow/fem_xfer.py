@@ -6,6 +6,8 @@
 (A) P2G 받침 판정 ('--xa 1'):
   - 받침 덮임 몫 φ_i = Σ_p V_p w_i(x_p) / |det A|  (V_p = 입자 부피 = 실행기 vol (처음 부피), w = 이차 B-스플라인 가중, |det A| = 칸 부피).
     노드 받침이 물질로 다 차면 Σ_p V_p w_i(x_p) -> ∫ N_i dx = |det A| (이차 B-스플라인 기저 적분 = 칸 부피) 라 φ = 1 이 '완전히 찬 경우'.
+  - '완전히 찬 경우의 값' 은 장면 입자 부피 정의 (wolf 는 PG 가우스 부피라 칸을 다 채워도 Σ V w / |det A| ≈ 0.6) 에 따라 달라서,
+    프레임마다 받침 27 칸이 모두 점유된 활성 노드의 Σ V w / |det A| 평균 φ̄_full 로 나눔: φ_i = Σ_p V_p w_i(x_p) / (|det A| φ̄_full) (연기 s0k 첫 판에서 rest 부피 정의는 wolf 묶는 질량 57 % -> 고침).
   - 판정 (새 임의 문턱 없음): φ_i < ½ 인 활성 노드 (질량 > 0) 를 '묶는 노드' 로 -- 근거: 기저가 노드 중심에 대칭이라 평평한 물질 경계 위에 놓인 노드는 φ = ½ 이고,
     노드 중심이 물질 밖이면 φ < ½, 안이면 > ½. 곧 '받침의 빈 몫이 찬 몫보다 큰 노드' = 중심이 물질 밖인 노드 = 독립 미지수로 두지 않음.
   - 가중 이웃 = 그 노드와 입자를 함께 덮는 (일관 질량 결합 M_oj = Σ_p m_p w_o(x_p) w_j(x_p) > 0, 오프셋 |Δ| ≤ 2) 독립 노드 (φ_j ≥ ½) 전부,
@@ -63,6 +65,27 @@ __global__ void xa_phi(int N, const int* IP, const int* pb, const float* fx, con
         int nid = ((pb[p*3]+i)*nb1 + (pb[p*3+1]+j))*nb2 + (pb[p*3+2]+k);
         atomicAdd(&phi[nid], vp*w[0][i]*w[1][j]*w[2][k]);
     }
+}
+// '완전히 찬 경우의 값' = 받침 27 칸 (매듭 칸 [n−2, n]³) 이 모두 점유된 활성 노드의 Σ V w / |det A| 평균 (프레임마다) -> φ 를 그 값으로 나눔
+__global__ void xa_full(const int* IP, const float* mn, const int* occ, const float* phi, double* R) {
+    if (XF_SKIP) return;
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    double a = 0.0, b = 0.0;
+    if (n < IP[9] && !IP[13] && mn[n] > 0.f) {
+        int nb1 = IP[7], nb2 = IP[8], c0 = IP[6]-2, c1 = nb1-2, c2 = nb2-2;
+        int i = n/(nb1*nb2), j = (n/nb2)%nb1, k = n%nb2;
+        bool full = (i >= 2 && j >= 2 && k >= 2 && i < c0+2 && j < c1+2 && k < c2+2);
+        for (int x=i-2; full && x<=i; x++) for (int y=j-2; full && y<=j; y++) for (int z=k-2; full && z<=k; z++)
+            if (x >= c0 || y >= c1 || z >= c2 || !occ[(x*c1 + y)*c2 + z]) full = false;
+        if (full) { a = phi[n]; b = 1.0; }
+    }
+    xf_wsum(a, &R[0]); xf_wsum(b, &R[1]);
+}
+__global__ void xa_scale(const int* IP, const double* R, float* phi) {
+    if (XF_SKIP) return;
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9] || IP[13] || !(R[1] > 0.0)) return;
+    phi[n] = (float)((double)phi[n]*R[1]/R[0]);
 }
 // 묶는 노드 후보 (활성 · φ < ½) 에 자리 (slot) 와 가중 행 (125) 0
 __global__ void xa_slot(const int* IP, const float* mn, const float* phi, int* slot, float* M, int* cnt, float* cf, int capT) {
@@ -332,6 +355,7 @@ class St:
         h.Am = s.A.detach().float().reshape(9).contiguous().clone()
         h.Aim = s.Ai.detach().float().reshape(9).contiguous().clone()
         h.S = torch.zeros(16, dtype=torch.float64, device=dev)
+        h.R = torch.zeros(4, dtype=torch.float64, device=dev)
         h.cnt = torch.zeros(8, dtype=torch.int32, device=dev)
         h.cf = torch.zeros(4, dtype=torch.float32, device=dev)
         h.C = torch.zeros(int(s.N) * 9, dtype=torch.float32, device=dev) if CFG["b"] else None
@@ -372,7 +396,7 @@ class St:
             pp = ph[ph > 0]
             q = torch.quantile(pp[torch.randperm(pp.numel(), device=pp.device)[:200000]], torch.tensor([0.1, 0.5, 0.9, 0.99], device=pp.device)).tolist() if pp.numel() else []
             row.update(nact=c[0], ncand=c[1], over=c[2], iso=c[3], tied=c[4], m_act=cf[0], mf_tied=(cf[1] / cf[0] if cf[0] > 0 else None), mf_iso=(cf[2] / cf[0] if cf[0] > 0 else None),
-                       phi_q=q, n_phi_ge1=int((ph >= 1.0).sum()), nact_after=int(act.sum()))
+                       phi_q=q, full_ref=(float(h.R[0] / h.R[1]) if float(h.R[1]) > 0 else None), n_full=int(h.R[1]), n_phi_ge1=int((ph >= 1.0).sum()), nact_after=int(act.sum()))
         h.f.write(json.dumps(row) + "\n"); h.f.flush()
         h.nstep += 1
 
@@ -388,6 +412,9 @@ def _post(s, ok, name, args):
         if CFG["a"]:
             ok(s, "rt_zero_f", h.capN, (i32(h.capN), P(None), i32(0), i32(1), P(h.phi)), 256); ok(s, "rt_zero_i", 8, (i32(8), P(h.cnt)), 256); ok(s, "rt_zero_f", 4, (i32(4), P(None), i32(0), i32(1), P(h.cf)), 256)
             ok(s, "xa_phi", N, (args[0], IP, pb, fx, vol, np.float32(h.idet), P(h.phi)), 128)
+            ok(s, "rt_zero_d", 4, (i32(4), P(None), i32(0), i32(1), P(h.R)), 256)
+            ok(s, "xa_full", h.capN, (IP, mn, P(s.occ), P(h.phi), P(h.R)), 256)
+            ok(s, "xa_scale", h.capN, (IP, P(h.R), P(h.phi)), 256)
             ok(s, "xa_slot", h.capN, (IP, mn, P(h.phi), P(h.slot), P(h.M), P(h.cnt), P(h.cf), i32(h.capT)), 256)
             ok(s, "xa_pair", N, (args[0], IP, pb, fx, m, mn, P(h.phi), P(h.slot), P(h.M)), 128)
             ok(s, "xa_norm", h.capN, (IP, mn, P(h.slot), P(h.M), P(h.cnt), P(h.cf)), 256)
