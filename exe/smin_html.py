@@ -11,6 +11,9 @@ T = r'''<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>wolf H
 <div class="ctl"><button id="pb">재생</button><input id="sl" type="range" min="0" max="__NF__" value="0"><b id="fl"></b></div>
 <div id="wrap"><div><img id="img"><br><small>왼쪽: 3DGS 렌더 (R2 result/anchorflow/v20261009/fem_H8_wolf_cmp.mp4 의 H8 칸을 잘라 씀)</small></div>
 <div id="right"><div id="st"></div><div id="h1" style="height:300px"></div><div id="h2" style="height:300px"></div></div></div>
+<div id="en" style="height:340px;width:1376px"></div>
+<p><small>탄성 에너지 Σ V_p ψ(F_p): 실행기의 wolf 모래 탄성 (Hencky, ψ = μ Σ ε_i² + λ/2 (Σ ε_i)², ε_i = log σ_i: E=__E__ Pa, ν=__NU__, μ=__MU__, λ=__LAM__, 밀도 __RHO__, V_p = m_p/밀도) 를 덤프 F 에 그대로 적용. 소성 사영 전후 구분 없이 덤프된 F 를 썼다.
+정답 h5 의 F 는 거의 직교 행렬 (σ≈1) 이라 정답 에너지는 0 근처이며, 예측 F 와 같은 양으로 비교되지 않는다.</small></p>
 <p><small>σ_min = 입자 F 의 최소 특이값. det F &lt; 0 인 입자는 부호를 붙여 −σ_min 으로 계산했다. 히스토그램의 x 범위와 bin 은 전 프레임 공통으로 고정했고 프레임마다 정규화하지 않았다 (세로축 = 입자 수).
 프레임 0 의 F 는 항등. __GTNOTE__</small></p>
 <script>
@@ -39,8 +42,13 @@ function show(f){f=+f;document.getElementById('img').src='f'+String(f).padStart(
 const sl=document.getElementById('sl'),pb=document.getElementById('pb');let tm=null;
 sl.oninput=()=>show(sl.value);
 pb.onclick=()=>{if(tm){clearInterval(tm);tm=null;pb.textContent='재생'}else{pb.textContent='정지';tm=setInterval(()=>{sl.value=(+sl.value+1)%(NF+1);show(sl.value)},250)}};
+function en(f){const x=D.pred.map((_,i)=>i);const tr=[{x:x,y:D.pred.map(r=>Math.max(r.E,1e-3)),mode:'lines',name:'예측 (H8)',line:{color:'#2a6fdb',width:2}}];
+ if(D.gt)tr.push({x:x,y:D.gt.map(r=>Math.max(r.E,1e-3)),mode:'lines',name:'정답 (GT)',line:{color:'#777',width:2}});
+ Plotly.react('en',tr,{title:{text:'프레임별 전체 탄성 에너지 Σ V_p ψ(F_p) [J] (세로 로그축, 0 은 1e-3 으로 표시)',font:{size:14}},margin:{t:34,l:70,r:10,b:40},xaxis:{title:'프레임'},yaxis:{type:'log',title:'에너지 [J]'},
+  shapes:[{type:'line',x0:f,x1:f,y0:0,y1:1,yref:'paper',line:{color:'#c33',width:2}}]},{displaylogo:false})}
+const _show=show;show=function(f){_show(f);en(+f)};
 show(0);
 </script></body></html>'''
 gtn = "정답 F 는 정답 h5 의 F 로 구함, 회색 윤곽선." if d.get("gt") else "정답 F 는 구할 수 없어 생략했다: " + d["gt_note"]
-T = T.replace("__NF__", str(len(d["pred"]) - 1)).replace("__GTNOTE__", gtn).replace("__DATA__", json.dumps(d, separators=(",", ":")))
+T = T.replace("__E__", "%.3g" % d["E"]).replace("__NU__", str(d["nu"])).replace("__MU__", "%.4g" % d["mu"]).replace("__LAM__", "%.4g" % d["lam"]).replace("__RHO__", "%g" % d["density"]).replace("__NF__", str(len(d["pred"]) - 1)).replace("__GTNOTE__", gtn).replace("__DATA__", json.dumps(d, separators=(",", ":")))
 open(sys.argv[2], "w").write(T)
