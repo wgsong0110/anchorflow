@@ -116,9 +116,10 @@ PYX
   rm -rf $HD; }
 shm_use() { df --output=pcent /dev/shm | tail -1 | tr -dc '0-9'; }
 log() { echo "[$(date '+%F %T')] $*" >> $O/xfer_$STG.log; rclone copyto $O/xfer_$STG.log $RO/xfer_$STG.log -q; }
-homeok() { [ $(du -s -BG $O 2>/dev/null | cut -f1 | tr -dc 0-9) -lt 90 ] && [ $(df -BG --output=avail /home | tail -1 | tr -dc 0-9) -gt 40 ]; }
-shm_wait() { [ $NOSHM = 1 ] && { while ! homeok; do log "/home 덤프 $(du -sh $O | cut -f1) · 여유 $(df -h --output=avail /home | tail -1) -- 기다림"; sleep 60; done; return; }; while [ "$(shm_use)" -ge 65 ]; do log "/dev/shm 사용률 $(shm_use) % -- 기다림"; sleep 120; done; }
-up() { rclone copy $O/$1 $RO/$1 -q --transfers 8 --exclude pred.pt; }
+homeok() { [ $(du -s -BG $O 2>/dev/null | cut -f1 | tr -dc 0-9) -lt 40 ] && [ $(df -BG --output=avail /home | tail -1 | tr -dc 0-9) -gt 8 ]; }   # 절 CM109: /home 여유 8 GB 넘게 (영상 판 덤프만 /home, 판 하나 0.5~2.6 GB)
+OS=/dev/shm/dkta/xfer_runs; mkdir -p $OS                                                     # 절 CM109: 판정 판 (영상 아닌 판) 디렉토리는 /dev/shm (지표 뒤 덤프 지움), $O/<판> 은 그 심볼릭 링크
+shm_wait() { if [ "${1:-v}" = v ]; then while ! homeok; do log "/home 덤프 $(du -sh $O | cut -f1) · 여유 $(df -h --output=avail /home | tail -1) -- 기다림"; sleep 60; done; else while [ "$(shm_use)" -ge 85 ]; do log "/dev/shm 사용률 $(shm_use) % -- 기다림"; sleep 60; done; fi; }   # 절 CM109: 카드를 잡기 전에 기다림 (아래 판 고리)
+up() { rclone copy $(readlink -f $O/$1) $RO/$1 -q --transfers 8 --exclude pred.pt; }   # 절 CM109: 판정 판 $O/<판> 은 /dev/shm 링크
 CL=/dev/shm/dkta/anerr_claim; mkdir -p $CL                                                   # 다른 묶음과 같은 카드 표식 디렉토리 (서로 비켜감)
 NG=$(nvidia-smi -L | wc -l)
 claim() { local me=$1 g f p
@@ -164,10 +165,11 @@ run() {   # run 이름 씬 방식 카드 플래그
   c="exe/speed13_wrap.py $s13 exe/speed12_wrap.py $s12 exe/ext2_wrap.py $w8 $l4 $l3 $w5x $s9 $s8 $s7 $s5 $mf $wf $hx $wg $w5 $w3 $w2 $wo $c"; [ -n "$tet" ] && c="exe/tet1_wrap.py $tet $toct $c"
   [ $s = M3 ] && { log "$n 수박은 이 묶음에서 안 돌림"; return; }
   [ -n "$xa$xb" ] && c="exe/xfer_wrap.py --xa ${xa:-0} --xb ${xb:-0} --xdg 1 --xck ${xck:-0} $c"   # 절 CM109: 가장 바깥
-  rm -rf $O/$n; mkdir -p $O/$n; echo "$pre $PY -u $c --out $O/$n" > $O/$n/cmd.txt
+  rm -rf $O/$n $OS/$n; if [ $md = v ]; then mkdir -p $O/$n; else mkdir -p $OS/$n; ln -s $OS/$n $O/$n; fi   # 절 CM109: 판정 판은 /dev/shm
+  echo "$pre $PY -u $c --out $O/$n" > $O/$n/cmd.txt
   [ -n "$DRY" ] && { echo "$n: $(cat $O/$n/cmd.txt)"; return; }                                # 로컬 글자 확인 (실행 안 함)
   nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader > $O/$n/apps_at_start.txt 2>&1; echo "카드 $g 계산 프로세스 $(nvidia-smi -i $g --query-compute-apps=pid --format=csv,noheader | grep -c .)" >> $O/$n/apps_at_start.txt; nvidia-smi --query-gpu=index,uuid,utilization.gpu,memory.used --format=csv,noheader >> $O/$n/apps_at_start.txt; cat /proc/loadavg >> $O/$n/apps_at_start.txt
-  shm_wait
+  shm_wait $md
   log "$n 카드 $g 시작 (/dev/shm $(shm_use) %, 부하 $(cut -d' ' -f1 /proc/loadavg))"
   env $pre CUDA_VISIBLE_DEVICES=$g timeout 5400 $PY -u $c --out $O/$n < /dev/null > $O/$n/log.txt 2>&1
   local rc=$?
@@ -222,7 +224,7 @@ done
 while read -r st n s md x; do
   [ -z "$n" ] && continue; case $md in z) continue;; esac; [ -f $O/$n/summary.json ] && continue
   while [ $(jobs -rp | wc -l) -ge $NG ]; do sleep 5; done
-  ( me=$BASHPID; g=$(claim_wait $me); run $n $s $md $g "$x"; [ "$(cat $CL/$g 2>/dev/null)" = "$me" ] && rm -f $CL/$g ) & sleep 3
+  ( me=$BASHPID; shm_wait $md; g=$(claim_wait $me); run $n $s $md $g "$x"; [ "$(cat $CL/$g 2>/dev/null)" = "$me" ] && rm -f $CL/$g ) & sleep 3
 done <<< "$SPEC"
 wait
 [ $NOSHM = 1 ] || while ls $O/*/.upl > /dev/null 2>&1; do sleep 20; done                                       # 절 CM102: 뒤에서 올리는 덤프 끝까지
