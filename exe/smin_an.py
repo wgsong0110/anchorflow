@@ -19,13 +19,14 @@ def stats(F):
     d = torch.linalg.det(F)
     sg = torch.where(d < 0, -s, s)
     ep = torch.log(s.clamp_min(1e-14))                       # Hencky (모래 탄성, exe/fem_an_rt_sim.py 의 PR.lame + 절 AO 응력식): ψ = μ Σε² + λ/2 (Σε)², ε = log σ_i
+    ST["svmax"] = float(s[:, 0].max()); ST["svmin"] = float(s[:, -1].min()); ST["dmaxv"] = float(d.max())
     ST["psi"] = (MU * (ep ** 2).sum(-1) + 0.5 * LAM * ep.sum(-1) ** 2).numpy()
     return sg.numpy(), d.numpy()
 def hist(v, lo, hi, n):
     h, _ = np.histogram(np.clip(v, lo, hi - 1e-9), bins=n, range=(lo, hi))
     return h.tolist()
 def rec(sg, d):
-    return dict(E=float((VOL * ST["psi"]).sum()), n=int(len(sg)), sh=hist(sg, SL, SH, SN), dh=hist(d, DL, DH, DN), med=float(np.median(sg)), p10=float(np.percentile(sg, 10)),
+    return dict(psimax=float(ST["psi"].max()), npsi_big=int((ST["psi"] * 1.0 > 1e6).sum()), svmax=ST["svmax"], E_trim=float((VOL * np.where(ST["psi"] > 1e6, 0, ST["psi"])).sum()), E=float((VOL * ST["psi"]).sum()), n=int(len(sg)), sh=hist(sg, SL, SH, SN), dh=hist(d, DL, DH, DN), med=float(np.median(sg)), p10=float(np.percentile(sg, 10)),
                 lt05=float((sg < 0.5).mean()), neg=float((d < 0).mean()), dmed=float(np.median(d)), smin=float(sg.min()), smax=float(sg.max()),
                 dmin=float(d.min()), dmax=float(d.max()), s_under=int((sg < SL).sum()), s_over=int((sg >= SH).sum()), d_under=int((d < DL).sum()), d_over=int((d >= DH).sum()))
 D = torch.load(pp, map_location="cpu", weights_only=False, mmap=True)
