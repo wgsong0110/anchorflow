@@ -1,18 +1,18 @@
 # 절 CM107 묶음 wolfbar 판 목록: 단계 이름 씬 방식 플래그 (exe/stab_wolfbar.sh). 모든 판 wolf, 방식 r = 기록 판 (덤프 없음, wb.jsonl·fem.jsonl hp), 가장 바깥 exe/wolfbar_wrap.py.
 # H8 = 절 CM84·CM85 글자 (붕괴 판), H5n = 절 CM79 H5 (높게 쌓이는 판), H9nb = H9 − B-스플라인 전용 정규화 (절 CM105 N 판 = 정규화 전부 끔).
 # 단계: s0k 연기 8 프레임 · s1 기록 판 각 2 · s2k 진단 연기 · s2 진단 판 (결과 바꿈; H8 위 장벽 강성 κ x 0.1·10, d̂ x ½·2, 단순 미끄럼 바닥) 각 2
-s0k kH8 W r H8 --frames 8
-s0k kH5 W r H5n --frames 8
-s0k kN W r H9nb --frames 8
+s0k kH8 W r H8 --frames 12
+s0k kH5 W r H5n --frames 12
+s0k kN W r H9nb --frames 12
 s1 b8_1 W r H8
 s1 b8_2 W r H8
 s1 b5_1 W r H5n
 s1 b5_2 W r H5n
 s1 bN_1 W r H9nb
 s1 bN_2 W r H9nb
-s2k kK W r H8 @wbks 0.1 --frames 8
-s2k kD W r H8 @dhm 0.5 --frames 8
-s2k kS W r H8 @slip 1 --frames 8
+s2k kK W r H8 @wbks 0.1 --frames 12
+s2k kD W r H8 @dhm 0.5 --frames 12
+s2k kS W r H8 @slip 1 --frames 12
 s2 kL_1 W r H8 @wbks 0.1
 s2 kL_2 W r H8 @wbks 0.1
 s2 kH_1 W r H8 @wbks 10
