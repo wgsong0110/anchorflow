@@ -26,7 +26,7 @@ def hist(v, lo, hi, n):
     h, _ = np.histogram(np.clip(v, lo, hi - 1e-9), bins=n, range=(lo, hi))
     return h.tolist()
 def rec(sg, d):
-    return dict(psimax=float(ST["psi"].max()), npsi_big=int((ST["psi"] * 1.0 > 1e6).sum()), svmax=ST["svmax"], E_trim=float((VOL * np.where(ST["psi"] > 1e6, 0, ST["psi"])).sum()), E=float((VOL * ST["psi"]).sum()), n=int(len(sg)), sh=hist(sg, SL, SH, SN), dh=hist(d, DL, DH, DN), med=float(np.median(sg)), p10=float(np.percentile(sg, 10)),
+    return dict(psimax=float(ST["psi"].max()), n_deg=int((np.abs(sg) < 1e-7).sum()), svmax=ST["svmax"], E_trim=float((VOL * np.where(np.abs(sg) < 1e-7, 0, ST["psi"])).sum()), E=float((VOL * ST["psi"]).sum()), n=int(len(sg)), sh=hist(sg, SL, SH, SN), dh=hist(d, DL, DH, DN), med=float(np.median(sg)), p10=float(np.percentile(sg, 10)),
                 lt05=float((sg < 0.5).mean()), neg=float((d < 0).mean()), dmed=float(np.median(d)), smin=float(sg.min()), smax=float(sg.max()),
                 dmin=float(d.min()), dmax=float(d.max()), s_under=int((sg < SL).sum()), s_over=int((sg >= SH).sum()), d_under=int((d < DL).sum()), d_over=int((d >= DH).sum()))
 D = torch.load(pp, map_location="cpu", weights_only=False, mmap=True)
