@@ -189,9 +189,41 @@ def _divdiag(sv, x0):
         nodes.append(dict(n=int(n_), why=sorted(set(why)), m=m, m_pct=100 * rank, m_rel=(m / med if med > 0 else None), lmax=lmax,
                           ntet=int(qs.numel()), ntet_act=int(aq.numel()), npart=[int(v) for v in npq[qs].tolist()],
                           nbar=(int(bar[qs].sum()) if bar is not None else None), U=float(un[n_]), v=float(torch.linalg.norm(vk[n_]))))
-    lm_all = None
+    tets = []                                                                              # 절 CM106.6 (사용자 11-11): 뒤집힌 사면체 자체 (det 작은 4 개): 꼭짓점 질량 백분위·입자 수·바닥 장벽·위치·고정 구속 근처
+    try:
+        if bool(inv.any()):
+            fl_ = getattr(sv, "floor", None)
+            fixd = getattr(sv, "fixd", None)
+            fnode = torch.nonzero(fixd[:nN] > 0).flatten() if fixd is not None else None
+            ijk = lambda n_: torch.stack([n_ // (nb1 * nb2), (n_ // nb2) % nb1, n_ % nb2], 1).double()
+            xall = x[okx]; lo_, hi_ = xall.min(0).values, xall.max(0).values
+            bcf_ = (sv.bcf[:Q] & 1) > 0 if getattr(sv, "bcf", None) is not None else None
+            bact_ = sv.bact[:Q] > 0 if getattr(sv, "bact", None) is not None else None
+            qi = torch.nonzero(inv).flatten(); qi = qi[torch.argsort(dX[qi])[:4]]
+            for q_ in qi.tolist():
+                vn = nid[q_][ok[q_]]
+                mv_ = mn[vn]
+                pct = [100 * float(torch.searchsorted(msort, mm.reshape(1)).item()) / max(1, msort.numel()) for mm in mv_]
+                inq = (pq == q_).nonzero().flatten()
+                cen = x[inq].mean(0) if inq.numel() else None
+                t = dict(q=int(q_), det=float(dX[q_]), V=float(Vq[q_]), nvert=int(vn.numel()), m=[float(m_) for m_ in mv_], m_pct=pct, m_rel=[(float(m_) / med if med > 0 else None) for m_ in mv_],
+                         npart=int(npq[q_]), floor=(fl_ is not None), bcf=(bool(bcf_[q_]) if bcf_ is not None else None), bact=(bool(bact_[q_]) if bact_ is not None else None))
+                if cen is not None:
+                    t["pos"] = [float(c_) for c_ in cen]
+                    t["pos_rel"] = [float((cen[a_] - lo_[a_]) / max(float(hi_[a_] - lo_[a_]), 1e-12)) for a_ in range(3)]
+                    if fl_ is not None:
+                        nr_ = torch.tensor(fl_["NR"], device=dev, dtype=torch.float32)
+                        t["h_floor"] = float(cen @ nr_ - float(fl_["PN"]))
+                t["bbox_lo"] = [float(c_) for c_ in lo_]; t["bbox_hi"] = [float(c_) for c_ in hi_]
+                if fnode is not None:
+                    t["nfixed_node"] = int(fnode.numel()); t["nfixed_vert"] = int((fixd[vn] > 0).sum())
+                    if fnode.numel():
+                        t["dist_fixed_cells"] = float(torch.cdist(ijk(vn), ijk(fnode), p=float("inf")).min())
+                tets.append(t)
+    except Exception as e_:
+        tets = [dict(err=repr(e_)[:300])]
     return dict(nN=nN, m_med=med, Umax=float(un.max()), ninv=int(inv.sum()), dmin=float(dX[act].min()) if bool(act.any()) else None,
-                nfar=nfar, nodes=nodes)
+                nfar=nfar, nodes=nodes, tets=tets)
 
 
 def _write(rec):

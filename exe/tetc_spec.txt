@@ -49,3 +49,13 @@ s3 vSF F v T9S @tcm 0
 s3 vSB B v T9S @tcm 0
 s3 vCF F v TC
 s3 vCB B v TC
+# s4k / s4 (사용자 11-11): 뒤집힘 첫 사면체 진단 (결과 불변 '@tcdg 2' -> tetc.jsonl dv.tets), TC 판 수박 2 · ficus 2 · bread 2, 덤프 없음 (방식 q). s4k = 8 프레임 연기 (씬마다 1)
+s4k kTM M3 q TC @s6l 1 @tcdg 2 --frames 8
+s4k kTF F q TC @tcdg 2 --frames 8
+s4k kTB B q TC @tcdg 2 --frames 8
+s4 tM_1 M3 q TC @s6l 1 @tcdg 2
+s4 tM_2 M3 q TC @s6l 1 @tcdg 2
+s4 tF_1 F q TC @tcdg 2
+s4 tF_2 F q TC @tcdg 2
+s4 tB_1 B q TC @tcdg 2
+s4 tB_2 B q TC @tcdg 2
