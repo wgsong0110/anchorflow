@@ -9907,3 +9907,19 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 - **추정 (확인 안 함)**: H9 되먹임이 강한 것은 뉴턴이 압축을 못 되돌린 것 (절 CM113) 이 속도로 남기 때문으로 보임 (걸음 끝 속도 -> 다음 시작 속도 칸별 직결은 안 잼); H9 에 부분 구속 꼭짓점이 많은 이유 (f12 2.0 만 대 0.43 만) 는 안 가름.
 ### CM114.3 출력·실행
 - R2 lbours/wolfcv/startpt2.md·startpt2.png, lbours/wolfcv/startpt/ (q9_1·q5_1 sp/f003~f012.npz·sp.jsonl·spinfo.json·cmd·log, startpt2_*.json, startpt_q*.json, an2*.log, corr_union.json). SSH 1 번 (10:51 UTC qstat: 133078 R 65:56 + pbs_attach 띄움), 뒤는 R2 launch.txt (끝에 stop). 노드 / ·/tmp 안 씀.
+
+## CM115. H9 에서 부분 구속 꼭짓점이 H5 보다 훨씬 많은 이유 (절 CM114 남은 질문; 조정자 11-12 후속) -- 가지 k1new, 커밋 601c3c6 (lib/anchorflow/fem_startpt.py 에 구속 몫 정의별 사본·앞면·받침 입자 수 더함, exe/startpt3_an.py·go_startpt.sh run3·an3) · exe/startpt3_tab.py (로컬 그림), 묶음 startpt (PBS 잡 133078 ece-a6gpu9), 결과 R2 lbours/wolfcv/startpt3.md·startpt3.png
+### CM115.0 정의
+- 판 r9_1·r5_1 = 절 CM113 명령 그대로 (12 프레임, 기록 f3~f12). 같은 걸음에서 k_구속 사본 셋: 기본 (ao_pbc_k e^-x), S (wolfh5 --w5s 1 의 w5s_kb 덮어쓰기, H9 만), 최종 (걸음에 쓰인 값). 부분 구속 = 1e-3 < k ≤ 0.999, 꼭짓점 셈은 절 CM114 와 같음. 앞면 노드 = 받침 입자 중 일부만 미방출.
+### CM115.1 결과 (부분 구속 꼭짓점; 전체 표 R2 startpt3.md)
+| 프레임 | H9 기본 | H9 S = 최종 | H5 기본 = 최종 | 앞면 노드 H9 · H5 |
+|---|---|---|---|---|
+| f4 | 123 | 1126 | 123 | 350 · 350 |
+| f8 | 722 | 4872 | 743 | 1356 · 1357 |
+| f12 | 4293 | 20450 | 4292 | 3691 · 3698 |
+- 미방출 입자 몫·노드 받침 입자 수 (중앙 100, 앞면 101~126) 두 판 같음. H9 최종 부분 구속 노드 중 확장 외부 노드 30~43 % (활성 중 34 %), 앞면 노드 78~86 %. 최종 대 S 차 0.
+### CM115.2 결론
+- **확인한 것**: 차이는 구속 몫 정의 S_구속 (--w5s 1) 하나에서 옴 -- 같은 H9 상태에서 덮어쓰기 전 기본 정의 값은 H5 와 같고 (f12 4293 대 4292), 덮어쓴 뒤 4.8~9.2 배; f12 차이 16158 중 16157. 방출 순서·앞면 노드 수·받침 입자 수는 두 판 같고, 확장 노드는 몫이 활성 노드 몫과 같아 원인 아님, C (--w5c 1) 는 k_구속 을 안 바꿈.
+- **추정 (확인 안 함)**: 기본 e^-x (expo 500) 는 거의 0/1 이고 S 는 정답 1 cm 격자 몫의 질량 평균이라 앞면 둘레에 0~1 값이 넓게 생김 -- 어느 쪽이 정답 구속에 가까운지는 안 봄.
+### CM115.3 출력·실행
+- R2 lbours/wolfcv/startpt3.md·startpt3.png, lbours/wolfcv/startpt/ (r9_1·r5_1 sp/·cmd·log, startpt3_*.json, an3.log). SSH 1 번 (12:48 UTC qstat: 133078 R 67:54 + pbs_attach 띄움), 뒤는 R2 launch.txt (끝에 stop). 노드 / ·/tmp 안 씀.
