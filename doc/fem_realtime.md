@@ -10069,6 +10069,18 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 ### CM121.3 출력·실행
 - R2 lbours/wolfcv/extsolve/{t0,t3,bt0,bt3} (cmd·log·summary·fem.jsonl·nl.jsonl·trlm.npy (판정마다 ρ·고른 후보·λ_LM·실제·예측 감소·c_b)·trinfo·sp/·pred.pt), an_cv.log·convabl_an.json. 판마다 끝나자마자 R2 로 올림 (덤프 포함); 인스턴스 끝 대조는 pgrep 대기 글자 오류로 못 돌고 destroy (판별 파일 수·pred.pt 크기 R2 에서 확인). 클러스터 안 씀.
 
+## CM122. wolf 소성 지연 판 -- 뉴턴 중 소성 상태를 걸음 시작 값으로 고정 (순수 Hencky 초탄성), 걸음 끝에 반환 사상 한 번 (조정자 11-12, 사용자 wolf 완전 위임; 정식화 쪽, 금지 그대로) -- **중간: 구현만, 실행 못 함** -- 가지 k1new, 커밋 45a1364 (lib/anchorflow/fem_lagpl.py, exe/lagpl_wrap.py `--xlag`, 묶음 exe/go_lagpl.sh · exe/vast_lagpl.sh), 코드 R2 lbours/wolfcv/lagpl/code/lagpl_45a1364.tar
+### CM122.0 정의 (코드 읽기로 확인한 자리)
+- 소성 상태 = 가우스 점 F_q (걸음 시작 탄성 F). 지금 판: 뉴턴 반복마다 ao_elem_s (H9 `--hspec`; 옛 ao_elem 도) 가 시험 X = (I + Σ y ⊗ ∇w) F_q 에 반환 사상 (ao_dpf: 꼬리 투영·꼭짓점 0) 을 걸어 힘을 내고, 헤시안은 시험 X 의 Hencky 탄성 접선 (PSD 투영) -> 기울기·헤시안 불일치 (절 CM119·CM120). 걸음 끝 ao_commit 이 F_q ← F_q X⁻¹ RM(X), G2P ao_g2p 가 입자 F 걸음별 RM.
+- `--xlag 1`: ao_elem_s·ao_elem 에서 상태 판정 뒤 st = 0 (힘 = 시험 X 의 Hencky 탄성 τ = 2μ ε + λ tr ε). 커밋·G2P 그대로 = 걸음 끝 반환 한 번. 헤시안은 원래 식 그대로라 기울기의 미분과 맞음 (투영 몫만 다름). 상태 수 cnt (진단) 는 실제 판정 그대로.
+- `--xlag 2`: 1 + 선탐색 (rt_elem_lsN) 에너지를 같은 포텐셜로: 탄성 몫 μ Σ(σ−1)² + λ/2 (J−1)² -> Hencky μ Σ ε² + λ/2 (Σ ε)², c = 0 (현재 반복점) Hencky 에너지를 SC[10] 에 더함 (재질 판은 SC[10] 에 탄성 몫이 없었음 -- 코드 읽기로 확인, 영향은 안 잼). 장벽·고스트 항 안 건드림. 모래 아닌 씬에도 선탐색 에너지가 바뀌므로 2 는 wolf 전용 (1 은 다른 씬에서 쓰는 커널을 안 바꿈).
+- 치환은 cupy RawModule 글자 (fem_extsolve.install_apex 와 같은 방식), 로컬에서 fem_ao_rt·fem_an_rt 글자에 대고 치환 자리 수 확인 (재질 커널 2 · 선탐색 1); GPU 컴파일·실행은 아직 안 됨. `--xlag` 기본 0, 기본 판 안 바꿈.
+### CM122.1 판 (exe/go_lagpl.sh chk·run·an)
+- c1·c2 = R2 extsolve/ncvb (cvb 수렴 조건 + nlwhy 반복 기록) + `--xlag 1·2`; b1·b2 = extsolve/nb9 (H9 예산 + 기록) + `--xlag 1·2`. 잴 것: 반복당 수축 ρ (nl.jsonl, .xstmp/nl/rho.py 정의), 50 프레임 완주, f30·f50 질량중심 (정답 93·53 mm), r<0.7 칸, 오차. 통과 판이면 vid (lb_render) · reg (speed13 oXL_1·oXF_1·oXB_1 ± --xlag) · 영상 result/anchorflow/v20261009/fem_wolf_lagpl_cmp.mp4.
+### CM122.2 실행 상태 (11-12 23:50 UTC)
+- vast.ai 인스턴스 생성 두 번 (A40 ×4 offer 56026502, 23:45·23:52 UTC) 모두 'Your account lacks credit' 400 거절 (credit 0, balance −0.05; 자동 충전 안 됨). 클러스터는 Q 잡뿐 (R 잡 없음, '메모리 부족'), 잡 제출 금지. -> 결과 없음.
+- 띄우는 법 (크레딧이 생기면): `vastai create instance <offer> --image pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel --disk 80 --ssh --direct --label lagpl --onstart .lptmp/onstart.sh` (onstart = exe/vast_lagpl.sh, XS_COMMIT=45a1364 XS_STG=chk,run,an), 끝 표식 R2 lbours/wolfcv/lagpl/vast.END 뜨면 destroy -y.
+
 ## CM117. wolf 무너짐 -- 수렴 부족 대 정식화 가르기 ((a) H9 · (b) H9 수렴 · (c) H9 확장 끔 · (d) H5, 50 프레임) (조정자 11-12, 사용자 완전 위임 중 원인 진단 몫; 기본 판 안 바꿈) -- **중간: (b) 미완** -- 가지 k1new, 커밋 12a1f44 (판 a·c·d, b 첫 띄움 assert 실패) · ebeb699 (b 고친 판, 아직 못 돌림), 묶음 startpt (PBS 잡 133078 ece-a6gpu9; 16:54 UTC 끝난 뒤 R 잡 없음), 결과 R2 lbours/wolfcv/conv_abl.md, 덤프 /home/dkta/work/convabl 과 R2 lbours/wolfcv/convabl/
 ### CM117.1 결과 (중간)
 | 판 | 오차 % | 질량중심 f30 · f50 mm (정답 93 · 53) | r<0.7 칸 f10~30 | 시작점 압축 되돌린 몫 | |g|/|g0| 중앙 · p90 |
