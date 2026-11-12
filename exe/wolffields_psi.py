@@ -99,6 +99,8 @@ t = np.where(R < 1, 0.5 * (R - RLO) / (1 - RLO), 0.5 + 0.5 * (R - 1) / (RHI - 1)
 CR = matplotlib.colormaps["RdBu"](t)[..., :3].astype(np.float16); CR[~np.isfinite(R)] = 0.75
 np.save(f"{out}/col_pred_r.npy", CR)
 rmed = [float(np.nanmedian(R[t])) for t in range(L + 1)]
+IDX = np.sort(np.random.default_rng(0).choice(N, min(20000, N), replace=False))   # 그리기용 표본 (두 판 같은 번호, 계산·지표에는 안 씀)
+np.savez(f"{out}/sample.npz", idx=IDX, P=P[:, IDX], G=G[:, IDX], KP=KP[:, IDX], KG=KG[:, IDX], R=R[:, IDX])
 json.dump(dict(L=L, N=N, dt=DT, e_lo=elo, e_hi=ehi, k_lo=klo, k_hi=khi, r_lo=RLO, r_hi=RHI, eps=EPS, ek=EK,
                E_el_pred=(VOL[None] * P).sum(1).tolist(), E_el_gt=(VOL[None] * G).sum(1).tolist(),
                E_ke_pred=KP.sum(1).astype(float).tolist(), E_ke_gt=KG.sum(1).astype(float).tolist(), r_med=rmed,
