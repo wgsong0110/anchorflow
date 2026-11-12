@@ -9923,3 +9923,21 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 - **추정 (확인 안 함)**: 기본 e^-x (expo 500) 는 거의 0/1 이고 S 는 정답 1 cm 격자 몫의 질량 평균이라 앞면 둘레에 0~1 값이 넓게 생김 -- 어느 쪽이 정답 구속에 가까운지는 안 봄.
 ### CM115.3 출력·실행
 - R2 lbours/wolfcv/startpt3.md·startpt3.png, lbours/wolfcv/startpt/ (r9_1·r5_1 sp/·cmd·log, startpt3_*.json, an3.log). SSH 1 번 (12:48 UTC qstat: 133078 R 67:54 + pbs_attach 띄움), 뒤는 R2 launch.txt (끝에 stop). 노드 / ·/tmp 안 씀.
+
+## CM116. H9 대 H9 --w5s 0 (S_구속 끔) wolf 50 프레임 비교 -- 사용자 결정 전 비교용 진단, 기본 판 안 바꿈 (조정자 11-12) -- 가지 k1new, 커밋 df71c4d (첫 띄움, 덤프에 F 없어 렌더 실패) · f4b1cbb (--dump_F, 본 판) · exe/w5s0_an.py·w5s0_compose.py (로컬 합성), 묶음 startpt 단계 run4·vid4·an4 (PBS 잡 133078 ece-a6gpu9), 결과 R2 lbours/wolfcv/w5s0.md, 영상 result/anchorflow/v20261009/fem_wolf_w5s0_cmp.mp4
+### CM116.0 판
+- w9_1 = H9 (wolfh12/h8_1 명령) · w0_1 = 같은 명령에서 --w5s 1 -> 0 만, 각 1 판 50 프레임, 결과 불변 기록 감싸개 (절 CM113, f1~f50) + 렌더 덤프 (노드에서 렌더 뒤 지움).
+### CM116.1 결과
+| 항목 | H9 | H9 --w5s 0 |
+|---|---|---|
+| 오차 % | 4.368 | 4.448 |
+| 질량중심 f30 · f50 mm (정답 93 · 53) | 59 · 24 | 71 · 27 |
+| r < 0.7 칸 f10~30 합 · 최대 | 12782 · 1200 | 11586 · 1100 |
+| 부분 구속 꼭짓점 f12 · f30 | 20457 · 6257 | 4306 · 1434 |
+| 프레임 ms 평균 · 최대 (기록 몫 포함) | 12.09 · 16.18 | 11.64 · 15.82 |
+- 첫 띄움도 같은 경향 (오차 4.320 · 4.469, f50 25 · 26 mm, r<0.7 합 12993 · 11012).
+### CM116.2 결론
+- **확인한 것**: --w5s 0 은 부분 구속 꼭짓점을 H5 수준으로 줄이고 f30 높이 +12 mm, r<0.7 칸 −9~15 %, 프레임 −0.4 ms; 오차는 +0.08 %p (두 번 모두), f50 높이는 둘 다 정답의 절반 -- 무너짐은 그대로.
+- **추정 (확인 안 함)**: 각 1 판이라 흩어짐보다 큰 차이는 오차·f30 높이·부분 구속 수로 보이고, S_구속은 무너짐의 주원인이 아님.
+### CM116.3 출력·실행
+- R2 lbours/wolfcv/w5s0.md, lbours/wolfcv/startpt/ (w9_1·w0_1: cmd·log·summary·fem.jsonl·sp/·vj/fem_wolf.mp4, w5s0_an.json, an4.log), 영상 result/anchorflow/v20261009/fem_wolf_w5s0_cmp.mp4 (2400x970 yuv420p faststart 51 프레임, 디코드 확인). SSH 1 번 (14:48 UTC qstat: 133078 R 69:54 + pbs_attach 띄움), 뒤는 R2 launch.txt (끝에 stop). 노드 / ·/tmp 안 씀.
