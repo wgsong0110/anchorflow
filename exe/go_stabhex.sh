@@ -56,7 +56,7 @@ chk) jobs_of | while read -r n s k rep dp; do mkdir -p $O/$n; mkcmd $n $s $k $dp
 s0k) PIDS=""; for sk in lego:1 mic:2 ficus:4; do s=${sk%:*}; k=${sk#*:}; n=smoke_${s}_N$k; rm -rf $O/$n; mkdir -p $O/$n; mkcmd $n $s $k 1 3 1 "AF_E1_DG=1 AF_G1_DG=1 " $O/$n > $O/$n/cmd.txt
        g=$(claim_wait $$); runone $n $g & PIDS="$PIDS $!"; sleep 20; done; wait $PIDS
      for n in smoke_lego_N1 smoke_mic_N2 smoke_ficus_N4; do say "$n 확인: $($PY -c "import numpy as np; z=np.load('$O/$n/res.npz'); print('프레임', int(z['frames_done']), 'x', z['x'].shape, 'nan', float(np.nanmax(z['stats'][:, 2])), 'it', z['it'].tolist(), 'K', int(z['substeps']), z['stop'])" 2>&1 | tail -1 | cut -c1-400)"; done;;
-run|run2) if [ "$STG" = run2 ]; then for d in $O/*/DONE; do n_=$(dirname $d); grep -q "out of memory" $n_/log.txt 2>/dev/null && { mv $d $n_/OOM_was_DONE; say "$(basename $n_) 메모리 부족 판 다시 (그래프 없이)"; }; done; fi
+run|run2) if [ "$STG" = run2 ]; then for d in $O/*/DONE; do n_=$(dirname $d); grep -q "capture_end" $n_/log.txt 2>/dev/null && grep -q "CUDA error: out of memory" $n_/log.txt && { mv $d $n_/OOM_was_DONE; say "$(basename $n_) 그래프 캡처 메모리 부족 판 다시 (그래프 없이)"; }; done; fi
      for n in $(jobs_of | awk '{print $1}'); do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk 먼저"; exit 1; }; done
      rm -f $O/go_run.END
      ( while [ ! -f $O/go_run.END ]; do sleep 300; ls $O/*/DONE 2>/dev/null | wc -l | xargs -I{} echo "끝난 판 {} / $(jobs_of | wc -l) $(date '+%F %T')" | rclone rcat $R/progress.txt

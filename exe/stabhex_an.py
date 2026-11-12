@@ -46,7 +46,7 @@ def hex_load(d):
     rows = {k: z["stats"][:, i] for i, k in enumerate(keys)}
     st = "끝" if (len(z["x"]) >= 61 and np.nanmax(rows["nan"]) == 0 and np.isfinite(z["x"]).all()) else "발산"
     stop = str(z["stop"]) if "stop" in z.files else ""
-    if st == "발산" and "out of memory" in stop and np.isfinite(z["x"]).all() and np.nanmax(rows["nan"]) == 0:
+    if st == "발산" and "CUDA error: out of memory" in stop and len(z["x"]) <= 3:      # 그래프 캡처 메모리 부족 (첫 캡처 = 프레임 2); 용량 넘침 다시 할당의 'Tried to allocate' 는 발산 (실행기 관례)
         st = "메모리부족"                                           # 큰 N 의 프레임 CUDA 그래프 캡처가 GPU 메모리 부족 -- 발산 아님 (안정 판정·N_min 에서 뺌)
     it = z["it"] if "it" in z.files else np.zeros((0, 6))
     r = dict(status=st, rows=rows, X=z["x"], frames=int(len(z["x"]) - 1), stop=str(z["stop"]) if "stop" in z.files else "",
