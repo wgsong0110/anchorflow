@@ -387,6 +387,10 @@ def _analyze(s, W, t):
                         nact=int(act.sum()), pm_cnt={int(v): int(((pm == v) & act).sum()) for v in torch.unique(pm[act]).tolist()[:8]},
                         sk_q=[float(q) for q in torch.quantile(sk[act].float(), torch.tensor([0.0, 0.1, 0.5, 0.9, 1.0], device=dev))] if bool(act.any()) else None, nw8=int(((w8 >= 0) & act).sum()),
                         sumabs={nm: float(g_[act].abs().sum()) for nm, g_ in T})
+        if si == 1 and fr in (5, 8, 12, 20):                                                   # 노드 진단 (작음): T 확인용
+            np.savez_compressed(os.path.join(OUT[0], f"nodes_f{fr:03d}.npz"), sk=sk.float().cpu().numpy(), pm=pm.cpu().numpy(), me=me.float().cpu().numpy(), mn=mn.float().cpu().numpy(),
+                                en=en.float().cpu().numpy(), gn=gn.float().cpu().numpy(), acc=acc.float().cpu().numpy(), w8=w8.cpu().numpy(), names=np.array(names), it2=it2,
+                                sk_attr=s.sk[:nn].float().cpu().numpy(), pm_attr=s.pm[:nn].cpu().numpy())
         if si == 1:
             ce = ((w8[nidc] >= 0).sum(1)).short(); ct = (((tn[nidc] - 1).abs() > 1e-3).sum(1)).short()
     terms = ["관성", "중력", "질량하한"] + names + ["합", "풀이기잔차"]
