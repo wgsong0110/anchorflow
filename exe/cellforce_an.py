@@ -89,11 +89,12 @@ for run in RUNS:
             G = {g: np.concatenate([FR[f][sl][g] for f in pf]) for g in GR}
             r = np.concatenate([FR[f]["r"] for f in pf]); lay = np.concatenate([FR[f]["lay"] for f in pf])
             ne = np.concatenate([FR[f]["ne"] for f in pf]); nt = np.concatenate([FR[f]["nt"] for f in pf])
-            o[sl] = dict(all=stats(G, np.ones(len(r), bool)), rbin={}, layer={}, rbin_inner={})
+            o[sl] = dict(all=stats(G, np.ones(len(r), bool)), rbin={}, layer={}, rbin_inner={}, rbin_free={})
             for i, lb in enumerate(RL):
                 m = (r >= RE[i]) & (r < RE[i + 1])
                 o[sl]["rbin"][lb] = stats(G, m)
-                o[sl]["rbin_inner"][lb] = stats(G, m & (ne == 0) & (nt == 0))             # 확장 묶인 노드·바닥 T ≠ I 노드 없는 칸만
+                o[sl]["rbin_inner"][lb] = stats(G, m & (ne == 0) & (nt == 0))             # 확장 묶인 노드·T ≠ I (방출 구속·바닥 고착·고정) 노드 없는 칸만
+                o[sl]["rbin_free"][lb] = stats(G, m & (nt == 0))                          # T = I 노드만 (확장 묶인 외부 노드 허용)
             for i, lb in enumerate(LL):
                 m = (lay == i) if i < 5 else (lay >= 5)
                 o[sl]["layer"][lb] = stats(G, m)
@@ -106,6 +107,7 @@ for run in RUNS:
             s_[sl] = {g: float(np.median(G[g])) for g in GR}
             m = R["r"] < 0.9
             s_[sl + "_r<0.9"] = {g: float(np.median(G[g][m])) for g in GR} if m.any() else None
+        s_["frac_nt"] = float((R["nt"] > 0).mean()); s_["frac_ne"] = float((R["ne"] > 0).mean())
         s_["n"] = int(len(R["r"])); s_["n_r<0.9"] = int((R["r"] < 0.9).sum()); s_["r_med"] = float(np.median(R["r"]))
         dif = np.abs(R["끝"]["합"] - R["끝"]["검사"]); ref = np.abs(R["끝"]["검사"]).max()
         s_["chk"] = [float(dif.max()), float(ref)]
