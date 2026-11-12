@@ -17,7 +17,7 @@ FB, FR = f"{FD}/NotoSansCJKkr-Bold.otf", f"{FD}/NotoSansCJKkr-Regular.otf"
 fm.fontManager.addfont(FR); plt.rcParams["font.family"] = "Noto Sans CJK KR"; plt.rcParams["axes.unicode_minus"] = False
 J = json.load(open(fj)); R = J["range"]; T = J["T"]
 CW, HEAD, BARH, TOP = 460, 74, 78, 50
-cols = [("plain", "일반 3DGS", None), ("sum", "합 (관성+탄성+중력+장벽+정규화)", "E_sum"), ("in", "관성 ½m|y−ŷ|²/τ²", "E_in"),
+cols = [("plain", "일반 3DGS", None), ("sum", "합 (관성+탄성+중력+장벽+정규화)", "E_sum"), ("in", "관성 ½m|y − y^|²/τ²", "E_in"),
         ("el", "탄성 V_q ψ(F_q)", "E_el"), ("rb", "장벽 + 정규화 (고스트 질량)", "E_rb")]
 fr = {}
 for k, _, _ in cols:
@@ -26,19 +26,35 @@ for k, _, _ in cols:
     subprocess.run([FF, "-v", "error", "-y", "-i", f"{vd}/{k}.mp4", f"{d}/%04d.png"], check=True)
     fr[k] = sorted(glob.glob(f"{d}/*.png"))
     assert len(fr[k]) == T, (k, len(fr[k]), T)
+# 같은 자르기 상자 (일반 3DGS 전 프레임에서 배경과 다른 픽셀의 합집합 + 여백) 를 모든 칸·프레임에
+BOX = None
+for p_ in fr["plain"]:
+    a_ = np.asarray(Image.open(p_).convert("RGB")).astype(np.int16)
+    bg = a_[0, 0]
+    m_ = np.abs(a_ - bg).max(2) > 12
+    if m_.any():
+        ys_, xs_ = np.nonzero(m_); b_ = (xs_.min(), ys_.min(), xs_.max() + 1, ys_.max() + 1)
+        BOX = b_ if BOX is None else (min(BOX[0], b_[0]), min(BOX[1], b_[1]), max(BOX[2], b_[2]), max(BOX[3], b_[3]))
 w0, h0 = Image.open(fr["plain"][0]).size
-CH = round(CW * h0 / w0); CH -= CH % 2
+if BOX is None:
+    BOX = (0, 0, w0, h0)
+mx_, my_ = int(0.06 * (BOX[2] - BOX[0])) + 4, int(0.06 * (BOX[3] - BOX[1])) + 4
+BOX = (max(0, BOX[0] - mx_), max(0, BOX[1] - my_), min(w0, BOX[2] + mx_), min(h0, BOX[3] + my_))
+bw_, bh_ = BOX[2] - BOX[0], BOX[3] - BOX[1]
+CH = min(560, round(CW * bh_ / bw_)); CH -= CH % 2
+IW = min(CW, round(CH * bw_ / bh_))
+print(f"자르기 {BOX} (원래 {w0}x{h0})", flush=True)
 NOTE = ["입자로 나누기 -- 노드 항 (관성·중력): 입자 B-스플라인 가중 w_pn 비례 (노드마다 Σ_p w_pn 으로 나눔) · 가우스 점 항 (탄성): 그 팔분 칸 입자에 부피 비례",
         "(입자 없는 팔분 칸 몫은 같은 칸 입자에) · 장벽: 표본점 (팔분 칸) 입자에 부피 비례 · 면 항 (정규화): 양쪽 칸에 반씩 나눈 뒤 칸 안 입자에 부피 비례.",
-        "값 = 프레임 (마지막 걸음) 끝 해. y = HHT 풀이 변수, ŷ = 관성 예측, 중력 = −m g·(걸음 끝 − 걸음 시작 노드 변위), 탄성 = Hencky ψ (커밋 뒤 F_q).",
-        "켜진 정규화 항: 고스트 질량 ½ (k_M/τ²) w_F (y−ŷ)ᵀG(y−ŷ) 만 (wolf κ 0 이라 P1X 강성 k = 0, 가벼움 벌점 0; 확장 B-스플라인은 제약이라 에너지에서 뺌).",
+        "값 = 프레임 (마지막 걸음) 끝 해. y = HHT 풀이 변수, y^ = 관성 예측, 중력 = −m g·(걸음 끝 − 걸음 시작 노드 변위), 탄성 = Hencky ψ (커밋 뒤 F_q).",
+        "켜진 정규화 항: P1X 면 고스트 질량 ½ (k_M/τ²) (y − y^)^T G (y − y^) 만 (wolf κ 0 이라 P1X 강성 k = 0, 가벼움 벌점 0; 확장 B-스플라인은 제약이라 에너지에서 뺌).",
         "색 범위는 전 프레임 공통 고정 (프레임별 정규화 없음). 프레임 0 = 걸음 전 (회색)."]
 _rc = [r for r in J["rec"] if r]
 if _rc:
     _k = max(abs(r["face"]["k"]) for r in _rc); _kM = _rc[-1]["face"]["kM"]
     _Ek = sum(abs(r["face"]["E_k"]) for r in _rc); _Em = sum(r["face"]["E_m"] for r in _rc)
     NOTE.append(f"실측 (이 판 기록): 강성 k 최대 {_k:.3g}, 강성 몫 |합| 전 프레임 {_Ek:.3g} J · 고스트 질량 k_M {_kM:.3g} kg, 질량 몫 합 전 프레임 {_Em:.3g} J · "
-                f"면 수 {_rc[-1]['face']['nface']} 중 가중 > 0 {_rc[-1]['face']['nface_wpos']} (프레임 {_rc[-1]['f']}).")
+                f"P1X 면 수 프레임 1 {_rc[0]['face']['nface']} -> 프레임 {_rc[-1]['f']} {_rc[-1]['face']['nface']}, 면 가중 " + ("g5w" if _rc[-1]['face']['fwp'] else "없음 (모두 1; κ 0 이라 lightg3 꺼짐)") + ".")
 NH = 30 * len(NOTE) + 16
 W = 5 * CW; H = TOP + HEAD + CH + BARH + NH
 print(f"프레임 {T} 칸 {CW}x{CH} 전체 {W}x{H}", flush=True)
@@ -82,7 +98,7 @@ for t in range(T):
         else:
             val = f"프레임 {t} · 전체 합 {J[ek][t]:.4g} J"
         dr.text((x + 10, TOP + 38), val, fill=(200, 0, 0), font=f3)
-        im.paste(Image.open(fr[ck][t]).convert("RGB").resize((CW, CH), Image.LANCZOS), (x, TOP + HEAD))
+        im.paste(Image.open(fr[ck][t]).convert("RGB").crop(BOX).resize((IW, CH), Image.LANCZOS), (x + (CW - IW) // 2, TOP + HEAD))
         if ck in BARS:
             im.paste(BARS[ck], (x, TOP + HEAD + CH))
     for i, ln in enumerate(NOTE):

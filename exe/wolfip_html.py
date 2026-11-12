@@ -30,8 +30,22 @@ PX, PY = rng(Z["psi"][1:]), rng(Z["reg"][1:])
 CX, CY = rng(Z["cel"]), rng(Z["creg"])
 d = f"{TMP}/img"; os.makedirs(d, exist_ok=True)
 for p in glob.glob(f"{d}/*.jpg"): os.remove(p)
-subprocess.run([FF, "-v", "error", "-y", "-i", pv, "-vf", "scale=360:-2", "-q:v", "4", f"{d}/%04d.jpg"], check=True)
-imgs = ["data:image/jpeg;base64," + base64.b64encode(open(p, "rb").read()).decode() for p in sorted(glob.glob(f"{d}/*.jpg"))]
+for p in glob.glob(f"{d}/*.png"): os.remove(p)
+subprocess.run([FF, "-v", "error", "-y", "-i", pv, f"{d}/%04d.png"], check=True)
+from PIL import Image
+pngs = sorted(glob.glob(f"{d}/*.png")); BOX = None
+for p in pngs:                                                                     # 모든 프레임 같은 자르기 상자 (배경과 다른 픽셀 합집합 + 여백)
+    a = np.asarray(Image.open(p).convert("RGB")).astype(np.int16); m = np.abs(a - a[0, 0]).max(2) > 12
+    if m.any():
+        ys, xs = np.nonzero(m); b = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
+        BOX = b if BOX is None else (min(BOX[0], b[0]), min(BOX[1], b[1]), max(BOX[2], b[2]), max(BOX[3], b[3]))
+w0, h0 = Image.open(pngs[0]).size; BOX = BOX or (0, 0, w0, h0)
+mx, my = int(0.06 * (BOX[2] - BOX[0])) + 4, int(0.06 * (BOX[3] - BOX[1])) + 4
+BOX = (max(0, BOX[0] - mx), max(0, BOX[1] - my), min(w0, BOX[2] + mx), min(h0, BOX[3] + my))
+imgs = []
+for i, p in enumerate(pngs):
+    im = Image.open(p).convert("RGB").crop(BOX); im = im.resize((400, max(2, round(400 * im.size[1] / im.size[0]))), Image.LANCZOS)
+    im.save(f"{d}/{i:04d}.jpg", quality=85); imgs.append("data:image/jpeg;base64," + base64.b64encode(open(f"{d}/{i:04d}.jpg", "rb").read()).decode())
 assert len(imgs) == T, (len(imgs), T)
 D = dict(T=T, n=n, N=J["N"], px=PX, py=PY, cx=CX, cy=CY, coff=[int(q) for q in Z["coff"]], ncell=J["cell_n"],
          a_x=b64(q16(Z["psi"], *PX)), a_y=b64(q16(Z["reg"], *PY)), b_x=b64(q16(Z["cel"], *CX)), b_y=b64(q16(Z["creg"], *CY)),
