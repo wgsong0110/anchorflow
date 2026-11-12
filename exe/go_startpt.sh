@@ -13,6 +13,7 @@ export TMPDIR=/dev/shm/dkta/tmp; mkdir -p $TMPDIR $O /dev/shm/dkta/cache
 export PYTHONUTF8=1 OMP_NUM_THREADS=8 XDG_CACHE_HOME=/dev/shm/dkta/cache CUPY_CACHE_DIR=/dev/shm/dkta/cache/cupy_startpt
 PY=/home/dkta/.conda/envs/af/bin/python
 L=$O/go_$STG.log; say() { echo "[go $(date '+%F %T')] $*" >> $L; rclone copyto $L $R/go_$STG.log -q; }
+RB=r2:storage/result/anchorflow/lbours
 say "시작 $(hostname) 커밋 $H 단계 $STG; /dev/shm $(df -h /dev/shm | tail -1 | awk '{print $4}') /home $(df -h /home | tail -1 | awk '{print $4}') 남음; 계산 프로세스 $(nvidia-smi --query-compute-apps=pid --format=csv,noheader | grep -c .)"
 mkcmd() {  # 이름 원본 앞 감싸개 문자열 [프레임]
   local n=$1 s=$2 pre=$3 fr=$4; mkdir -p $O/$n
@@ -45,6 +46,13 @@ runone4() { local n=$1 g; g=$(claim_wait $BASHPID); say "$n 카드 $g 시작"
   local rc=$?; rm -f $CL/$g
   say "$n rc=$rc $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200) 칸 파일 $(ls $O/$n/sp 2>/dev/null | wc -l) 덤프 $(stat -c %s $O/$n/pred.pt 2>&1)"
   rclone copy $O/$n $R/$n -q --exclude "pred.pt" --transfers 8; say "$n R2 올림 (pred.pt 빼고)"; }
+Q=/home/dkta/work/convabl; RQ=r2:storage/result/anchorflow/lbours/wolfcv/convabl
+runone5() { local n=$1 g; g=$(claim_wait $BASHPID); say "$n 카드 $g 시작"
+  rm -rf $Q/$n/sp; mkdir -p $Q/$n
+  env CUDA_VISIBLE_DEVICES=$g timeout 14400 bash -c "$(cat $Q/$n/cmd.txt)" < /dev/null > $Q/$n/log.txt 2>&1
+  local rc=$?; rm -f $CL/$g
+  say "$n rc=$rc $(grep -ah '롤아웃\]' $Q/$n/log.txt | tail -1 | cut -c1-200) 칸 파일 $(ls $Q/$n/sp 2>/dev/null | wc -l) 덤프 $(stat -c %s $Q/$n/pred.pt 2>&1) $(grep -a 'rror' $Q/$n/log.txt | tail -1 | cut -c1-200)"
+  rclone copy $Q/$n $RQ/$n -q --transfers 8; say "$n R2 올림 (덤프 포함, 노드 /home 에 남김)"; }
 watch() { local END=$1; shift
   ( while [ ! -f $END ]; do sleep 120; for n in "$@"; do [ -f $O/$n/log.txt ] && { { tail -c 3000 $O/$n/log.txt; echo; echo "칸 파일 $(ls $O/$n/sp 2>/dev/null | wc -l) 개"; tail -c 1500 $O/$n/spinfo.json 2>/dev/null; } | rclone rcat $R/$n/log_tail.txt; }; done; done ) & }
 case $STG in
@@ -89,6 +97,28 @@ vid4) GTW=/dev/shm/dkta/ag_data/gt_wolf
 an4) $PY -u exe/w5s0_an.py $O w9_1 w0_1 > $O/an4.log 2>&1; say "an4 rc=$? $(tail -4 $O/an4.log | tr '\n' ' ' | cut -c1-900)"
      rclone copy $O $R --include "an4.log" --include "w5s0_an.json" -q
      for n in w9_1 w0_1; do rm -f $O/$n/pred.pt; done; say "pred.pt 지움 (노드 /dev/shm 내 덤프, R2 에는 안 올림)";;
+cvchk) mkdir -p $Q; H8=$(rclone cat $RB/wolfh12/h8_1/cmd.txt | tr -d '\n' | sed -e 's/  */ /g' -e 's/$/ /')
+     B5=$(rclone cat $RB/wolfbar/b5_1/cmd.txt | tr -d '\n' | sed -e 's/  */ /g' -e 's/$/ /' -e 's# -u exe/wolfbar_wrap.py --wbdg 1 --wbks 1 exe/speed13_wrap.py # -u exe/speed13_wrap.py #' -e 's# --bar_cnt # --bar_cnt --dump --dump_part --dump_F #')
+     mk() { local n=$1 c="$2"; mkdir -p $Q/$n; echo "$c" | sed -e "s#^ *#AF_SP_FR=1,50 #" -e "s# -u exe/# -u exe/startpt_wrap.py --sp 1 exe/#" -e "s# --out [^ ]* \$# --out $Q/$n#" > $Q/$n/cmd.txt; rclone copyto $Q/$n/cmd.txt $RQ/$n/cmd.txt -q; say "$n: $(cut -c1-8000 $Q/$n/cmd.txt)"; }
+     mk a9 "$H8"
+     mk b9 "$(echo "$H8" | sed -e 's# --tb 16.7 --tb_m 0.8 --tb_w 2 # #' -e 's# --newton 6 # --newton 60 #' -e 's# --cg 5 # --cg 100 #' -e 's# --tolN 1e-2 # --tolN 1e-4 #' -e 's# --tolP 1e-1 # --tolP 1e-3 #' -e 's# --xit_from 2 # #' -e 's# --xg 1 # #')"
+     mk c9 "$(echo "$H8" | sed -e 's# --w8e 1 # --w8e 0 #')"
+     mk d5 "$B5";;
+cvrun) for n in a9 b9 c9 d5; do [ -s $Q/$n/cmd.txt ] || { say "$n cmd 없음"; exit 1; }; done
+     rm -f $Q/go_cvrun.RUNEND
+     ( while [ ! -f $Q/go_cvrun.RUNEND ]; do sleep 120; for n in a9 b9 c9 d5; do [ -f $Q/$n/log.txt ] && { tail -c 2500 $Q/$n/log.txt; echo; echo "칸 파일 $(ls $Q/$n/sp 2>/dev/null | wc -l)"; } | rclone rcat $RQ/$n/log_tail.txt; done; done ) &
+     PIDS=""; for n in a9 b9 c9 d5; do runone5 $n & PIDS="$PIDS $!"; sleep 20; done; wait $PIDS; touch $Q/go_cvrun.RUNEND;;
+cvvid) GTW=/dev/shm/dkta/ag_data/gt_wolf
+     for n in a9 b9 c9; do
+       ( g=$(claim_wait $BASHPID); V=$Q/$n/vj; HD=/dev/shm/dkta/convabl_vid/$n; mkdir -p $V $HD
+         $PY -u exe/lb_roll_to_h5.py --dump $Q/$n/pred.pt --traj $GTW --out $HD/h5 > $V/h5.log 2>&1
+         CUDA_VISIBLE_DEVICES=$g $PY -u exe/lb_render.py --sim $HD/h5 --config $GTW/config.json --shape wolf --out $V/fem_wolf.mp4 --frame_label 0 --caption " " < /dev/null > $V/r.log 2>&1
+         rm -f $CL/$g; rm -rf $HD
+         say "$n 영상 $(stat -c %s $V/fem_wolf.mp4 2>&1) $(tail -1 $V/r.log | cut -c1-160) $(tail -1 $V/h5.log | cut -c1-160)"
+         rclone copy $V $RQ/$n/vj -q ) & sleep 5
+     done; wait;;
+cvan) $PY -u exe/convabl_an.py $Q a9 b9 c9 d5 > $Q/cvan.log 2>&1; say "cvan rc=$? $(tail -5 $Q/cvan.log | tr '\n' ' ' | cut -c1-1500)"
+     rclone copy $Q $RQ --include "cvan.log" --include "convabl_an.json" -q;;
 an2) $PY -u exe/startpt_an.py $O q9_1 q5_1 > $O/an2a.log 2>&1; say "an2a rc=$?"
      $PY -u exe/startpt2_an.py $O q9_1 q5_1 > $O/an2.log 2>&1; say "an2 rc=$? $(tail -3 $O/an2.log | tr '\n' ' ' | cut -c1-600)"
      rclone copy $O $R --include "an2*.log" --include "startpt_q*.json" --include "startpt2_*.json" -q;;

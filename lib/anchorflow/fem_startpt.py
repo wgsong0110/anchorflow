@@ -20,6 +20,7 @@ OUT = ["."]
 KS = 4
 EV = 4
 NS = 48
+KSG = 8
 FR = [3, 12]
 LOG = [None]
 NBK = 8
@@ -86,6 +87,18 @@ __global__ void sp_snap1(const int* IP, const float* b, float* o, int* flg, int 
     if (n >= IP[9]) return;
     o[n] = b[n];
 }
+// 절 CM117: 평가별 |r0|² (풀이기 잔차, 안 접은 것) -> gs[idx] (먼저 0 으로; 둘 다 AF_SKIP 지킴)
+__global__ void sp_g0z(double* gs, int idx, const int* S) { if (cfs(S)) return; gs[idx] = 0.0; }
+__global__ void sp_g2(const int* IP, const float* r0, double* gs, int idx, const int* S) {
+    if (cfs(S)) return;
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    double v = 0.0;
+    if (n < IP[9]) { float a = r0[n*3], b = r0[n*3+1], c = r0[n*3+2]; v = (double)a*a + (double)b*b + (double)c*c; }
+    for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
+    if ((threadIdx.x & 31) == 0 && v != 0.0) atomicAdd(&gs[idx], v);
+}
+__global__ void sp_gclr(double* gs, int n, int* gc) { int i = blockIdx.x*blockDim.x + threadIdx.x; if (i < n) { gs[i] = -1.0; gc[i] = 0; } }
+__global__ void sp_gcnt(int* gc, int idx, const int* S) { if (cfs(S)) return; gc[idx] += 1; }
 __global__ void sp_clr(int* flg, int n, int* itb, int m) { int i = blockIdx.x*blockDim.x + threadIdx.x; if (i < n) flg[i] = 0; if (i < m) itb[i] = -1; }
 // 걸음 x 평가 칸으로: 작업 통 -> acc[slot], n·η, 번호
 __global__ void sp_fin(const int* IP, int capN, int nbk, const double* acc2, double* accs, const float* eta, float n0, float n1, float n2, float* en, int* itb, int slot, int code, float* itf, float it2, const int* S) {
@@ -130,7 +143,7 @@ class Buf:
     def __init__(s):
         import cupy as cp
         s.mod = cp.RawModule(code=SRC)
-        s.fn = {n: s.mod.get_function(n) for n in ("cf_reset", "cf_delta", "cf_fin", "cf_g0", "cf_node", "cf_cp", "cf_frame", "sp_snap", "sp_snap1", "sp_clr", "sp_fin")}
+        s.fn = {n: s.mod.get_function(n) for n in ("cf_reset", "cf_delta", "cf_fin", "cf_g0", "cf_node", "cf_cp", "cf_frame", "sp_snap", "sp_snap1", "sp_clr", "sp_fin", "sp_g0z", "sp_g2", "sp_gclr", "sp_gcnt")}
         s.capN = 0
         s.kstep = -1; s.evi = 0; s.win = False; s.skip = None; s.ns = 0; s.phase = 0; s.lsit = 0
 
@@ -152,6 +165,8 @@ class Buf:
         s.itf = torch.zeros(KS * EV, device=dev, dtype=torch.float32)
         s.sn = torch.zeros(KS, NS, capN, device=dev, dtype=torch.float32)
         s.flg = torch.zeros(KS * NS, device=dev, dtype=torch.int32)
+        s.gs = torch.full((KSG * 2,), -1.0, device=dev, dtype=torch.float64)                 # 절 CM117: 걸음 x (첫 평가, 마지막 평가) |r0|²
+        s.gc = torch.zeros(KSG * 2, device=dev, dtype=torch.int32)                           #           걸음별 평가 수
         INFO["n_alloc"] += 1
 
     def go(s, name, n, args, b=256):
@@ -237,7 +252,10 @@ def _pre(sv, W, name, args):
     capN = W.capN
     if name == "rt_reset":                                                                     # 프레임 시작
         W.kstep, W.evi, W.win, W.ns, W.phase = -1, 0, False, 0, 0
-        return lambda: W.go("sp_clr", KS * NS, (P(W.flg), i32(KS * NS), P(W.itb), i32(KS * EV)), 256)
+        def _p():
+            W.go("sp_clr", KS * NS, (P(W.flg), i32(KS * NS), P(W.itb), i32(KS * EV)), 256)
+            W.go("sp_gclr", KSG * 2, (P(W.gs), i32(KSG * 2), P(W.gc)), 64)
+        return _p
     S = _skip(sv, W)
     nr, pn = _fl(sv)
     NR = [f32(q) for q in nr]
@@ -283,6 +301,11 @@ def _pre(sv, W, name, args):
         def _p():
             if k < KS and e < EV:
                 W.go("cf_g0", capN, (IPp, args[-1], *NR, P(W.gn[k * EV + e]), S))
+            if 0 <= k < KSG:                                                                   # 절 CM117: |r0|² 첫·마지막 평가
+                for idx in ((2 * k, 2 * k + 1) if e == 0 else (2 * k + 1,)):
+                    W.go("sp_g0z", 1, (P(W.gs), i32(idx), S), 1)
+                    W.go("sp_g2", capN, (IPp, args[-1], P(W.gs), i32(idx), S), 256)
+                W.go("sp_gcnt", 1, (P(W.gc), i32(2 * k + 1), S), 1)
             W.evi += 1; W.win = False
         return _p
     if W.win and _has_ptr(args, fp):                                                           # 창 안 f 쓰는 커널
@@ -535,7 +558,8 @@ def _analyze(s, W, t):
     out["terms"] = np.array(["관성", "중력", "질량하한"] + names + ["합", "풀이기잔차"])
     os.makedirs(os.path.join(OUT[0], "sp"), exist_ok=True)
     np.savez_compressed(os.path.join(OUT[0], "sp", f"f{fr:03d}.npz"), steps=np.array(json.dumps(steps, ensure_ascii=False)), **out)
-    o.update(ncell=int(len(hs)), steps=steps, snapdrop=INFO["n_snapdrop"])
+    gs = W.gs.cpu().tolist(); gc = W.gc.cpu().tolist()
+    o.update(ncell=int(len(hs)), steps=steps, snapdrop=INFO["n_snapdrop"], g2=[[gs[2 * k], gs[2 * k + 1], gc[2 * k + 1]] for k in range(KSG) if gs[2 * k] >= 0])
     return o
 
 
