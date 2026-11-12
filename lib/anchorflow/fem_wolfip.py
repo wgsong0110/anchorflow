@@ -297,7 +297,7 @@ def measure(s, t):
     os.makedirs(os.path.join(ST["out"], "ip"), exist_ok=True)
     np.savez(os.path.join(ST["out"], "ip", f"f{fr:03d}.npz"), e_in=orig(p_in), e_el=orig(p_el), e_gr=orig(p_gr), e_bar=orig(p_bar), e_reg=orig(p_reg), psi=orig(psi_p),
              el_c=el_c.float().cpu().numpy(), reg_c=reg_c.float().cpu().numpy(), bar_c=torch.zeros(nc, device=dev, dtype=d).index_add_(0, torch.arange(nq, device=dev) // 8, e_bar_q).float().cpu().numpy(),
-             ncell_p=Vcp.gt(0).sum().cpu().numpy())
+             ncell_p=Vcp.gt(0).sum().cpu().numpy(), **_xv(s, cp_, nc, orig))
     fwv = (s.g5w[:nc * 3].view(nc, 3) if getattr(s, "g5w", None) is not None else torch.ones(nc, 3, device=dev))
     fm = s.g3fm[:nc].long() if getattr(s, "g3fm", None) is not None else torch.zeros(nc, dtype=torch.long, device=dev)
     face = torch.stack([(fm >> b_) & 1 for b_ in range(3)], 1).bool()
@@ -313,6 +313,24 @@ def measure(s, t):
     with open(os.path.join(ST["out"], "wolfip.jsonl"), "a") as f_:
         f_.write(json.dumps(rec, ensure_ascii=False) + "\n")
     return rec
+
+
+def _xv(s, cp_, nc, orig):
+    """색 기준용 (읽기만): 표본 입자 (뷰어와 같은 번호 = default_rng(0) 의 2만 개, 원래 순서) 의 프레임 끝 위치·속도,
+    칸 (이 프레임 칸 순서, el_c·reg_c 와 같은 번호) 의 중심 = 칸 입자 질량 가중 평균 위치, 평균 속도 = 칸 입자 질량 가중 평균 속도 벡터; 바닥 법선·높이 기준."""
+    N = s.N
+    if ST.get("idx") is None or len(ST["idx"]) == 0:
+        ST["idx"] = np.sort(np.random.default_rng(0).choice(N, min(20000, N), replace=False))
+    x = s.x.reshape(-1, 3).double(); v = s.v.reshape(-1, 3).double(); m = s.m.double()
+    xo = np.stack([orig(x[:, a]) for a in range(3)], 1); vo = np.stack([orig(v[:, a]) for a in range(3)], 1)
+    M = torch.zeros(nc, device=x.device, dtype=torch.float64).index_add_(0, cp_, m)
+    Md = torch.where(M > 0, M, torch.ones_like(M))[:, None]
+    cx = torch.zeros(nc, 3, device=x.device, dtype=torch.float64).index_add_(0, cp_, m[:, None] * x) / Md
+    cv = torch.zeros(nc, 3, device=x.device, dtype=torch.float64).index_add_(0, cp_, m[:, None] * v) / Md
+    FL = s.floor or {}
+    return dict(sidx=ST["idx"].astype(np.int32), sx=xo[ST["idx"]].astype(np.float32), sv=vo[ST["idx"]].astype(np.float32),
+                cx=cx.float().cpu().numpy(), cv=cv.float().cpu().numpy(), cm=M.float().cpu().numpy(),
+                fl_n=np.array(FL.get("NR", [0.0, 0.0, 1.0]), np.float32), fl_pn=np.float32(FL.get("PN", 0.0)))
 
 
 def install(out):

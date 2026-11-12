@@ -38,6 +38,30 @@ run)
   rc=$?; rm -f $CL/$G; touch $DD/run/.done
   say "run rc=$rc $(grep -ah '롤아웃\]' $DD/run/log.txt | tail -1 | cut -c1-200) ip $(ls $DD/run/ip 2>/dev/null | wc -l) 개, 오류 $(cat $DD/run/wolfip_err.txt 2>/dev/null | grep -c '^t ') $(grep -a 'rror' $DD/run/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
   rclone copy $DD/run $R/run -q --exclude "pred.pt" --transfers 8;;
+run2)
+  [ -f $WPT ] && [ -f $GTW/config.json ] || { say "자료 없음 $WPT $GTW"; exit 1; }
+  AV=$(df --output=avail -BG /home | tail -1 | tr -dc 0-9); [ "${AV:-0}" -ge 5 ] || { say "/home 여유 ${AV}G < 5G"; exit 1; }
+  rm -rf $DD/run2; mkdir -p $DD/run2
+  rclone cat r2:storage/result/anchorflow/lbours/wolfh12/h8_1/cmd.txt | tr -d '\n' | sed -e "s# -u exe/wolfh12_wrap.py # -u exe/wolfip_wrap.py --wip 1 exe/wolfh12_wrap.py #" -e "s# --out [^ ]*\$# --out $DD/run2#" -e 's/  */ /g' > $DD/run2/cmd.txt
+  echo >> $DD/run2/cmd.txt; rclone copyto $DD/run2/cmd.txt $R/run2/cmd.txt -q
+  grep -q "wolfip_wrap.py --wip 1 exe/wolfh12_wrap.py" $DD/run2/cmd.txt && grep -q -- "--out $DD/run2" $DD/run2/cmd.txt || { say "명령 바꾸기 실패: $(cut -c1-300 $DD/run2/cmd.txt)"; exit 1; }
+  G=$(claim_wait $BASHPID); say "run2 카드 $G"
+  ( while [ ! -f $DD/run2/.done ]; do sleep 120; { tail -c 3000 $DD/run2/log.txt; echo; echo "ip $(ls $DD/run2/ip 2>/dev/null | wc -l) 개"; cat $DD/run2/wolfip_err.txt 2>/dev/null | tail -5; } | rclone rcat $R/run2/log_tail.txt; done ) &
+  env CUDA_VISIBLE_DEVICES=$G timeout 7200 bash -c "$(cat $DD/run2/cmd.txt)" < /dev/null > $DD/run2/log.txt 2>&1
+  rc=$?; rm -f $CL/$G; touch $DD/run2/.done
+  say "run2 rc=$rc $(grep -ah '롤아웃\]' $DD/run2/log.txt | tail -1 | cut -c1-200) ip $(ls $DD/run2/ip 2>/dev/null | wc -l) 개, 오류 $(cat $DD/run2/wolfip_err.txt 2>/dev/null | grep -c '^t ') $(grep -a 'rror' $DD/run2/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
+  rclone copy $DD/run2 $R/run2 -q --exclude "pred.pt" --transfers 8;;
+ren2)
+  mkdir -p $O/h5p2 $O/vid2; rm -f $O/h5p2/*.h5
+  $PY -u exe/lb_roll_to_h5.py --dump $DD/run2/pred.pt --traj $GTW --out $O/h5p2 > $O/h5_2.log 2>&1; say "h5 2 rc=$? $(ls $O/h5p2 | wc -l) 개"
+  G=$(claim_wait $BASHPID); say "렌더 2 plain 카드 $G"
+  CUDA_VISIBLE_DEVICES=$G $PY -u exe/lb_render.py --config $GTW/config.json --shape wolf --sim $O/h5p2 --frames 50 --out $O/vid2/plain.mp4 < /dev/null > $O/vid2/r_plain.log 2>&1
+  rc=$?; rm -f $CL/$G; say "렌더 2 plain rc=$rc $(tail -1 $O/vid2/r_plain.log | cut -c1-200)"; rclone copy $O/vid2 $R/vid2 -q;;
+html2)
+  $PY -u exe/wolfip_html_color.py $DD/run2 $O/vid2/plain.mp4 $O/wolf_elastic_reg_scatter_color.html $O/tmph2 > $DD/html2.log 2>&1; say "html2 rc=$? $(tail -2 $DD/html2.log | tr '\n' ' ' | cut -c1-400)"
+  rclone copyto $DD/html2.log $R/html2.log -q
+  [ -s $O/wolf_elastic_reg_scatter_color.html ] && { rclone copyto $O/wolf_elastic_reg_scatter_color.html r2:storage/result/anchorflow/v20261009/wolf_elastic_reg_scatter_color.html -q
+    rclone copyto $O/wolf_elastic_reg_scatter_color.html r2:storage/result/anchorflow/lbours/wolfcv/wolf_elastic_reg_scatter_color.html -q; say "R2 올림 2"; };;
 an)
   $PY -u exe/wolfip_an.py $DD/run $O/an > $DD/an.log 2>&1; say "an rc=$? $(tail -2 $DD/an.log | cut -c1-600 | tr '\n' ' ')"
   rclone copyto $DD/an.log $R/an.log -q; rclone copy $O/an $R/an -q --include "*.json"
