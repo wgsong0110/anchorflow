@@ -48,10 +48,15 @@ case $STG in
 chk) B9=$(base9 b9); put b9 "$B9"
      put m2 "$(base9 m2 | w13 2)"; put m1 "$(base9 m1 | w13 1)"
      put e5 "$(base5 e5)"
-     put pc "$(base9 pc | conv)"; put m2pc "$(base9 m2pc | w13 2 | conv)";;
+     put pc "$(base9 pc | conv)"; put m2pc "$(base9 m2pc | w13 2 | conv)"
+     # cvb = 진단 에이전트 convabl b9 (커밋 ebeb699 cvb: 뉴턴 60 · PCG 100 · tolN 1e-4 · tolP 1e-3, xit·xg 없음) + 예산 1000 ms (--tb 그대로 두고 뒤에 1000)
+     put cvb "$(rclone cat $RS/../convabl/b9/cmd.txt | tr -d '\n' | sed -e 's/  */ /g' -e "s#--out [^ ]*\$#--out $O/cvb#" -e 's# exe/fem_an_rt_sim.py # --tb 16.7 --tb_m 0.8 --tb_w 2 --tb 1000 exe/fem_an_rt_sim.py #')";;
 chk2) for k in 1 2 3; do put x$k "$(base9 x$k | xs "--xs $k")"; done;;
 r2)  for n in x1 x2 x3; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk2 먼저"; exit 1; }; done
      runset r2 x1 x2 x3;;
+rv)  # vast (조정자 11-12): H9 · 모드 2 · --xs 1/2/3 · H5 · cvb
+     for n in b9 m2 x1 x2 x3 e5 cvb; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk·chk2 먼저"; exit 1; }; done
+     runset rv b9 m2 x1 x2 x3 e5 cvb;;
 ra)  for n in b9 m2 m1 e5 pc m2pc x1 x2 x3; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk·chk2 먼저"; exit 1; }; done
      runset ra b9 m2 m1 e5 x1 x2 x3 pc m2pc;;
 tm)  # 시간 판 (단독: 차례로, 판마다 계산 프로세스 0 인 카드): wolfh12/h8_1 명령에서 덤프만 뺌 (기록 감싸개 없음), tm_runs.txt = '이름:차수' (0 = H9 그대로)
@@ -73,7 +78,8 @@ r1)  for n in b9 m2 m1 e5 pc m2pc; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 
      runset r1 b9 m2 m1 e5 pc m2pc;;
 an)  RUNS=$(rclone cat $R/code/an_runs.txt 2>/dev/null || echo "b9 m2 m1 e5 x1 x2 x3 pc m2pc")
      $PY -u exe/extsolve_an.py $O $RUNS > $O/an.log 2>&1; say "an rc=$? $(tail -8 $O/an.log | tr '\n' ' ' | cut -c1-2500)"
-     rclone copy $O $R --include "an.log" --include "extsolve_an.json" -q;;
+     $PY -u exe/convabl_an.py $O $RUNS > $O/an_cv.log 2>&1; say "an_cv rc=$? $(tail -8 $O/an_cv.log | tr '\n' ' ' | cut -c1-2500)"
+     rclone copy $O $R --include "an.log" --include "an_cv.log" --include "extsolve_an.json" --include "convabl_an.json" -q;;
 vid) GTW=/dev/shm/dkta/ag_data/gt_wolf
      for n in $(rclone cat $R/code/vid_runs.txt); do
        ( g=$(claim_wait $BASHPID); V=$O/$n/vj; HD=/dev/shm/dkta/extsolve_vid/$n; mkdir -p $V $HD
