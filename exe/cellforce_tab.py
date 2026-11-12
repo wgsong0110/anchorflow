@@ -100,8 +100,9 @@ for i, k in enumerate(ks):
         a.grid(axis="y", color="#e5e4df", lw=0.6); a.set_axisbelow(True)
         for sp in ("top", "right"):
             a.spines[sp].set_visible(False)
-ax[0][0].legend(fontsize=9, loc="lower left", frameon=False)
-fig.suptitle("wolf 칸 세로 압축 모드에 걸리는 항별 일반화 힘 (절 CM111)", fontsize=14)
-fig.tight_layout()
+h_, l_ = ax[0][0].get_legend_handles_labels()
+fig.legend(h_, l_, loc="lower center", ncol=len(SH), fontsize=11, frameon=False)
+fig.suptitle("wolf 칸 세로 압축 모드에 걸리는 항별 일반화 힘 중앙값 (절 CM111, y 대칭 로그)", fontsize=14)
+fig.tight_layout(rect=(0, 0.04, 1, 1))
 fig.savefig(os.path.join(od, "cellforce.png"), dpi=110)
 print("끝", od)
