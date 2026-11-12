@@ -29,11 +29,11 @@ print(f"프레임 {T} 칸 {CW}x{CH} 전체 {W}x{H}", flush=True)
 
 def bar(title, unit, lo, hi, cmap, ticks, labels, note):
     fig = plt.figure(figsize=(BW / 100, H / 100), dpi=100)
-    top = 0.10; bot = 0.07
+    top = 0.13; bot = 0.07
     ax = fig.add_axes([0.10, bot, 0.26, 1 - top - bot - 0.03])
     ax.imshow(np.linspace(1, 0, 256)[:, None], aspect="auto", cmap=cmap, extent=[0, 1, lo, hi]); ax.set_xticks([])
     ax.set_yticks(ticks); ax.set_yticklabels(labels, fontsize=13); ax.yaxis.tick_right(); ax.set_ylim(lo, hi)
-    fig.text(0.05, 0.985, f"{title}\n({unit})", fontsize=12.5, va="top", ha="left", linespacing=1.3)
+    fig.text(0.03, 0.985, f"{title}\n{unit}", fontsize=11, va="top", ha="left", linespacing=1.3)
     fig.text(0.05, 0.005, note, fontsize=9, va="bottom", ha="left", color="#444")
     fig.canvas.draw(); im = Image.fromarray(np.asarray(fig.canvas.buffer_rgba())[..., :3]).convert("RGB"); plt.close(fig); return im
 
@@ -44,12 +44,12 @@ def logbar(title, unit, lo, hi, cm, note):
     return bar(title, unit, lo, hi, cm, ks, [f"$10^{{{k}}}$" for k in ks], note)
 
 
-B_el = logbar("탄성 에너지 밀도", "J/m³, 로그", J["e_lo"], J["e_hi"], "turbo", "두 판·전 프레임\n공통 고정")
-B_ke = logbar("운동 에너지", "J/입자, 로그", J["k_lo"], J["k_hi"], "turbo", "두 판·전 프레임\n공통 고정")
+B_el = logbar("탄성 에너지\n밀도", "(J/m³, 로그)", J["e_lo"], J["e_hi"], "turbo", "두 판·전 프레임\n공통 고정")
+B_ke = logbar("운동 에너지", "(J/입자, 로그)", J["k_lo"], J["k_hi"], "turbo", "두 판·전 프레임\n공통 고정")
 rt = [0.3, 0.5, 0.7, 0.9, 1.0, 1.1]
 # 발산형 색표: 1 이 흰색 (0.3~1 구간과 1~1.1 구간을 각각 반씩) -> 그림용 y 축은 색 위치(0~1)로 두고 눈금만 값으로
 posf = lambda v: 0.5 * (v - 0.3) / 0.7 if v < 1 else 0.5 + 0.5 * (v - 1) / 0.1
-B_r = bar("칸 높이 비 r", "h끝/h시작", 0, 1, "RdBu", [posf(v) for v in rt], [f"{v:g}" for v in rt], "0.3~1.1 고정\n회색: 칸 없음")
+B_r = bar("칸 높이 비 r", "(h끝/h시작)", 0, 1, "RdBu", [posf(v) for v in rt], [f"{v:g}" for v in rt], "0.3~1.1 고정\n회색: 칸 없음")
 BARS = {"en": B_el, "ke": B_ke, "r": B_r}
 f1, f2, f3 = ImageFont.truetype(FB, 30), ImageFont.truetype(FB, 24), ImageFont.truetype(FR, 22)
 cols = [("plain", "일반 3DGS"), ("en", "탄성 에너지 밀도"), ("ke", "운동 에너지"), ("r", "칸 높이 비")]

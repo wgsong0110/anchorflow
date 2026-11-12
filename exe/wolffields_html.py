@@ -22,7 +22,7 @@ for k in ("h9_plain", "gt_plain"):
     for p in glob.glob(f"{d}/*.jpg"): os.remove(p)
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", f"{vd}/{k}.mp4", "-vf", "scale=360:-2", "-q:v", "4", f"{d}/%04d.jpg"], check=True)
     imgs[k] = ["data:image/jpeg;base64," + base64.b64encode(open(p, "rb").read()).decode() for p in sorted(glob.glob(f"{d}/*.jpg"))]
-D = dict(T=J["L"] + 1, n=int(len(Z["idx"])), N=J["N"], xl=XL, yl=YL, rlo=J["r_lo"], rhi=J["r_hi"],
+D = dict(T=J["L"] + 1, n=int(len(Z["idx"])), N=J["N"], xl=[float(v) for v in XL], yl=[float(v) for v in YL], rlo=J["r_lo"], rhi=J["r_hi"],
          px=b(q16(lx(Z["P"]), *XL)), py=b(q16(ly(Z["KP"]), *YL)), gx=b(q16(lx(Z["G"]), *XL)), gy=b(q16(ly(Z["KG"]), *YL)), r=b(Rq),
          Eel=[J["E_el_pred"], J["E_el_gt"]], Eke=[J["E_ke_pred"], J["E_ke_gt"]], rmed=J["r_med"], img_p=imgs["h9_plain"], img_g=imgs["gt_plain"])
 HTML = """<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>wolf 입자 탄성 에너지 밀도 - 운동 에너지</title>
