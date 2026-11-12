@@ -23,7 +23,7 @@ BASE=$(cat exe/stabhex_base.txt)
 mkcmd() {  # 이름 형상 N 덤프(0|1) 프레임 기록(1|0) 환경 출력폴더 -> 명령줄 (stdout)
   local n=$1 s=$2 k=$3 dp=$4 fr=$5 st=$6 env=$7 out=$8 du=""
   [ "$dp" = 1 ] && du="--dump --dump_F "
-  echo "$BASE" | sed -e "s#@ENV@#$env#" -e "s#@OUT@#$out#g" -e "s#@ST@#$st#" -e "s#@DATA@#$SD/$s.pt#" -e "s#@FR@#$fr#" -e "s#@TAG@#$n#" -e "s#@N@#$k#" -e "s#@DUMP@#$du#"
+  echo "$BASE" | sed -e "s#@ENV@#$env#" -e "s#@OUT@#$out#g" -e "s#@ST@#$st#" -e "s#@DATA@#$SD/$s.pt#" -e "s#@FR@#$fr#" -e "s#@TAG@#$n#" -e "s#@N@#$k#" -e "s#@DUMP@#$du#" -e "s#@S@#$s#g"
 }
 CL=/dev/shm/dkta/anerr_claim; mkdir -p $CL
 NG=$(nvidia-smi -L | wc -l)
@@ -46,7 +46,9 @@ runone() {  # 이름 카드 (O/<이름>/cmd.txt 가 있어야 함; 카드 표식
   say "$n R2 올림"; }
 jobs_of() { grep -v '^#' exe/stabhex_jobs.txt | awk 'NF>=5'; }
 case $STG in
-data) for s in lego mic ficus; do $PY -u exe/stabhex_data.py $W/$s $SD/$s.pt 60 >> $L 2>&1; say "$s 입력 rc=$? $(tail -1 $L | cut -c1-200)"; done;;
+data) for s in lego mic ficus; do mkdir -p /dev/shm/dkta/stabhex/rr/$s      # 루프 안 렌더 (결과 불변; H9 의 X2·X3g 가 그 자리 speed4 에 묶여 있음) 용 meta: 0 프레임 h5·R = I
+       echo "{\"h5\": \"$W/$s/init/sim_0000000000.h5\", \"R\": [[1,0,0],[0,1,0],[0,0,1]]}" > /dev/shm/dkta/stabhex/rr/$s/meta.json
+       $PY -u exe/stabhex_data.py $W/$s $SD/$s.pt 60 >> $L 2>&1; say "$s 입력 rc=$? $(tail -1 $L | cut -c1-200)"; done;;
 chk) jobs_of | while read -r n s k rep dp; do mkdir -p $O/$n; mkcmd $n $s $k $dp 60 1 "AF_E1_DG=1 AF_G1_DG=1 " $O/$n > $O/$n/cmd.txt
        rclone copyto $O/$n/cmd.txt $R/$n/cmd.txt -q; done
      say "판 $(jobs_of | wc -l) 개 명령줄; 첫 판: $(head -c 3000 $O/$(jobs_of | head -1 | awk '{print $1}')/cmd.txt)";;

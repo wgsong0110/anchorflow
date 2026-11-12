@@ -31,6 +31,9 @@ def _arg(name, default=None):
     return argv[len(argv) - 1 - argv[::-1].index(name) + 1] if name in argv else default
 
 
+if "--rr_shape" in argv:                                                              # 루프 안 렌더 (rtrender1) 모형 표에 mic 더함 (rep_ip 와 같은 pgmodel; 결과 불변)
+    from anchorflow import rtrender1 as _RR1
+    _RR1.MODEL.setdefault("mic", "mic_whitebg-trained")
 REC = dict(rows=[], X=[], T=[], IT=[], stop="끝까지", t0=time.time())
 _orig = runpy.run_path
 _done = [False]
