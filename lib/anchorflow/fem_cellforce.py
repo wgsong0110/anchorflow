@@ -2,8 +2,8 @@
 
 뉴턴 기울기 (rt_grad): g = M_eff/τ² η + T f  (η = 바뀐 변수, y = ŷ + T η; ŷ 에 τ² g_중력 이 들어 있음; f = 요소·벌점·장벽 커널이 더한 힘 기울기).
 기록 (가장 안쪽 = 풀이기 s.fn 사전을 감쌈 -> 모든 s.k 경로의 실제 띄우기를 봄):
-  - 창 = 뉴턴 평가 하나: rt_zero_d(f) (f 를 0 으로) 뒤 ~ rt_grad 앞. 창 안에서 인자에 f 포인터가 있는 커널마다 띄우기 앞·뒤로 f − prev 의 법선 성분 (n·Δf) 을
-    이름별 통 acc[b] 에 더함 (앞 = '~이름' 통: 그 커널 앞에 s.k 밖에서 f 를 바꾼 몫, 뒤 = '이름' 통). rt_grad 앞에서 한 번 더 ('~rt_grad').
+  - 창 = 뉴턴 평가 하나: rt_zero_d(f) (f 를 0 으로) 뒤 ~ rt_grad 앞. 창 안에서 인자에 f 포인터가 있는 커널마다 띄운 뒤 f − prev 의 법선 성분 (n·Δf) 을
+    그 이름 통 acc[b] 에 더함 (창 작업 통에 모아 rt_grad 앞에서 끝 칸으로). rt_grad 앞에서 한 번 더 ('~rt_grad' = s.k 밖에서 f 를 바꾼 몫).
     -> Σ_b acc[b] = n·f (rt_grad 가 읽는 f). 통 0 = 요소 커널 (탄성: rt_elem·aq_elem·ao_elem·ao_elem_s), 통 1 = rt_bar_n (장벽), 나머지 = 처음 본 순서로 이름.
   - rt_grad 앞: n·η (en), 그 평가의 1/τ² (rt_grad 인자), 뉴턴 평가 번호·걸음 번호. 걸음 첫 평가에 sk·pm·M_eff·확장 표시 (w8b) 사본.
     rt_grad 뒤: 풀이기 잔차 r0 (= −g) 의 법선 성분 -> 검사 (우리가 다시 모은 합과 같아야 함).
@@ -27,15 +27,15 @@ import torch
 INFO = dict(n_inst=0, n_alloc=0, n_wrapfn=0, n_win=0, n_delta=0, n_fin=0, n_rec=0, n_line=0, err=None, names=[], over=[], skipptr=None, cls=None)
 OUT = ["."]
 LOG = [None]
-NBK = 12
+NBK = 8
 ELEM = ("rt_elem", "aq_elem", "ao_elem", "ao_elem_s")
 
 SRC = r'''
 extern "C" {
 __device__ __forceinline__ bool cfs(const int* S) { return S != 0 && *S != 0; }
-__global__ void cf_reset(int capN, int nbk, double* prev, double* acc, const int* S) {
+__global__ void cf_reset(const int* IP, int capN, int nbk, double* prev, double* acc, const int* S) {
     if (cfs(S)) return;
-    int n = blockIdx.x*blockDim.x + threadIdx.x; if (n >= capN) return;
+    int n = blockIdx.x*blockDim.x + threadIdx.x; if (n >= capN || n >= IP[9]) return;
     prev[n*3] = 0.0; prev[n*3+1] = 0.0; prev[n*3+2] = 0.0;
     for (int b=0;b<nbk;b++) acc[(size_t)b*capN + n] = 0.0;
 }
@@ -206,7 +206,7 @@ def _pre(sv, W, name, args):
     fp = sv.f.data_ptr()
     if name == "rt_zero_d" and len(args) >= 5 and int(args[4]) == fp:                        # 창 시작: f = 0
         def _p():
-            W.go("cf_reset", capN, (i32(capN), i32(NBK), P(W.prev), P(W.acc[2]), S))
+            W.go("cf_reset", capN, (P(sv.IP), i32(capN), i32(NBK), P(W.prev), P(W.acc[2]), S))
             W.win = True; INFO["n_win"] += 1
         return _p
     if not W.win:
@@ -231,8 +231,7 @@ def _pre(sv, W, name, args):
         return _p
     if _has_ptr(args, fp):                                                                     # 창 안 f 쓰는 (쓸 수 있는) 커널
         IPp = P(sv.IP)
-        bn = "탄성" if name in ELEM else name
-        W.go("cf_delta", capN, (IPp, P(sv.f), P(W.prev), P(W.acc[2, _bucket("~" + bn)]), *NR, S))
+        bn = "탄성" if name in ELEM else name                                                  # (연기 17a64c8: 커널 앞 '~' 통이 모두 0 -> 앞 사본은 빼고 rt_grad 앞 '~rt_grad' 하나만 남김)
         INFO["n_delta"] += 1
         return lambda: W.go("cf_delta", capN, (IPp, P(sv.f), P(W.prev), P(W.acc[2, _bucket(bn)]), *NR, S))
     return None
@@ -383,10 +382,11 @@ def _analyze(s, W, t):
         act = mn > 0
         dif = (tot - gn)[act].abs()
         stat[sl] = dict(it2=it2, code=int(itb[si]), chk_max=float(dif.max()) if bool(act.any()) else 0.0, chk_ref=float(gn[act].abs().max()) if bool(act.any()) else 0.0,
-                        pm_other=int(((pm != 0) & (pm != 1) & (pm != 2) & act).sum()), nT=int(((tn != 1) & act).sum()), nw8=int(((w8 >= 0) & act).sum()),
+                        pm_other=int(((pm != 0) & (pm != 1) & (pm != 2) & act).sum()), nT=int((((tn - 1).abs() > 1e-3) & act).sum()), pm2=int(((pm == 2) & act).sum()),
+                        tn_q=[float(q) for q in torch.quantile(tn[act].float(), torch.tensor([0.0, 0.01, 0.5], device=dev))] if bool(act.any()) else None, nw8=int(((w8 >= 0) & act).sum()),
                         sumabs={nm: float(g_[act].abs().sum()) for nm, g_ in T})
         if si == 1:
-            ce = ((w8[nidc] >= 0).sum(1)).short(); ct = ((tn[nidc] != 1).sum(1)).short()
+            ce = ((w8[nidc] >= 0).sum(1)).short(); ct = (((tn[nidc] - 1).abs() > 1e-3).sum(1)).short()
     terms = ["관성", "중력", "질량하한"] + names + ["합", "풀이기잔차"]
     cm = mn[nidc].sum(1)
     os.makedirs(os.path.join(OUT[0], "cf"), exist_ok=True)
