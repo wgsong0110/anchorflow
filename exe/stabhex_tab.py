@@ -138,7 +138,16 @@ for S in SH:
     o = NMIN_OLD[S]
     hv = "--" if H["N_min"] is None else f"{H['N_min']} ({sum(H['N_min_runs'])}/{len(H['N_min_runs'])})"
     tex.append(f"{S} & {o['pg']} & {o['gf']} & {o['ipg']} & {o['ovs']} & {hv} \\\\")
-tex += [r"\bottomrule", r"\end{tabular}", r"\end{table}", ""]
+ab = []
+for S in SH:
+    H = A["shapes"][S]["methods"]["hex"]
+    u = [f"{n} ({v[0]}/{v[1]})" for n, v in H["stable_by_N"].items() if H["N_min"] is not None and int(n) > H["N_min"] and v[0] < v[1]]
+    if u:
+        ab.append(f"{S} " + ", ".join(u))
+tex += [r"\bottomrule", r"\end{tabular}"]
+if ab:
+    tex += [r"\\[3pt]\footnotesize 우리(육면체)는 $N_{\min}$ 보다 큰 $N$ 에서 다시 발산 ($N$ (안정 판/판)): " + "; ".join(ab) + "."]
+tex += [r"\end{table}", ""]
 # 물리 정합성: 육면체 행 (N_min 판 평균)
 KEYS = ("detneg", "pen", "jit", "ff", "cd")
 tex += ["% 물리 정합성 표에 넣을 우리(육면체) 행 (형상별, N_min 판 평균; 통과 = 모든 판 문턱 안)"]
@@ -191,9 +200,9 @@ if a.speed and os.path.isdir(a.speed):
         T.setdefault(s, {})[int(k[1:])] = (s_.get("ms_mean"), s_.get("ms_p90"), s_.get("diverged"), ap_ == "")
     if T:
         KS = sorted({k for v in T.values() for k in v})
-        md.append("## 우리(육면체) 단독 시간 (ms/프레임, 재생 GPU 시간, 렌더 없음; 카드 하나에 다른 계산 프로세스 0 일 때 차례로)\n")
+        md.append("## 우리(육면체) 단독 시간 (ms/프레임, 시뮬 그래프 재생 GPU 시간 -- 루프 안 3DGS 렌더 시간은 따로; 카드 하나에 다른 계산 프로세스 0 일 때 차례로; 빈 칸 = 발산)\n")
         md.append("| 형상 | " + " | ".join(f"N{k}" for k in KS) + " |"); md.append("|---|" + "---|" * len(KS))
-        tex += [r"\begin{table}[h]\centering\small", r"\caption{우리(육면체) 프레임당 시간 (ms, A6000 카드 단독, 시뮬 재생 GPU 시간 평균 (90 백분위), 렌더 없음, 시간 예산 끔).}",
+        tex += [r"\begin{table}[h]\centering\small", r"\caption{우리(육면체) 프레임당 시간 (ms, A6000 카드 단독, 시뮬 그래프 재생 GPU 시간 평균 (90 백분위), 루프 안 렌더 시간 제외, 시간 예산 끔; 빈 칸 = 발산).}",
                 r"\begin{tabular}{l" + "c" * len(KS) + "}", r"\toprule", "형상 & " + " & ".join(f"$N{{=}}{k}$" for k in KS) + r" \\", r"\midrule"]
         for s in SH:
             if s not in T:
