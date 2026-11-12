@@ -82,7 +82,8 @@ def bar_clone(src):
     r = _body(src, "rt_bar_q")
     assert r is not None, "rt_bar_q 없음"
     body, params = r
-    drop = ("atomicAdd(&Gn[", "AF_BPG[qq]", "AF_BPH[qq] = h", "AF_BCF[qq] |= 1", "AF_SKIP")
+    body = re.sub(r"\s*if \(AF_SKIP\) return;", "", body)                       # skipify 가 몸 첫머리 (선언 줄 끝) 에 넣은 건너뛰기
+    drop = ("atomicAdd(&Gn[", "AF_BPG[qq]", "AF_BPH[qq] = h", "AF_BCF[qq] |= 1")
     lines = [ln for ln in body.split("\n") if not any(d in ln for d in drop)]
     b = "\n".join(lines)
     assert b.count("blocksum_add(e, E);") == 1, "rt_bar_q blocksum_add(e, E) 줄"
