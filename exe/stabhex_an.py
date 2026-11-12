@@ -45,6 +45,9 @@ def hex_load(d):
     keys = [str(k) for k in z["keys"]]
     rows = {k: z["stats"][:, i] for i, k in enumerate(keys)}
     st = "끝" if (len(z["x"]) >= 61 and np.nanmax(rows["nan"]) == 0 and np.isfinite(z["x"]).all()) else "발산"
+    stop = str(z["stop"]) if "stop" in z.files else ""
+    if st == "발산" and "out of memory" in stop and np.isfinite(z["x"]).all() and np.nanmax(rows["nan"]) == 0:
+        st = "메모리부족"                                           # 큰 N 의 프레임 CUDA 그래프 캡처가 GPU 메모리 부족 -- 발산 아님 (안정 판정·N_min 에서 뺌)
     it = z["it"] if "it" in z.files else np.zeros((0, 6))
     r = dict(status=st, rows=rows, X=z["x"], frames=int(len(z["x"]) - 1), stop=str(z["stop"]) if "stop" in z.files else "",
              newton=int(z["newton"]), cg=int(z["cg"]), tolN=float(z["tolN"]), tolP=float(z["tolP"]), K=int(z["substeps"]))
@@ -160,14 +163,23 @@ for S in ("lego", "mic", "ficus"):
                 e = rmse(fin[n], XR, L)
                 M["err"][n] = dict(mean=float(e[1:61].mean()), last=float(e[min(60, len(e) - 1)]), frames=[float(q) for q in e[:61]])
         for n, lst in byN.items():                                  # 재현성 바닥: 같은 N 두 판
-            ok_ = [it for it in lst if it["r"]["status"] == "끝"]
+            ok_ = [it for it in lst if it["r"]["status"] == "끝" and it.get("rep") != "d"]
             if len(ok_) >= 2:
                 e = rmse(ok_[0]["r"]["X"], ok_[1]["r"]["X"], L)
                 M["floor"][n] = dict(a=ok_[0]["name"], b=ok_[1]["name"], mean=float(e[1:61].mean()), max=float(e[1:61].max()))
+        if m == "hex":                                              # 그래프 없이 띄운 확인 판 (d) 대 같은 N 그래프 판 (a)
+            M["direct_check"] = {}
+            for n, lst in byN.items():
+                da = [it for it in lst if it.get("rep") == "a" and it["r"]["status"] == "끝"]
+                dd = [it for it in lst if it.get("rep") == "d" and it["r"]["status"] == "끝"]
+                if da and dd:
+                    e = rmse(da[0]["r"]["X"], dd[0]["r"]["X"], L)
+                    M["direct_check"][n] = dict(mean=float(e[1:61].mean()), max=float(e[1:61].max()))
         if m == "hex":                                              # N_min: 그 N 의 모든 판이 안정한 가장 작은 N (판 수 함께)
             st = {}
             for nm, rec in M["runs"].items():
-                st.setdefault(rec["N"], []).append(bool(rec["stable"]))
+                if rec["status"] != "메모리부족":
+                    st.setdefault(rec["N"], []).append(bool(rec["stable"]))
             M["stable_by_N"] = {n: [int(sum(v)), len(v)] for n, v in sorted(st.items())}
             good = [n for n, v in sorted(st.items()) if all(v)]
             M["N_min"] = good[0] if good else None

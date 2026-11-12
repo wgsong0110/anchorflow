@@ -1,4 +1,4 @@
-# 이름 형상 N 반복 덤프(1=영상용 --dump --dump_F) -- 기준 궤적 판 (큰 N) 먼저, 반복 a 다음 b (재현성 바닥·확정), c (작은 N 3 회 확정)
+# 이름 형상 N 반복 덤프(1=영상용 --dump --dump_F) -- 기준 궤적 판 (큰 N) 먼저, 반복 a 다음 b (재현성 바닥·확정), c (작은 N 3 회 확정) ; d = 그래프 없이 바로 띄움 확인 (N256, 같은 N 의 a 와 비교) -- N >= 512 는 모두 그래프 없이 (--sh_direct 1, 그래프 캡처 GPU 메모리 부족)
 lego_N2048_a lego 2048 a 0
 mic_N2048_a mic 2048 a 0
 ficus_N2048_a ficus 2048 a 0
@@ -80,3 +80,4 @@ ficus_N2_c ficus 2 c 0
 lego_N1_c lego 1 c 0
 mic_N1_c mic 1 c 0
 ficus_N1_c ficus 1 c 0
+lego_N256_d lego 256 d 0

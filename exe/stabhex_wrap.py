@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 sys.setrecursionlimit(max(sys.getrecursionlimit(), 14000))
 
 argv = sys.argv[1:]
-OPT = dict(npz="", stats="1")
+OPT = dict(npz="", stats="1", direct="0")
 while argv and argv[0].startswith("--sh_"):
     OPT[argv[0][5:]] = argv[1]
     del argv[:2]
@@ -76,7 +76,29 @@ def _install():
         t = time.time(); REC["T"].append(t - _last[0]); _last[0] = t
         return o
     ART.RTSolver.counts = counts
+    if OPT["direct"] not in ("0", ""):
+        _direct()
     print(f"[stabhex] 안정성 기록 설치: 입자 {N}, 부분표본 {len(SUB)}, 바닥 z {FZ}, -> {OPT['npz']}", flush=True)
+
+
+def _direct():
+    """--sh_direct 1: 프레임 CUDA 그래프 대신 같은 record() 를 매 프레임 바로 띄움 (큰 N 에서 걸음 K 개를 펼친 그래프 캡처가 GPU 메모리 부족).
+    나눈 그래프 (--xg, fem_common3) 의 건너뛰기는 커널이 CT 를 보고 스스로 돌아가는 것이라 (그 모듈 설명) 결과 정의는 같음; 넘침 다시 하기는 step() 그대로."""
+    from anchorflow import fem_common3 as C3
+
+    class _D:
+        def __init__(self, s):
+            self.s = s
+
+        def replay(self):
+            self.s.record(0.0, self.s.Kcur)
+
+    def capture(s):
+        g = _D(s)
+        s.graph = g
+        s.graphs[s.Kcur] = g
+    C3.capture = capture
+    print("[stabhex] 그래프 없이 바로 띄움 (--sh_direct)", flush=True)
 
 
 def _save():

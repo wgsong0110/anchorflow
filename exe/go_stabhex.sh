@@ -21,9 +21,10 @@ L=$O/go_$STG.log; say() { echo "[go $(date '+%F %T')] $*" >> $L; rclone copyto $
 say "시작 $(hostname) 커밋 $H 단계 $STG; /dev/shm $(df -h /dev/shm | tail -1 | awk '{print $4}') /home $(df -h /home | tail -1 | awk '{print $4}') 남음; 계산 프로세스 $(nvidia-smi --query-compute-apps=pid --format=csv,noheader | grep -c .)"
 BASE=$(cat exe/stabhex_base.txt)
 mkcmd() {  # 이름 형상 N 덤프(0|1) 프레임 기록(1|0) 환경 출력폴더 -> 명령줄 (stdout)
-  local n=$1 s=$2 k=$3 dp=$4 fr=$5 st=$6 env=$7 out=$8 du=""
+  local n=$1 s=$2 k=$3 dp=$4 fr=$5 st=$6 env=$7 out=$8 du="" dr=0
+  { [ "$k" -ge 512 ] || [ "${n##*_}" = d ]; } && dr=1                                 # N >= 512: 프레임 그래프 캡처가 GPU 메모리 부족 -> 그래프 없이 (결과 정의 같음; d 판으로 N256 에서 확인)
   [ "$dp" = 1 ] && du="--dump --dump_F "
-  echo "$BASE" | sed -e "s#@ENV@#$env#" -e "s#@OUT@#$out#g" -e "s#@ST@#$st#" -e "s#@DATA@#$SD/$s.pt#" -e "s#@FR@#$fr#" -e "s#@TAG@#$n#" -e "s#@N@#$k#" -e "s#@DUMP@#$du#" -e "s#@S@#$s#g"
+  echo "$BASE" | sed -e "s#@ENV@#$env#" -e "s#@OUT@#$out#g" -e "s#@ST@#$st#" -e "s#@DATA@#$SD/$s.pt#" -e "s#@FR@#$fr#" -e "s#@TAG@#$n#" -e "s#@N@#$k#" -e "s#@DUMP@#$du#" -e "s#@S@#$s#g" -e "s#@DIR@#$dr#"
 }
 CL=/dev/shm/dkta/anerr_claim; mkdir -p $CL
 NG=$(nvidia-smi -L | wc -l)
@@ -55,7 +56,8 @@ chk) jobs_of | while read -r n s k rep dp; do mkdir -p $O/$n; mkcmd $n $s $k $dp
 s0k) PIDS=""; for sk in lego:1 mic:2 ficus:4; do s=${sk%:*}; k=${sk#*:}; n=smoke_${s}_N$k; rm -rf $O/$n; mkdir -p $O/$n; mkcmd $n $s $k 1 3 1 "AF_E1_DG=1 AF_G1_DG=1 " $O/$n > $O/$n/cmd.txt
        g=$(claim_wait $$); runone $n $g & PIDS="$PIDS $!"; sleep 20; done; wait $PIDS
      for n in smoke_lego_N1 smoke_mic_N2 smoke_ficus_N4; do say "$n 확인: $($PY -c "import numpy as np; z=np.load('$O/$n/res.npz'); print('프레임', int(z['frames_done']), 'x', z['x'].shape, 'nan', float(np.nanmax(z['stats'][:, 2])), 'it', z['it'].tolist(), 'K', int(z['substeps']), z['stop'])" 2>&1 | tail -1 | cut -c1-400)"; done;;
-run) for n in $(jobs_of | awk '{print $1}'); do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk 먼저"; exit 1; }; done
+run|run2) if [ "$STG" = run2 ]; then for d in $O/*/DONE; do n_=$(dirname $d); grep -q "out of memory" $n_/log.txt 2>/dev/null && { mv $d $n_/OOM_was_DONE; say "$(basename $n_) 메모리 부족 판 다시 (그래프 없이)"; }; done; fi
+     for n in $(jobs_of | awk '{print $1}'); do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk 먼저"; exit 1; }; done
      rm -f $O/go_run.END
      ( while [ ! -f $O/go_run.END ]; do sleep 300; ls $O/*/DONE 2>/dev/null | wc -l | xargs -I{} echo "끝난 판 {} / $(jobs_of | wc -l) $(date '+%F %T')" | rclone rcat $R/progress.txt
        nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader 2>&1 | rclone rcat $R/apps_now.txt; done ) &
