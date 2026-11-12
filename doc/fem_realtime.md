@@ -9941,3 +9941,25 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 - **추정 (확인 안 함)**: 각 1 판이라 흩어짐보다 큰 차이는 오차·f30 높이·부분 구속 수로 보이고, S_구속은 무너짐의 주원인이 아님.
 ### CM116.3 출력·실행
 - R2 lbours/wolfcv/w5s0.md, lbours/wolfcv/startpt/ (w9_1·w0_1: cmd·log·summary·fem.jsonl·sp/·vj/fem_wolf.mp4, w5s0_an.json, an4.log), 영상 result/anchorflow/v20261009/fem_wolf_w5s0_cmp.mp4 (2400x970 yuv420p faststart 51 프레임, 디코드 확인). SSH 1 번 (14:48 UTC qstat: 133078 R 69:54 + pbs_attach 띄움), 뒤는 R2 launch.txt (끝에 stop). 노드 / ·/tmp 안 씀.
+
+## CM117. wolf H9 -- 확장 노드를 소거한 줄어든 문제의 선형 풀이 고치기 (전처리) (조정자 11-12 위임: 실시간 예산 (뉴턴 6 · PCG 5) 안에서 H9 뉴턴이 걸음 시작 압축을 되돌리게; 벌점·클램프·문턱·서브스텝 늘리기 금지) -- 가지 k1new, 커밋 c5fed45 (r1 판) · 89a4b3c·c34ad18 (체비셰프 평활 lib/anchorflow/fem_extsolve.py · exe/extsolve_wrap.py `--xs k`) · e5bde5a (시간 판 tm · 회귀 reg 단계), 묶음 extsolve (상주 시작점 exe/extsolve_boot.sh·extsolve_launch.sh, exe/go_extsolve.sh·extsolve_an.py·extsolve_compose.py (로컬 영상), 로컬 모형 .xstmp/model*.py (커밋 안 함))
+### CM117.0 확인한 것 (코드 읽기)
+- '확장 노드를 소거하고 안쪽 노드만 미지수로 P^T K P 로 푸는 것' 은 지금 H9 가 이미 하는 것: fem_wolfh8 이 잔차를 접고 (r_j += T_j Σ_o c_oj r_o, r_o = 0) 방향을 펼쳐 (p_o = Σ c_oj (T p)_j) PCG 가 Ã = Eᵀ A E 를 풂. 문제는 미지수 공간이 아니라 전처리: MG V 순환이 Ã 가 아닌 A (r_o = 0) 의 것이라 Eᵀ A_OO E (차수 2 외삽 이득 축당 7) 를 모름 (절 CM98 κ 1e5~1e6).
+- 그래서 고칠 자리 = 전처리. 절 CM94 wolfh13 (층 0 블록 대각 D̃ = Ã 블록 대각, 모드 1 = 거친 층도 자기 확장 · 모드 2 = 층 0 만) 은 H8 에서 모드 1 만 50 프레임으로 돌렸고 (자유 낙하 잔차 40 배 줄음, 접촉 걸음 그대로), 모드 2 는 연기 (8 프레임) 뿐.
+### CM117.1 로컬 모형 (numpy, 3 차원 공 반지름 0.38·12 칸, 겉 칸 부분 점유, 스칼라 라플라스 이차 B-스플라인, T1E2 차수 2; 2 층 V 순환 + PCG; 확인은 모형 안에서만)
+| 전처리 (층 0 평활 + 거친 층) | κ(M⁻¹Ã) | PCG 5 상대 잔차 |
+|---|---|---|
+| H9 (A 대각 야코비, 원래 거친 층) | 282 | 0.44 |
+| wolfh13 모드 2 (D̃ 야코비) | 55 | 0.40 |
+| D̃ 야코비 2·3 번 | 19 · 10 | 0.08 · 0.03 |
+| D̃ 체비셰프 2 · 3 차 [0.1, 1.1] λ̂ (λ̂ = 거듭제곱 6 회, 참값의 0.84) | 7.9 · 4.6 | 0.028 · 0.005 |
+| 갈레르킨 거친 층 Qᵀ Ã Q (정확 풀이 · 3 층 야코비) | 19 · 42~47 | 0.07 · 0.34 |
+| 블록 슈바르츠 (외삽 블록 81 자유도, 정확 Ã_bb) | 6 | 0.008 |
+| (대조) 확장 없음 A 야코비 / 체비셰프 2 · 3 차 | 54 / 11 · 6.6 | - |
+- 블록 슈바르츠는 Ã_bb 조립 (노드 쌍 블록) 이 실행기에 없고 비싸 (블록당 26 KB 인자 · 판독 대역) 뺌; 값싼 근사 (대각 + c cᵀ A_oo) 는 κ 181 로 대각보다 나쁨. 갈레르킨 거친 층은 V 순환 안에서 효과 작음. → 고른 것 = wolfh13 모드 2 위 D̃ 척도 체비셰프 평활 (풀리는 방정식 그대로, 대칭 V 순환, 문턱 없음; 구간은 PETSc 기본값).
+### CM117.2 정의 (lib/anchorflow/fem_extsolve.py, `exe/extsolve_wrap.py --xs k <다음 감싸개>`)
+- 층 0 앞·뒤 평활 = D̃ 척도 체비셰프 k 차 (Saad 12.3 점화식), [lo, hi] = [0.1, 1.1] λ̂, λ̂ = wolfh13 거듭제곱법 (W[0] = 1/λ̂, 장치에서 읽음). 외부 노드 D̃⁻¹ = 0 · 매 걸음 뒤 펼침. 층 0 곱 수 V 순환당 2 -> 2k. 확장 판 (κ 0) 이 아니면 커널 0 (레고·ficus·bread 계산 같음).
+### CM117.3 실행 상태 (11-12 18:45 UTC)
+- 판 (아직 안 돎): ra = b9 (H9 다시) · m2 · m1 (wolfh13 모드 2·1) · x1·x2·x3 (`--xs 1·2·3`) · e5 (H5 대조) · pc·m2pc (예산 끈 PCG 40 상한 판, 진단) 모두 wolf 50 프레임, R2 startpt/w9_1 명령 + 결과 불변 기록 감싸개 (r<0.7 칸) + 렌더 덤프 (/home/dkta/work/extsolve, R2 통째로, 안 지움); an = exe/extsolve_an.py; 다음 = vid (vid_runs.txt) · tm (단독 시간, tm_runs.txt) · reg (레고·ficus·bread speed13 명령 ± --xs, reg_k.txt).
+- R2 lbours/wolfcv/extsolve/code/ 에 tar (e5bde5a)·boot·launch, launch.txt = 'e5bde5a chk,chk2,ra,an'. 상주 시작점은 아직 안 띄움: 잡 133078 이 16:54 UTC 에 72 시간으로 끝났고 133079~133081 은 큐에서 사라졌으며, 16:58~18:43 UTC qstat 8 번 (15 분 간격) 모두 R 잡 없음 (Q 5 개 '메모리 부족' -- 노드를 다른 사용자가 씀). 잡 제출 금지라 기다림.
+- 띄우는 법 (R 잡이 생기면 SSH 1 번): 노드에서 `rclone cat r2:storage/result/anchorflow/lbours/wolfcv/extsolve/code/extsolve_launch.sh > /dev/shm/dkta/extsolve_launch.sh; setsid nohup /opt/pbs/bin/pbs_attach -j <잡> /bin/bash /dev/shm/dkta/extsolve_launch.sh < /dev/null > /dev/shm/dkta/extsolve_launch.out 2>&1 &`. 새 잡에서 /dev/shm/dkta/ag_data/gt_wolf 가 없으면 go 가 멈추고 기록함 (R2 에 gt_wolf 없음).
