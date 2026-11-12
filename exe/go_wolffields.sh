@@ -45,7 +45,7 @@ for q in en ke r; do
 done
 $PY -u $RC --sim $O/h5p --frames 50 --out $O/vid/h9_plain.mp4 < /dev/null > $O/vid/rh_p.log 2>&1; say "h9_plain rc=$?"
 rm -f $CL/$G
-rclone copy $O/vid $R/vid -q; rclone copy $O/psi $R/psi -q --include "*.json"
+rclone copy $O/vid $R/vid -q; rclone copy $O/psi $R/psi -q --include "*.json" --include "sample.npz"
 if command -v ffmpeg >/dev/null; then
   $PY -u exe/wolffields_compose.py $O/psi/fields.json $O/vid $O/fem_wolf_h9_fields.mp4 $O/tmpc > $O/compose.log 2>&1; say "compose rc=$?"
   $PY -u exe/wolffields_html.py $O/psi $O/vid $O/wolf_energy_scatter.html $O/tmph > $O/html.log 2>&1; say "html rc=$?"
