@@ -2,7 +2,7 @@
 # 서브스텝 안정성 '우리(육면체)' 묶음 stabhex 진입점 (11-12 지시; 틀은 exe/go_cellh.sh). 코드 디렉토리에서. 사용: bash exe/go_stabhex.sh <커밋> <단계>
 #   data  = 세 형상 입력 .pt (exe/stabhex_data.py; 안정성 실험 0 프레임 입자·config 그대로)
 #   chk   = 판 목록 (exe/stabhex_jobs.txt) 의 명령줄만 만들어 R2 에 (실행 안 함)
-#   s0k   = 연기: 레고 N1·N2·N4 3 프레임 (npz 프레임 3 확인)
+#   s0k   = 연기: 레고 N1·mic N2·ficus N4 3 프레임 (npz 프레임 3 확인)
 #   run   = 판 목록 전부 (이미 끝난 판 건너뜀) 를 빈 카드에 큐로 (기준 궤적 판 = 큰 N 먼저)
 #   an    = 분석 (CPU, exe/stabhex_an.py) -> stabhex_an.json
 #   vid   = 덤프 판 3DGS 렌더 (exe/rep_ip.py --render_npz, 같은 렌더러) + 비교 합성 (exe/stabhex_compose.py)
@@ -52,9 +52,9 @@ data) for s in lego mic ficus; do mkdir -p /dev/shm/dkta/stabhex/rr/$s      # �
 chk) jobs_of | while read -r n s k rep dp; do mkdir -p $O/$n; mkcmd $n $s $k $dp 60 1 "AF_E1_DG=1 AF_G1_DG=1 " $O/$n > $O/$n/cmd.txt
        rclone copyto $O/$n/cmd.txt $R/$n/cmd.txt -q; done
      say "판 $(jobs_of | wc -l) 개 명령줄; 첫 판: $(head -c 3000 $O/$(jobs_of | head -1 | awk '{print $1}')/cmd.txt)";;
-s0k) PIDS=""; for k in 1 2 4; do n=smoke_N$k; rm -rf $O/$n; mkdir -p $O/$n; mkcmd $n lego $k 1 3 1 "AF_E1_DG=1 AF_G1_DG=1 " $O/$n > $O/$n/cmd.txt
+s0k) PIDS=""; for sk in lego:1 mic:2 ficus:4; do s=${sk%:*}; k=${sk#*:}; n=smoke_${s}_N$k; rm -rf $O/$n; mkdir -p $O/$n; mkcmd $n $s $k 1 3 1 "AF_E1_DG=1 AF_G1_DG=1 " $O/$n > $O/$n/cmd.txt
        g=$(claim_wait $$); runone $n $g & PIDS="$PIDS $!"; sleep 20; done; wait $PIDS
-     for k in 1 2 4; do n=smoke_N$k; say "$n 확인: $($PY -c "import numpy as np; z=np.load('$O/$n/res.npz'); print('프레임', int(z['frames_done']), 'x', z['x'].shape, 'nan', float(np.nanmax(z['stats'][:, 2])), 'it', z['it'].tolist(), 'K', int(z['substeps']), z['stop'])" 2>&1 | tail -1 | cut -c1-400)"; done;;
+     for n in smoke_lego_N1 smoke_mic_N2 smoke_ficus_N4; do say "$n 확인: $($PY -c "import numpy as np; z=np.load('$O/$n/res.npz'); print('프레임', int(z['frames_done']), 'x', z['x'].shape, 'nan', float(np.nanmax(z['stats'][:, 2])), 'it', z['it'].tolist(), 'K', int(z['substeps']), z['stop'])" 2>&1 | tail -1 | cut -c1-400)"; done;;
 run) for n in $(jobs_of | awk '{print $1}'); do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk 먼저"; exit 1; }; done
      rm -f $O/go_run.END
      ( while [ ! -f $O/go_run.END ]; do sleep 300; ls $O/*/DONE 2>/dev/null | wc -l | xargs -I{} echo "끝난 판 {} / $(jobs_of | wc -l) $(date '+%F %T')" | rclone rcat $R/progress.txt
