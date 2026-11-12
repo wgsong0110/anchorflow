@@ -16,18 +16,18 @@ sys.setrecursionlimit(max(sys.getrecursionlimit(), 14000))
 argv = sys.argv[1:]
 out = argv[argv.index("--out") + 1] if "--out" in argv else "."
 os.makedirs(out, exist_ok=True)
-O = dict(xs="0", xslo="0.1", xshi="1.1", xabs="0", xapex="0")
-while argv and argv[0] in ("--xs", "--xslo", "--xshi", "--xabs", "--xapex"):
+O = dict(xs="0", xslo="0.1", xshi="1.1", xabs="0", xapex="0", xct="0", xfd="0")
+while argv and argv[0] in ("--xs", "--xslo", "--xshi", "--xabs", "--xapex", "--xct", "--xfd"):
     O[argv[0][2:]] = argv[1]
     del argv[:2]
-K = int(float(O["xs"])); ABS = int(float(O["xabs"])); APX = int(float(O["xapex"]))
+K = int(float(O["xs"])); ABS = int(float(O["xabs"])); APX = int(float(O["xapex"])); CT = int(float(O["xct"])); FD = int(float(O["xfd"]))
 
 _orig = runpy.run_path
 _done = [False]
 
 
 def run_path(path, *a, **kw):
-    if (K or ABS or APX) and not _done[0] and os.path.basename(path) == "fem_an_rt_sim.py":
+    if (K or ABS or APX or CT or FD) and not _done[0] and os.path.basename(path) == "fem_an_rt_sim.py":
         _done[0] = True
         from anchorflow import fem_extsolve as XS
         if K:
@@ -36,6 +36,12 @@ def run_path(path, *a, **kw):
             XS.install_abs(out)
         if APX:
             XS.install_apex(out)
+        if CT == 3:                                                                   # 절 CM120: Levenberg 이동 (wolfct ct 1 글자 위에; 먼저 설치 = 안쪽)
+            from anchorflow import fem_ctlm as LM
+            LM.install()
+        if CT or FD:
+            from anchorflow import fem_wolfct as WCT
+            WCT.install(out, ct=(1 if CT in (1, 3) else 0), fd=FD)
     return _orig(path, *a, **kw)
 
 

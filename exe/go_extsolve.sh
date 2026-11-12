@@ -79,6 +79,15 @@ chkn3) B=$(cat $O/nb9/cmd.txt); C=$(cat $O/ncvb/cmd.txt)
      put nap10 "$(echo "$C" | o nap10 | sed -e 's# --newton 60 # --newton 10 #' -e 's# --cg 100 # --cg 20 #' | ins '--xapex 1')"
      put ncap "$(echo "$C" | o ncap | ins '--xapex 1')";;
 rn3) runset rn3 nap napx nap10 ncap;;
+chkn4) # 절 CM120: cvb 조건 (ncvb 명령 = 기록 포함) 에서 FD 대조 + 일관 접선 (0 자르기 · Levenberg 이동); 새 인스턴스면 R2 의 ncvb·nb9 명령에서
+     C=$(rclone cat $R/ncvb/cmd.txt | tr -d "\n"); B=$(rclone cat $R/nb9/cmd.txt | tr -d "\n")
+     ins() { sed "s# exe/wolfh12_wrap.py # exe/extsolve_wrap.py $1 exe/wolfh12_wrap.py #"; }
+     o() { sed "s#--out [^ ]*\$#--out $O/$1#"; }
+     put f0 "$(echo "$C" | o f0 | ins '--xfd 1')"
+     put f1 "$(echo "$C" | o f1 | ins '--xct 1 --xfd 1')"
+     put f3 "$(echo "$C" | o f3 | ins '--xct 3 --xfd 1')"
+     put b3 "$(echo "$B" | o b3 | ins '--xct 3')";;
+rn4) runset rn4 f0 f1 f3 b3;;
 rcvb) [ $(wc -c < $O/cvb/cmd.txt) -gt 100 ] || { say "cvb cmd 비었음"; exit 1; }; runset rcvb cvb;;
 rv)  # vast (조정자 11-12): H9 · 모드 2 · --xs 1/2/3 · H5 · cvb
      for n in b9 m2 x1 x2 x3 e5 cvb; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk·chk2 먼저"; exit 1; }; done
