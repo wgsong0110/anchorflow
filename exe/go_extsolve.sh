@@ -88,6 +88,15 @@ chkn4) # 절 CM120: cvb 조건 (ncvb 명령 = 기록 포함) 에서 FD 대조 + 
      put f3 "$(echo "$C" | o f3 | ins '--xct 3 --xfd 1')"
      put b3 "$(echo "$B" | o b3 | ins '--xct 3')";;
 rn4) runset rn4 f0 f1 f3 b3;;
+chkn5) # 절 CM121: 비 판정 + 전역 Levenberg (--xtr 1), cvb 조건 (기록 포함) 과 예산 판
+     C=$(rclone cat $R/ncvb/cmd.txt | tr -d "\n"); B=$(rclone cat $R/nb9/cmd.txt | tr -d "\n")
+     ins() { sed "s# exe/wolfh12_wrap.py # exe/extsolve_wrap.py $1 exe/wolfh12_wrap.py #"; }
+     o() { sed "s#--out [^ ]*\$#--out $O/$1#"; }
+     put t0 "$(echo "$C" | o t0 | ins '--xtr 1')"
+     put t3 "$(echo "$C" | o t3 | ins '--xtr 1 --xct 3')"
+     put bt0 "$(echo "$B" | o bt0 | ins '--xtr 1')"
+     put bt3 "$(echo "$B" | o bt3 | ins '--xtr 1 --xct 3')";;
+rn5) runset rn5 t0 t3 bt0 bt3;;
 rcvb) [ $(wc -c < $O/cvb/cmd.txt) -gt 100 ] || { say "cvb cmd 비었음"; exit 1; }; runset rcvb cvb;;
 rv)  # vast (조정자 11-12): H9 · 모드 2 · --xs 1/2/3 · H5 · cvb
      for n in b9 m2 x1 x2 x3 e5 cvb; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk·chk2 먼저"; exit 1; }; done
