@@ -60,16 +60,26 @@ fig, ax = plt.subplots(2, len(D), figsize=(9 * len(D), 9), squeeze=False)
 for c, (k, d) in enumerate(D.items()):
     frs = sorted(d["frames"], key=int)
     cm = plt.cm.viridis(np.linspace(0, 0.9, len(frs)))
+    order = ["이전 걸음 끝 U", "관성 예측 Ũ", "y ← rt_ga_step0", "y ← mt_floor_n", "y ← rt_ga_y0", "y ← yl_mix", "뉴턴 시작점 y0"] + [f"뉴턴 갱신 {i}" for i in range(1, 7)]
+    used = {lab(e) for f in frs for e in d["frames"][f]["steps"][0]["seq"]}
+    order = [q for q in order if q in used or q == "관성 예측 Ũ"]
     for fi, f in enumerate(frs):
-        S = d["frames"][f]["steps"][0]
-        seq = [e for e in S["seq"] if not e["kind"].startswith("yh")]
-        x = np.arange(len(seq))
-        y1 = [e["r"].get("전체", {}).get("f098", np.nan) for e in seq]; y2 = [e["r"].get("전체", {}).get("min", np.nan) for e in seq]
-        ax[0][c].plot(x, y1, "-o", ms=3, lw=1.5, color=cm[fi], label=f"f{f}")
-        ax[1][c].plot(x, y2, "-o", ms=3, lw=1.5, color=cm[fi], label=f"f{f}")
-        if fi == len(frs) - 1:
-            for a in (ax[0][c], ax[1][c]):
-                a.set_xticks(x); a.set_xticklabels([lab(e) for e in seq], rotation=70, ha="right", fontsize=7)
+        seq = [e for e in d["frames"][f]["steps"][0]["seq"] if not e["kind"].startswith("yh")]
+        val = {}
+        for e in seq:                                                                 # 같은 이름은 마지막 값
+            val[lab(e)] = (e["r"].get("전체", {}).get("f098", np.nan), e["r"].get("전체", {}).get("min", np.nan))
+        xs, y1, y2, cur = [], [], [], None
+        last = max((i for i, q in enumerate(order) if q in val), default=-1)
+        for i, q in enumerate(order[:last + 1]):
+            if q in val:
+                cur = val[q]
+            elif q == "관성 예측 Ũ" or cur is None:
+                continue
+            xs.append(i); y1.append(cur[0]); y2.append(cur[1])                          # 빠진 단계 = y 가 안 바뀜 (앞 값)
+        ax[0][c].plot(xs, y1, "-o", ms=3, lw=1.5, color=cm[fi], label=f"f{f}")
+        ax[1][c].plot(xs, y2, "-o", ms=3, lw=1.5, color=cm[fi], label=f"f{f}")
+    for a in (ax[0][c], ax[1][c]):
+        a.set_xticks(range(len(order))); a.set_xticklabels(order, rotation=60, ha="right", fontsize=8)
     ax[0][c].set_title(f"{LAB[k]} · 걸음 0 단계별 눌린 칸 (r<0.98) 몫"); ax[0][c].set_ylabel("r<0.98 칸 몫")
     ax[1][c].set_title(f"{LAB[k]} · 걸음 0 단계별 최소 r"); ax[1][c].set_ylabel("최소 r")
     for a in (ax[0][c], ax[1][c]):

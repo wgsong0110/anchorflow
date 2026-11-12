@@ -9873,3 +9873,25 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 ### CM111.3 출력·실행
 - R2 lbours/wolfcv/cellforce.md·cellforce.png, lbours/wolfcv/cellforce/ (k9·g9_1·g5_1: cmd·log·cf.jsonl·cfinfo.json·nodes_f*.npz (노드 진단 작음), 고른 프레임 칸 파일 cf/f005·8·9·10·15·20·25·30.npz, cellforce_*.json, go_*.log, boot.log, code/). 큰 덤프 없음 (pred.pt 안 씀).
 - 실행: SSH 1 번 (09:36 UTC 로그인 노드 qstat: 133078 R ece-a6gpu9, 노드에서 R2 cellforce_launch.sh 받아 pbs_attach 로 떼어 띄움), 뒤는 R2 launch.txt 로만 (끝에 stop). 노드 / ·/tmp 안 씀, 카드는 공용 표식으로 빈 카드만. 판정 표·그림은 로컬 (exe/cellforce_tab.py).
+
+## CM113. wolf 걸음 시작점에서 칸이 처음 눌리는 원인 -- 시작점을 만드는 단계·뉴턴 갱신별 칸 r (조정자 11-12 후속; 사용자 지적 "끝이 아니라 시작에서 누가 누르는지"; 절 CM111 다음) -- 가지 k1new, 커밋 58c20cc (연기 k9 5 프레임) · 793e4a1 (본 판 p9_1·p5_1 12 프레임, 기록 f3~f12), 묶음 startpt (PBS 잡 133078 ece-a6gpu9 상주 시작점 exe/startpt_boot.sh·startpt_launch.sh, lib/anchorflow/fem_startpt.py, exe/startpt_wrap.py·go_startpt.sh·startpt_an.py·startpt_tab.py (로컬 표·그림), 결과 R2 lbours/wolfcv/startpt.md·startpt.png)
+### CM113.0 정의 (lib/anchorflow/fem_startpt.py = fem_cellforce 감싸개 + 노드 위치 사본, 결과 불변)
+- 걸음 시작 (rt_ga_step0) 앞 n·U, 뒤 n·Ũ·n·y, 그 뒤 첫 rt_grad 까지 인자에 y 가 있는 커널마다 n·y, 첫 rt_grad 앞 n·y (= y0)·n·ŷ, 뉴턴 rt_lsup 뒤 n·y. 사본마다 칸 (cellh 정의) r, 앞 y 사본 대비 구속 (T ≈ 0) 꼭짓점 몫·자유 몫. 평가별 항 = 절 CM111 정의.
+- 차례: U (0) -> rt_ga_step0 (y = Ũ 관성 예측) -> mt_floor_n (기준 ŷ 에 바닥 고착·방출 구속 몫) -> rt_ga_y0 (y = U) -> yl_mix (노드별 β 섞기) -> y0 -> 갱신 1·2. f3~f12 는 모두 K 1 (쪼개기 없음).
+- 판: H9 wolf p9_1 (wolfh12/h8_1 명령, 덤프 빼고 12 프레임, 오차 0.031 %) · H5 wolf p5_1 (wolfbar/b5_1, 0.081 %).
+### CM113.1 결과 (걸음 0; 새로 r<0.98 칸 수 · 시작점 y0 r<0.98 몫; 전체 표 R2 startpt.md)
+| 프레임 | H9 Ũ · mt_floor_n · y0 몫 · 갱신 2 몫 | H5 Ũ · mt_floor_n · y0 몫 · 갱신 2 몫 |
+|---|---|---|
+| f4 | 0 · 20 · 0.0009 · 0.0009 | 0 · 4 · 0.0002 · 0.0000 |
+| f5 | 38 · 11 · 0.0020 · 0.0020 | 8 · 7 · 0.0007 · 0.0004 |
+| f8 | 105 · 69 · 0.0084 · 0.0100 | 39 · 30 · 0.0030 · 0.0016 |
+| f10 | 417 · 165 · 0.0287 · 0.0271 | 100 · 82 · 0.0117 · 0.0112 |
+| f12 | 1032 · 166 · 0.0541 · 0.0542 | 681 · 92 · 0.0380 · 0.0300 |
+- y0 눌린 칸 중 프레임 끝에 회복 (r +0.005 넘게) 몫: H9 0.19~0.47 (확장 묶인 꼭짓점 없는 칸 0~0.33), H5 0.62~1.00.
+- y0 눌린 칸 항 (평가 0 -> 2, N): H9 탄성 −135 -> −73 (f8) · −94 -> −100 (f12); H5 탄성 + 정규화 합 −439 -> −18 (f8) · −136 -> −7 (f12). 관성·중력·장벽 ±0.03.
+### CM113.2 결론
+- **확인한 것**: 처음 r < 1 을 들이는 단계는 f4 mt_floor_n (바닥 고착·방출 구속 몫을 넣은 기준 ŷ; H9 20 칸 2~5+ 층, 자유 꼭짓점이 움직임), f5 부터는 관성 예측 Ũ 가 대부분 (y0 눌린 칸의 75~80 %). yl_mix 가 그 상태를 그대로 뉴턴 시작점에 넣음. 시작점에서도 누르는 에너지 항은 없음 (탄성 버팀). H5 도 시작점 압축은 비슷하게 생기나 뉴턴이 대부분 되돌리고, H9 는 못 되돌리며 갱신 중 새로 눌리는 칸도 있음.
+- **추정 (확인 안 함)**: Ũ 압축은 앞 프레임의 덜 풀린 압축이 속도장으로 남아 다시 들어오는 되먹임으로 보임 (H9 에서 빨리 늚); f4 mt_floor_n 압축은 방출 앞면 부분 구속 노드; H9 뉴턴이 못 되돌리는 것은 절 CM98·CM107 의 덜 풀린 선형계와 같은 것으로 보임 -- 속도장·노드별 k·선형계는 이 측정에서 안 잼.
+### CM113.3 출력·실행
+- R2 lbours/wolfcv/startpt.md·startpt.png, lbours/wolfcv/startpt/ (k9·p9_1·p5_1: cmd·log·sp.jsonl·spinfo.json·sp/f003~f012.npz, startpt_*.json, go_*.log, boot.log, code/). 큰 덤프 없음.
+- 실행: SSH 1 번 (09:59 UTC qstat: 133078 R ece-a6gpu9 65 시간째 + pbs_attach 로 떼어 띄움), 뒤는 R2 launch.txt (끝에 stop). 노드 / ·/tmp 안 씀, 카드 공용 표식.
