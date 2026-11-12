@@ -55,7 +55,7 @@ run() { local n=$1 g=$2 m=${1}_80; mkdir -p $O/$m
   say "$m rc=$? $(grep -ah '롤아웃\]' $O/$m/log.txt | tail -1 | cut -c1-200) $(grep -a '발산\|rror' $O/$m/log.txt | tail -1 | cut -c1-200)"
   rclone copy $O/$m $RX/$m -q --transfers 8; say "$m R2 올림 (덤프 포함)"; }
 NG=$(nvidia-smi -L | wc -l); PIDS=""; gi=0
-for grp in ${FA_RUNS//;/ }; do g=$((gi % NG)); gi=$((gi + 1))
+for grp in ${FA_RUNS//+/ }; do g=$((gi % NG)); gi=$((gi + 1))
   ( for n in ${grp//,/ }; do run $n $g; done ) & PIDS="$PIDS $!"; done
 ( while sleep 300; do for d in $O/*_80; do [ -f $d/log.txt ] && tail -c 1500 $d/log.txt | rclone rcat $RX/$(basename $d)/log_tail.txt; done; done ) & WP=$!
 wait $PIDS; kill $WP 2>/dev/null
