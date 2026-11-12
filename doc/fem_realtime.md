@@ -9963,6 +9963,23 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 - 판 (아직 안 돎): ra = b9 (H9 다시) · m2 · m1 (wolfh13 모드 2·1) · x1·x2·x3 (`--xs 1·2·3`) · e5 (H5 대조) · pc·m2pc (예산 끈 PCG 40 상한 판, 진단) 모두 wolf 50 프레임, R2 startpt/w9_1 명령 + 결과 불변 기록 감싸개 (r<0.7 칸) + 렌더 덤프 (/home/dkta/work/extsolve, R2 통째로, 안 지움); an = exe/extsolve_an.py; 다음 = vid (vid_runs.txt) · tm (단독 시간, tm_runs.txt) · reg (레고·ficus·bread speed13 명령 ± --xs, reg_k.txt).
 - R2 lbours/wolfcv/extsolve/code/ 에 tar (e5bde5a)·boot·launch, launch.txt = 'e5bde5a chk,chk2,ra,an'. 상주 시작점은 아직 안 띄움: 잡 133078 이 16:54 UTC 에 72 시간으로 끝났고 133079~133081 은 큐에서 사라졌으며, 16:58~18:43 UTC qstat 8 번 (15 분 간격) 모두 R 잡 없음 (Q 5 개 '메모리 부족' -- 노드를 다른 사용자가 씀). 잡 제출 금지라 기다림.
 - 띄우는 법 (R 잡이 생기면 SSH 1 번): 노드에서 `rclone cat r2:storage/result/anchorflow/lbours/wolfcv/extsolve/code/extsolve_launch.sh > /dev/shm/dkta/extsolve_launch.sh; setsid nohup /opt/pbs/bin/pbs_attach -j <잡> /bin/bash /dev/shm/dkta/extsolve_launch.sh < /dev/null > /dev/shm/dkta/extsolve_launch.out 2>&1 &`. 새 잡에서 /dev/shm/dkta/ag_data/gt_wolf 가 없으면 go 가 멈추고 기록함 (R2 에 gt_wolf 없음).
+### CM118.4 결과 -- vast.ai (조정자 11-12: 클러스터 R 잡 없음), RTX 4090 ×4 인스턴스 60409219 (전력 한도 480~500 W, 21:51~22:04 UTC, 끝나고 destroy 확인), 코드 8d702a5 (cvb 명령만 0368fca chk3 로 고침), 각 1 판 wolf 50 프레임
+- 정답 궤적 gt_wolf 는 R2 에 변환본이 없어 _vastmirror/topo/pg_wolf_sand + PhysGaussian wolf_config.json 을 exe/pg_h5_to_pt.py (절 AG 준비와 같은 명령) 로 인스턴스에서 만듦 (53 개) -> 오차·렌더 그대로 잼.
+
+| 판 | 오차 % | f30 · f50 질량중심 mm (정답 93 · 53) | r<0.7 칸 f10~30 합 | 걸음 |g|/|g0| 중앙 (p90) | 되돌림 몫 | 프레임 ms 평균 · 최대 (4090, 기록 감싸개 포함, 단독 아님) |
+|---|---|---|---|---|---|---|
+| H9 (b9) | 4.355 | 57 · 24 | 13292 | 0.74 (1.0) | 0.35 | 7.9 · 15.6 |
+| wolfh13 모드 2 (m2) | 4.201 | 64 · 41 | 17566 | 0.82 (2.6) | 0.40 | 10.1 · 15.7 |
+| --xs 1 (x1) | 4.130 | 59 · 35 | 15946 | 0.77 (2.5) | 0.42 | 9.2 · 11.5 |
+| --xs 2 (x2) | 3.876 | 59 · 31 | 17052 | 0.76 (2.2) | 0.43 | 11.6 · 14.3 |
+| --xs 3 (x3) | (발산 f50) 3.820 (49 프레임) | 63 · - | 14869 | 0.44 (1.8) | 0.37 | 14.4 · 35.2 |
+| H5 (e5) | 4.410 | 218 · 121 | 59 | 0.04 (0.14) | 0.31 | 9.5 · 10.8 |
+| H9 수렴 cvb (진단 에이전트 ebeb699 cvb 정의: 예산 1000 ms, 뉴턴 60 · PCG 100, tolN 1e-4 · tolP 1e-3) | (발산 f45) 3.627 (44 프레임) | 180 · - | 231 | 0.0015 (0.20), <1e-2 몫 0.76 | 0.37 | 2468 · 6730 |
+- 영상: result/anchorflow/v20261009/fem_wolf_ext_cmp.mp4 (정답 | H9 | 모드 2 | --xs 2 | --xs 3 | H9 수렴, 2400x570 yuv420p faststart 51 프레임, 전체 디코드 확인).
+### CM118.5 결론
+- **확인한 것**: (1) 충분히 수렴시킨 H9 (cvb) 는 칸 압축이 H5 수준 (r<0.7 합 231 대 H9 13292) 이고 f30 높이 180 mm 로 무너지지 않음 -- 무너짐은 덜 풀림 몫이 맞음. 다만 수렴 판은 정답 (93) 보다 높고 (H5 218 쪽), f45 에 발산. (2) 예산 (뉴턴 3 · PCG 10 /프레임) 안 전처리 고침 (모드 2 · 체비셰프 1~3 차) 은 걸음 잔차 비를 0.74 -> 0.44~0.82 로만 바꾸고 (수렴 판 0.0015 의 수백 배), 칸 압축은 그대로 또는 늘고 (13~18 천), f50 높이는 24 -> 31~41 mm 로 조금 오름 (정답 53, 1 판씩). 오차는 4.36 -> 3.88 (x2) 로 나아지나 합격 기준 (높이 추종 · 압축 H5 수준) 은 어느 판도 미달. x3 는 f50 발산·최대 35 ms 라 후보 아님.
+- **추정 (확인 안 함)**: 모형의 조건수 개선 (282 -> 5~8) 이 실제 판에서는 PCG 5 한 번 안 잔차 감소로 이어지지 않음 -- 실제 κ (1e5~1e6) 가 모형보다 몇 자리 커서 체비셰프 [0.1, 1.1] λ̂ 구간 밖 모드가 많고, 예산 안 뉴턴 반복 수 (2~3) 자체가 모자란 것으로 보임 (수렴 판이 프레임당 뉴턴 56 · PCG 5.6 천). 전처리만으로 이 차이 (잔차 수백 배) 를 실시간 예산 안에서 메우기는 어렵다고 봄.
+- 기본 판 안 바꿈 (`--xs` 는 새 플래그, 기본 0). 회귀 (레고·ficus·bread) 와 클러스터 단독 시간은 안 돌림 -- 통과 판이 없어서.
 
 ## CM117. wolf 무너짐 -- 수렴 부족 대 정식화 가르기 ((a) H9 · (b) H9 수렴 · (c) H9 확장 끔 · (d) H5, 50 프레임) (조정자 11-12, 사용자 완전 위임 중 원인 진단 몫; 기본 판 안 바꿈) -- **중간: (b) 미완** -- 가지 k1new, 커밋 12a1f44 (판 a·c·d, b 첫 띄움 assert 실패) · ebeb699 (b 고친 판, 아직 못 돌림), 묶음 startpt (PBS 잡 133078 ece-a6gpu9; 16:54 UTC 끝난 뒤 R 잡 없음), 결과 R2 lbours/wolfcv/conv_abl.md, 덤프 /home/dkta/work/convabl 과 R2 lbours/wolfcv/convabl/
 ### CM117.1 결과 (중간)

@@ -25,7 +25,8 @@ fs = max(16, W // 25)
 cells = [("wolf · 정답 (PG 모래)", "", f"{D}/gt_wolf.mp4", None)]
 for key, name in RUNS:
     a = A[key]
-    cells.append((f"wolf · {name}", f"오차 {100 * a['err']:.2f}% · 프레임 {a['ms_mean']:.1f} ms", f"{D}/{key}/vj/fem_wolf.mp4", key))
+    e_ = f"오차 {100 * a['err']:.2f}%" if a.get("err") is not None else f"발산 f{a.get('diverged')}"
+    cells.append((f"wolf · {name}", f"{e_} · 프레임 {a['ms_mean']:.0f} ms", f"{D}/{key}/vj/fem_wolf.mp4", key))
 ref = RUNS[0][0]
 ins, fl = [], []
 for k, (a, b, path, key) in enumerate(cells):
