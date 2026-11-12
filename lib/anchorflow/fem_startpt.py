@@ -79,6 +79,13 @@ __global__ void sp_snap(const int* IP, const float* b, float n0, float n1, float
     if (n >= IP[9]) return;
     o[n] = b[n*3]*n0 + b[n*3+1]*n1 + b[n*3+2]*n2;
 }
+__global__ void sp_snap1(const int* IP, const float* b, float* o, int* flg, int slot, const int* S) {
+    if (cfs(S)) return;
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n == 0) flg[slot] = 1;
+    if (n >= IP[9]) return;
+    o[n] = b[n];
+}
 __global__ void sp_clr(int* flg, int n, int* itb, int m) { int i = blockIdx.x*blockDim.x + threadIdx.x; if (i < n) flg[i] = 0; if (i < m) itb[i] = -1; }
 // 걸음 x 평가 칸으로: 작업 통 -> acc[slot], n·η, 번호
 __global__ void sp_fin(const int* IP, int capN, int nbk, const double* acc2, double* accs, const float* eta, float n0, float n1, float n2, float* en, int* itb, int slot, int code, float* itf, float it2, const int* S) {
@@ -123,7 +130,7 @@ class Buf:
     def __init__(s):
         import cupy as cp
         s.mod = cp.RawModule(code=SRC)
-        s.fn = {n: s.mod.get_function(n) for n in ("cf_reset", "cf_delta", "cf_fin", "cf_g0", "cf_node", "cf_cp", "cf_frame", "sp_snap", "sp_clr", "sp_fin")}
+        s.fn = {n: s.mod.get_function(n) for n in ("cf_reset", "cf_delta", "cf_fin", "cf_g0", "cf_node", "cf_cp", "cf_frame", "sp_snap", "sp_snap1", "sp_clr", "sp_fin")}
         s.capN = 0
         s.kstep = -1; s.evi = 0; s.win = False; s.skip = None; s.ns = 0; s.phase = 0; s.lsit = 0
 
@@ -215,6 +222,15 @@ def _snap(sv, W, S, NR, ptr, tag):
     INFO["n_snap"] += 1
 
 
+def _snap1(sv, W, S, ptr, tag):
+    k = W.kstep
+    if k < 0 or k >= KS or W.ns >= NS:
+        return
+    j = W.ns; W.ns += 1
+    W.go("sp_snap1", W.capN, (P(sv.IP), ptr, P(W.sn[k, j]), P(W.flg), np.int32(k * NS + j), S))
+    INFO["meta"][f"{k}:{j}"] = tag
+
+
 def _pre(sv, W, name, args):
     """원 커널 앞 일을 하고, 뒤에 할 일 (함수 또는 None) 을 돌려줌."""
     i32, f32 = np.int32, np.float32
@@ -274,6 +290,10 @@ def _pre(sv, W, name, args):
         bn = "탄성" if name in ELEM else name
         INFO["n_delta"] += 1
         return lambda: W.go("cf_delta", capN, (IPp, P(sv.f), P(W.prev), P(W.acc[KS * EV, _bucket(bn)]), *NR, S))
+    if W.phase == 1 and name in ("ao_pbc_k", "mt_pbc_kphi"):                                 # 절 CM115: 기본 구속 몫 (e^-x)
+        return lambda: _snap1(sv, W, S, args[7], ("kb_기본", name, -1))
+    if W.phase == 1 and name == "w5s_kb":                                                      # 절 CM115: S_구속 이 덮어쓴 구속 몫
+        return lambda: _snap1(sv, W, S, args[4], ("kb_S", name, -1))
     if W.phase == 1 and _has_ptr(args, yp):                                                    # 시작 단계: y 를 받는 커널 뒤 사본
         return lambda: _snap(sv, W, S, NR, P(sv.y), ("y", name, -1))
     if W.phase == 2 and name == "rt_lsup":                                                     # 뉴턴 갱신 뒤
@@ -427,13 +447,16 @@ def _analyze(s, W, t):
         out[f"k{k}_next"] = (W.w8[k, :nn][nidc] >= 0).sum(1).short().cpu().numpy()
         tags = []; R = []; RC = []; RF = []
         prev = None
-        snapv = {}
+        snapv = {}; kbs = {}
         for j in valid:
             tg = INFO["meta"].get(f"{k}:{j}")
             v = W.sn[k, j, :nn].double()
             if tg:
                 snapv.setdefault(tg[0] + ":" + tg[1], v)                                     # 첫 사본 (같은 이름이면 처음 것)
                 snapv[tg[0] + ":" + tg[1] + ":last"] = v
+            if tg and tg[0].startswith("kb_"):
+                kbs[tg[0]] = W.sn[k, j, :nn].clone()
+                continue
             if tg and tg[0].startswith("v_"):
                 vt = (v[nidc] * (wsg > 0)).sum(1) / 4.0; vb = (v[nidc] * (wsg < 0)).sum(1) / 4.0
                 out[f"k{k}_vrate"] = ((vt - vb) / hs.clamp_min(1e-12)).float().cpu().numpy()   # 칸 세로 압축률 (1/s, 음수 = 줄어듦)
@@ -448,6 +471,33 @@ def _analyze(s, W, t):
             if not (tg and (tg[0].startswith("Ut") or tg[0].startswith("yh"))):
                 prev = v
         tags = [t for t in tags if not t[0].startswith("v_")]
+        # 절 CM115: 구속 몫 정의별 부분 구속 수 (같은 상태), 앞면 노드, 노드별 입자 수, 확장 노드
+        act = mn > 0
+        w8k = W.w8[k, :nn] >= 0
+        kfin = getattr(s, "kb", None)
+        if kfin is not None:
+            kbs["kb_최종"] = kfin[:nn].clone()
+        Np_ = s.Np[:N].long()
+        o27 = torch.tensor([(i, j, l) for i in range(3) for j in range(3) for l in range(3)], device=dev, dtype=torch.int64)
+        nid27 = ((Np_[:, None, 0] + o27[None, :, 0]) * nb1 + (Np_[:, None, 1] + o27[None, :, 1])) * nb2 + (Np_[:, None, 2] + o27[None, :, 2])
+        ok27 = (nid27 >= 0) & (nid27 < nn)
+        cntn = torch.zeros(nn, device=dev).index_add_(0, nid27[ok27], torch.ones(int(ok27.sum()), device=dev))
+        heldp = (trel[:N] > float(t)).float() if trel is not None else torch.zeros(N, device=dev)
+        hn = torch.zeros(nn, device=dev).index_add_(0, nid27[ok27], heldp[:, None].expand(-1, 27)[ok27])
+        alph = hn / cntn.clamp_min(1)
+        front = act & (alph > 0) & (alph < 1)
+        KBS = {}
+        for nmk, kv in kbs.items():
+            kv = kv.double()
+            part = act & (kv > 1e-3) & (kv <= 0.999)
+            held_ = act & (kv <= 1e-3)
+            KBS[nmk] = dict(partial=int(part.sum()), held=int(held_.sum()), free=int((act & (kv > 0.999)).sum()),
+                            partial_ext=int((part & w8k).sum()), partial_front=int((part & front).sum()),
+                            corner_partial=int(part[nidc].sum()), partial_cnt_med=float(cntn[part].median()) if bool(part.any()) else None)
+            out[f"k{k}_{nmk}"] = kv[nidc].half().cpu().numpy()
+        out[f"k{k}_kbstat"] = np.array(json.dumps(dict(KBS=KBS, nact=int(act.sum()), front=int(front.sum()), front_corner=int(front[nidc].sum()),
+                                                       ext=int((act & w8k).sum()), cnt_med=float(cntn[act].median()), cnt_front_med=float(cntn[front].median()) if bool(front.any()) else None,
+                                                       held_part=float(heldp.mean())), ensure_ascii=False))
         # 절 CM114: 꼭짓점 구속 몫·고착·덮어쓴 변위
         kb = getattr(s, "kb", None)
         if kb is not None:
