@@ -33,6 +33,15 @@ NMIN_OLD = {"lego": dict(pg="43 (43)", gf="16 (16)", ipg="8 (8)", ovs="1"),     
 md, tex = [], []
 
 
+def stop_s(t):
+    t = t or ""
+    if "Tried to allocate" in t:
+        return "용량 넘침 다시 할당 메모리 부족 (발산)"
+    if "CUDA error: out of memory" in t:
+        return "그래프 캡처 메모리 부족"
+    return "" if t == "끝까지" else t.splitlines()[0][:80] if t else ""
+
+
 def pc(v, d=2):
     return "--" if v is None else f"{100 * v:.{d}f}"
 
@@ -49,7 +58,7 @@ for S in SH:
         mt, it = r.get("metrics") or {}, r.get("it") or {}
         cap = cap or (r.get("newton"), r.get("cg"), r.get("tolN"), r.get("tolP"))
         e = H["err"].get(str(r["N"])) if r.get("rep") == "a" else None
-        md.append(f"| {nm} | {r['N']} | {r['status']} ({r.get('frames')} 프레임{', ' + r['stop'] if r.get('stop') not in (None, '', '끝까지') else ''}) | {'예' if r['stable'] else '아니오'} | "
+        md.append(f"| {nm} | {r['N']} | {r['status']} ({r.get('frames')} 프레임{', ' + stop_s(r.get('stop')) if stop_s(r.get('stop')) else ''}) | {'예' if r['stable'] else '아니오'} | "
                   f"{r['unstable_frame']} | {mt.get('e_drift_max', float('nan')):.3g} | {pc(mt.get('pen_depth_max'))} | {pc(mt.get('detneg_max'))} | "
                   f"{it.get('nN_mean', float('nan')):.2f} | {it.get('nP_mean', float('nan')):.1f} | {it.get('capN_frames', '--')} | {it.get('capP_frames', '--')} | {pc(e['mean'], 3) if e else ''} |")
     md.append(f"\n기준 궤적 N{H['ref']} ({'수렴' if H['ref_converged'] else '미수렴 -- 가장 큰 N'}), 두 배 짝 차이 (RMSE/L %): "
@@ -76,13 +85,13 @@ for S in SH:
             if e and str(n) == str(M["ref"]):
                 cells.append("기준")
             elif e:
-                cells.append(pc(e["mean"], 3) + ("" if all(r["stable"] for r in runs[:1]) else "†"))
+                cells.append(pc(e["mean"], 3) if all(r["stable"] for r in runs[:1]) else "불안정†")
             elif runs:
                 cells.append("발산" if runs[0]["status"] == "발산" else runs[0]["status"])
             else:
                 cells.append("")
         md.append(f"| {name} | {M['ref']}{'' if M['ref_converged'] else '*'} | " + " | ".join(cells) + " |")
-    md.append("\n† 60 프레임은 끝났으나 표 판정 (에너지 변화 ≤ 1·관통 ≤ 0.5 L) 불안정. * 두 배 짝이 0.5 % 안으로 안 들어와 가장 큰 N 을 기준으로 씀.\n")
+    md.append("\n† 60 프레임은 끝났으나 표 판정 (에너지 변화 ≤ 1·관통 ≤ 0.5 L) 불안정. * 두 배 짝이 0.5 % 안으로 안 들어와 (미수렴) 가장 작은 끝난 N 에서 두 배씩 이어지는 끝난 N 의 끝을 기준으로 씀.\n")
 
 # ---- 3. 그림: N-오차 곡선
 fig, axs = plt.subplots(1, 3, figsize=(13.5, 4.2))
@@ -91,11 +100,14 @@ for ax, S in zip(axs, SH):
         M = A["shapes"][S]["methods"].get(m)
         if not M:
             continue
-        pts = sorted((int(n), e["mean"]) for n, e in M["err"].items() if int(n) != int(M["ref"]))
+        st0 = {}
+        for r in M["runs"].values():
+            st0.setdefault(r["N"], r["stable"])
+        pts = sorted((int(n), e["mean"]) for n, e in M["err"].items() if int(n) != int(M["ref"]) and st0.get(int(n), True))
         if not pts:
             continue
         st = {r["N"]: r["stable"] for r in M["runs"].values() if r.get("rep", "a") in ("a",) or m != "hex"}
-        ax.plot([p[0] for p in pts], [100 * p[1] for p in pts], color=col, lw=2, label=f"{name} (기준 N{M['ref']})", zorder=2)
+        ax.plot([p[0] for p in pts], [100 * p[1] for p in pts], color=col, lw=2, label=name if S == SH[0] else None, zorder=2)
         for n, e in pts:
             ok = st.get(n, True)
             ax.plot(n, 100 * e, marker=mk, ms=8, color=col, mfc=col if ok else "white", mec=col, mew=1.6, ls="", zorder=3)
@@ -103,16 +115,16 @@ for ax, S in zip(axs, SH):
     if Hf:
         fl = max(f["mean"] for f in Hf.values())
         ax.axhline(100 * fl, color="#e87ba4", lw=1, ls="--", zorder=1)
-        ax.text(1.05, 100 * fl, "육면체 재현성 바닥 (최대)", fontsize=8, color="#52514e", va="bottom")
+        ax.text(1.05, 100 * fl * 1.08, "우리(육면체) 재현성 바닥 (같은 설정 두 판, N 중 최대)", fontsize=8, color="#52514e", va="bottom")
     ax.set_xscale("log", base=2); ax.set_yscale("log")
-    ax.set_title(SHN[S]); ax.set_xlabel("프레임당 서브스텝 N")
+    ax.set_title(SHN[S] + " (기준 N: " + " · ".join(f"{nm} {A['shapes'][S]['methods'][m]['ref']}" for m, nm, _, _ in METH if m in A["shapes"][S]["methods"]) + ")", fontsize=8.5); ax.set_xlabel("프레임당 서브스텝 N")
     ax.grid(True, which="major", color="#e5e4e0", lw=0.6); ax.set_axisbelow(True)
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
 axs[0].set_ylabel("자기 기준 궤적 대비 RMSE / L (%)")
-axs[-1].legend(fontsize=8, frameon=False, loc="lower left")
-fig.suptitle("N-오차 곡선 (60 프레임 끝낸 판만; 빈 점 = 끝났으나 표 판정 불안정, 발산 판은 없음)", fontsize=10)
-fig.tight_layout()
+fig.legend(loc="lower center", ncol=len(METH), frameon=False, fontsize=9)
+fig.suptitle("N-오차 곡선 (방법마다 자기 기준 궤적 대비; 60 프레임을 끝내고 에너지·관통 판정도 안정한 판만, 발산 N 은 점 없음)", fontsize=10)
+fig.tight_layout(rect=(0, 0.07, 1, 0.95))
 fig.savefig(os.path.join(a.out, "stabhex_err.png"), dpi=170)
 
 # ---- 4. tex: N_min 표 (기존 열 그대로 + 육면체 열)
@@ -144,7 +156,7 @@ for S in SH:
     tex.append(f"%{S}: & 우리(육면체) & {H['N_min']} & {len(rs)} & " + " & ".join(cells) + r" \\")
 # 오차 표 (tex)
 tex += ["", r"\begin{table}[h]\centering\scriptsize",
-        r"\caption{방법마다 자기 기준 궤적 (N 을 두 배씩 올려 $N$ 과 $2N$ 의 차가 0.5\,\% 미만이 되는 $2N$; * = 미수렴이라 가장 큰 $N$) 대비 부분표본 RMSE$/L$ (\%, 60 프레임 평균, "
+        r"\caption{방법마다 자기 기준 궤적 (N 을 두 배씩 올려 $N$ 과 $2N$ 의 차가 0.5\,\% 미만이 되는 $2N$; * = 미수렴이라 끝난 $N$ 의 두 배 사슬 끝) 대비 부분표본 RMSE$/L$ (\%, 60 프레임 평균, "
         r"같은 번호 32768 점). 빈 칸 = 결과 없음, 발산 = 60 프레임을 못 끝냄, $\dagger$ = 끝났으나 에너지·관통 판정 불안정. 기존 방법 값은 기존 실행 결과를 같은 식으로 다시 잰 것.}",
         r"\begin{tabular}{ll" + "c" * len(NS) + "}", r"\toprule", r"형상 & 방법 (기준 $N$) & " + " & ".join(str(n) for n in NS) + r" \\", r"\midrule"]
 for S in SH:
@@ -159,7 +171,7 @@ for S in SH:
             if e and str(n) == str(M["ref"]):
                 cells.append("기준")
             elif e:
-                cells.append(f"{100 * e['mean']:.2f}" + ("" if all(r["stable"] for r in runs[:1]) else r"$^\dagger$"))
+                cells.append(f"{100 * e['mean']:.2f}" if all(r["stable"] for r in runs[:1]) else r"불안정$^\dagger$")
             elif runs:
                 cells.append("발산" if runs[0]["status"] == "발산" else "")
             else:
