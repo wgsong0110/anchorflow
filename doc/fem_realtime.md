@@ -9963,3 +9963,15 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 - 판 (아직 안 돎): ra = b9 (H9 다시) · m2 · m1 (wolfh13 모드 2·1) · x1·x2·x3 (`--xs 1·2·3`) · e5 (H5 대조) · pc·m2pc (예산 끈 PCG 40 상한 판, 진단) 모두 wolf 50 프레임, R2 startpt/w9_1 명령 + 결과 불변 기록 감싸개 (r<0.7 칸) + 렌더 덤프 (/home/dkta/work/extsolve, R2 통째로, 안 지움); an = exe/extsolve_an.py; 다음 = vid (vid_runs.txt) · tm (단독 시간, tm_runs.txt) · reg (레고·ficus·bread speed13 명령 ± --xs, reg_k.txt).
 - R2 lbours/wolfcv/extsolve/code/ 에 tar (e5bde5a)·boot·launch, launch.txt = 'e5bde5a chk,chk2,ra,an'. 상주 시작점은 아직 안 띄움: 잡 133078 이 16:54 UTC 에 72 시간으로 끝났고 133079~133081 은 큐에서 사라졌으며, 16:58~18:43 UTC qstat 8 번 (15 분 간격) 모두 R 잡 없음 (Q 5 개 '메모리 부족' -- 노드를 다른 사용자가 씀). 잡 제출 금지라 기다림.
 - 띄우는 법 (R 잡이 생기면 SSH 1 번): 노드에서 `rclone cat r2:storage/result/anchorflow/lbours/wolfcv/extsolve/code/extsolve_launch.sh > /dev/shm/dkta/extsolve_launch.sh; setsid nohup /opt/pbs/bin/pbs_attach -j <잡> /bin/bash /dev/shm/dkta/extsolve_launch.sh < /dev/null > /dev/shm/dkta/extsolve_launch.out 2>&1 &`. 새 잡에서 /dev/shm/dkta/ag_data/gt_wolf 가 없으면 go 가 멈추고 기록함 (R2 에 gt_wolf 없음).
+
+## CM117. wolf 무너짐 -- 수렴 부족 대 정식화 가르기 ((a) H9 · (b) H9 수렴 · (c) H9 확장 끔 · (d) H5, 50 프레임) (조정자 11-12, 사용자 완전 위임 중 원인 진단 몫; 기본 판 안 바꿈) -- **중간: (b) 미완** -- 가지 k1new, 커밋 12a1f44 (판 a·c·d, b 첫 띄움 assert 실패) · ebeb699 (b 고친 판, 아직 못 돌림), 묶음 startpt (PBS 잡 133078 ece-a6gpu9; 16:54 UTC 끝난 뒤 R 잡 없음), 결과 R2 lbours/wolfcv/conv_abl.md, 덤프 /home/dkta/work/convabl 과 R2 lbours/wolfcv/convabl/
+### CM117.1 결과 (중간)
+| 판 | 오차 % | 질량중심 f30 · f50 mm (정답 93 · 53) | r<0.7 칸 f10~30 | 시작점 압축 되돌린 몫 | |g|/|g0| 중앙 · p90 |
+|---|---|---|---|---|---|
+| (a) H9 | 4.33 | 59 · 31 | 12750 | 0.34 | 0.75 · 2.8 |
+| (b) H9 수렴 | 미완 | - | - | - | - |
+| (c) H9 확장 끔 | 3.92 (f44 발산) | 67 · - | 18069 | 0.31 | 0.52 · 2.7 |
+| (d) H5 | 4.42 | 217 · 120 | 54 | 0.30 | 0.041 · 0.13 |
+### CM117.2 결론 (중간)
+- **확인한 것**: H9 뉴턴 3 번은 잔차를 거의 못 줄임 (중앙 0.75, H5 0.04); 확장만 끄면 앞 프레임 잔차는 줄지만 무너짐은 더 심하고 f44 발산 -- 확장 하나로는 설명 안 됨. 판정 (수렴 부족 대 정식화) 은 (b) 가 있어야 함.
+- **남은 일**: R 잡이 생기면 startpt_launch.sh 띄우고 launch.txt 'ebeb699 cvb,cvvid,cvan', 로컬 exe/convabl_compose.py 로 영상.
