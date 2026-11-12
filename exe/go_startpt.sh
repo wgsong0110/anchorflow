@@ -71,7 +71,7 @@ run3) for n in r9_1 r5_1; do s_=p${n:1}; mkdir -p $O/$n; sed "s#--out $O/$s_\$#-
 an3) $PY -u exe/startpt3_an.py $O r9_1 r5_1 > $O/an3.log 2>&1; say "an3 rc=$?"
      rclone copy $O $R --include "an3.log" --include "startpt3_*.json" -q;;
 run4) for n in w9_1 w0_1; do mkdir -p $O/$n
-       sed -e "s#--out $O/p9_1\$#--out $O/$n#" -e "s# --frames 12 # --frames 50 #" -e "s# --bar_cnt # --bar_cnt --dump --dump_part #" -e "s#^ *#AF_SP_FR=1,50 #" $O/p9_1/cmd.txt > $O/$n/cmd.txt
+       sed -e "s#--out $O/p9_1\$#--out $O/$n#" -e "s# --frames 12 # --frames 50 #" -e "s# --bar_cnt # --bar_cnt --dump --dump_part --dump_F #" -e "s#^ *#AF_SP_FR=1,50 #" $O/p9_1/cmd.txt > $O/$n/cmd.txt
      done
      sed -i "s# --w5s 1 # --w5s 0 #" $O/w0_1/cmd.txt
      for n in w9_1 w0_1; do rclone copyto $O/$n/cmd.txt $R/$n/cmd.txt -q; say "$n: $(grep -o -- '--w5s [0-9]\|--frames [0-9]*\|--dump --dump_part\|--out [^ ]*\|AF_SP_FR=[^ ]*' $O/$n/cmd.txt | tr '\n' ' ')"; done
