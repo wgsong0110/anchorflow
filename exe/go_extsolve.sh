@@ -50,10 +50,13 @@ chk) B9=$(base9 b9); put b9 "$B9"
      put e5 "$(base5 e5)"
      put pc "$(base9 pc | conv)"; put m2pc "$(base9 m2pc | w13 2 | conv)"
      # cvb = 진단 에이전트 convabl b9 (커밋 ebeb699 cvb: 뉴턴 60 · PCG 100 · tolN 1e-4 · tolP 1e-3, xit·xg 없음) + 예산 1000 ms (--tb 그대로 두고 뒤에 1000)
-     put cvb "$(rclone cat $RS/../convabl/b9/cmd.txt | tr -d '\n' | sed -e 's/  */ /g' -e "s#--out [^ ]*\$#--out $O/cvb#" -e 's# exe/fem_an_rt_sim.py # --tb 16.7 --tb_m 0.8 --tb_w 2 --tb 1000 exe/fem_an_rt_sim.py #')";;
+     put cvb "$(rclone cat r2:storage/result/anchorflow/lbours/wolfcv/convabl/b9/cmd.txt | tr -d '\n' | sed -e 's/  */ /g' -e "s#--out [^ ]*\$#--out $O/cvb#" -e 's# exe/fem_an_rt_sim.py # --tb 16.7 --tb_m 0.8 --tb_w 2 --tb 1000 exe/fem_an_rt_sim.py #')";;
 chk2) for k in 1 2 3; do put x$k "$(base9 x$k | xs "--xs $k")"; done;;
 r2)  for n in x1 x2 x3; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk2 먼저"; exit 1; }; done
      runset r2 x1 x2 x3;;
+chk3) put cvb "$(rclone cat r2:storage/result/anchorflow/lbours/wolfcv/convabl/b9/cmd.txt | tr -d '\n' | sed -e 's/  */ /g' -e "s#--out [^ ]*\$#--out $O/cvb#" -e 's# exe/fem_an_rt_sim.py # --tb 16.7 --tb_m 0.8 --tb_w 2 --tb 1000 exe/fem_an_rt_sim.py #')"
+     say "cvb 명령 길이 $(wc -c < $O/cvb/cmd.txt): $(grep -o -- '--tb [0-9.]*\|--newton [0-9]*\|--cg [0-9]*\|--tolN [^ ]*\|--tolP [^ ]*\|--xit_from [0-9]*\|--xg [0-9]*' $O/cvb/cmd.txt | tr '\n' ' ')";;
+rcvb) [ $(wc -c < $O/cvb/cmd.txt) -gt 100 ] || { say "cvb cmd 비었음"; exit 1; }; runset rcvb cvb;;
 rv)  # vast (조정자 11-12): H9 · 모드 2 · --xs 1/2/3 · H5 · cvb
      for n in b9 m2 x1 x2 x3 e5 cvb; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk·chk2 먼저"; exit 1; }; done
      runset rv b9 m2 x1 x2 x3 e5 cvb;;
