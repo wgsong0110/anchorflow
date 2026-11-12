@@ -9895,3 +9895,15 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 ### CM113.3 출력·실행
 - R2 lbours/wolfcv/startpt.md·startpt.png, lbours/wolfcv/startpt/ (k9·p9_1·p5_1: cmd·log·sp.jsonl·spinfo.json·sp/f003~f012.npz, startpt_*.json, go_*.log, boot.log, code/). 큰 덤프 없음.
 - 실행: SSH 1 번 (09:59 UTC qstat: 133078 R ece-a6gpu9 65 시간째 + pbs_attach 로 떼어 띄움), 뒤는 R2 launch.txt (끝에 stop). 노드 / ·/tmp 안 씀, 카드 공용 표식.
+
+## CM114. 절 CM113 추정 두 개 확인 -- (1) 앞 걸음 덜 풀린 압축 -> 걸음 시작 속도장 -> 다음 Ũ 압축 되먹임, (2) f4 mt_floor_n 첫 눌림 칸이 방출 앞면 부분 구속인가 (조정자 11-12 후속) -- 가지 k1new, 커밋 02a20d1 (lib/anchorflow/fem_startpt.py 에 속도·입자->칸·꼭짓점 구속 기록 더함, exe/startpt2_an.py·go_startpt.sh run2·an2) · exe/startpt2_tab.py (로컬 그림), 묶음 startpt (PBS 잡 133078 ece-a6gpu9), 결과 R2 lbours/wolfcv/startpt2.md·startpt2.png
+### CM114.0 정의
+- 판 q9_1·q5_1 = 절 CM113 p9_1·p5_1 명령 그대로 (12 프레임, 기록 f3~f12, 오차 같음). 압축률 = (위 4 꼭짓점 평균 n·v − 아래 4) / 시작 두께 (v = 걸음 시작 vk), 앞 끝 r = 입자가 앞 프레임에 든 칸의 끝 r. 꼭짓점 k_구속 (kb) · 고착 몫 an/mqn · mt_floor_n 덮어쓴 변위 y − Ũ · 칸 입자 미방출 몫.
+### CM114.1 결과
+- (1) Ũ 눌림 확률: 앞 끝 눌린 칸 H9 0.65~1.00 · H5 0.39~1.00, 안 눌린 칸 0.000~0.016 (둘 다). Ũ 눌린 칸 중 앞 끝 눌림 몫 H9 0.57~0.79 · H5 0.25~0.54. Ũ 눌린 칸 압축률 중앙 H9 −0.53 ~ −0.91 /s · H5 −0.36 ~ −0.63. 눌린 칸 안 상관: 압축률-Ũ r 0.8~0.99, 앞 끝 r-Ũ r H9 0.19~0.73 · H5 −0.40~0.74.
+- (2) H9 f4 처음 눌린 20 칸: 꼭짓점 160 중 부분 구속 159 · 묶임 1 · 풀림 0, k_구속 칸 최소·최대 중앙 0.035·0.75, 고착 0, 덮어쓴 변위 위 − 아래 20/20 음수, 3~5+ 층 (모든 칸 중 부분 구속 꼭짓점 칸 0.9 %). f5~f12 같은 꼴. H5 첫 눌림 칸은 풀림·부분·묶임 꼭짓점이 섞인 칸.
+### CM114.2 결론
+- **확인한 것**: (1) 되먹임 있음 -- 앞 프레임 끝에 눌린 칸이 다음 Ũ 에서 대부분 다시 눌리고 (안 눌린 칸의 50~1000 배), Ũ 압축은 걸음 시작 속도장 압축률과 같이 감; H9 가 H5 보다 몫·압축률 모두 큼. (2) f4 첫 눌림은 순차 방출 앞면 부분 구속 칸 (8 꼭짓점 모두 0 < k_구속 < 1), 바닥 고착 아님, mt_floor_n 덮어쓴 변위가 칸을 줄이는 쪽.
+- **추정 (확인 안 함)**: H9 되먹임이 강한 것은 뉴턴이 압축을 못 되돌린 것 (절 CM113) 이 속도로 남기 때문으로 보임 (걸음 끝 속도 -> 다음 시작 속도 칸별 직결은 안 잼); H9 에 부분 구속 꼭짓점이 많은 이유 (f12 2.0 만 대 0.43 만) 는 안 가름.
+### CM114.3 출력·실행
+- R2 lbours/wolfcv/startpt2.md·startpt2.png, lbours/wolfcv/startpt/ (q9_1·q5_1 sp/f003~f012.npz·sp.jsonl·spinfo.json·cmd·log, startpt2_*.json, startpt_q*.json, an2*.log, corr_union.json). SSH 1 번 (10:51 UTC qstat: 133078 R 65:56 + pbs_attach 띄움), 뒤는 R2 launch.txt (끝에 stop). 노드 / ·/tmp 안 씀.
