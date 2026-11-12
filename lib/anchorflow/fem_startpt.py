@@ -541,6 +541,8 @@ def _analyze(s, W, t):
 
 def install(out, fr0=3, fr1=12):
     FR[0], FR[1] = int(fr0), int(fr1)
+    if os.environ.get("AF_SP_FR"):                                                          # 절 CM116: 기록 프레임 범위 (예 "1,50")
+        FR[0], FR[1] = (int(q) for q in os.environ["AF_SP_FR"].split(","))
     from . import fem_an_rt as ART
     OUT[0] = out
     LOG[0] = open(os.path.join(out, "sp.jsonl"), "w")

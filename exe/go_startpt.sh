@@ -39,6 +39,12 @@ runone() { local n=$1 g; g=$(claim_wait $BASHPID); say "$n 카드 $g 시작"
   say "$n rc=$rc $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200) 칸 파일 $(ls $O/$n/sp 2>/dev/null | wc -l) 개 $(du -sh $O/$n/sp 2>/dev/null | cut -f1) 기록 오류 $(python3 -c "import json;d=json.load(open('$O/$n/spinfo.json'));print(d.get('err'), d.get('n_snapdrop'))" 2>/dev/null) $(grep -a 'rror' $O/$n/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
   rclone copy $O/$n $R/$n -q --transfers 8
   say "$n R2 올림 (칸 파일 sp/ 포함, f3~f12 만이라 작음)"; }
+runone4() { local n=$1 g; g=$(claim_wait $BASHPID); say "$n 카드 $g 시작"
+  rm -rf $O/$n/sp; mkdir -p $O/$n
+  env CUDA_VISIBLE_DEVICES=$g timeout 7200 bash -c "$(cat $O/$n/cmd.txt)" < /dev/null > $O/$n/log.txt 2>&1
+  local rc=$?; rm -f $CL/$g
+  say "$n rc=$rc $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200) 칸 파일 $(ls $O/$n/sp 2>/dev/null | wc -l) 덤프 $(stat -c %s $O/$n/pred.pt 2>&1)"
+  rclone copy $O/$n $R/$n -q --exclude "pred.pt" --transfers 8; say "$n R2 올림 (pred.pt 빼고)"; }
 watch() { local END=$1; shift
   ( while [ ! -f $END ]; do sleep 120; for n in "$@"; do [ -f $O/$n/log.txt ] && { { tail -c 3000 $O/$n/log.txt; echo; echo "칸 파일 $(ls $O/$n/sp 2>/dev/null | wc -l) 개"; tail -c 1500 $O/$n/spinfo.json 2>/dev/null; } | rclone rcat $R/$n/log_tail.txt; }; done; done ) & }
 case $STG in
@@ -64,6 +70,25 @@ run3) for n in r9_1 r5_1; do s_=p${n:1}; mkdir -p $O/$n; sed "s#--out $O/$s_\$#-
      PIDS=""; for n in r9_1 r5_1; do runone $n & PIDS="$PIDS $!"; sleep 20; done; wait $PIDS; touch $O/go_run3.RUNEND;;
 an3) $PY -u exe/startpt3_an.py $O r9_1 r5_1 > $O/an3.log 2>&1; say "an3 rc=$?"
      rclone copy $O $R --include "an3.log" --include "startpt3_*.json" -q;;
+run4) for n in w9_1 w0_1; do mkdir -p $O/$n
+       sed -e "s#--out $O/p9_1\$#--out $O/$n#" -e "s# --frames 12 # --frames 50 #" -e "s# --bar_cnt # --bar_cnt --dump --dump_part #" -e "s#^ *#AF_SP_FR=1,50 #" $O/p9_1/cmd.txt > $O/$n/cmd.txt
+     done
+     sed -i "s# --w5s 1 # --w5s 0 #" $O/w0_1/cmd.txt
+     for n in w9_1 w0_1; do rclone copyto $O/$n/cmd.txt $R/$n/cmd.txt -q; say "$n: $(grep -o -- '--w5s [0-9]\|--frames [0-9]*\|--dump --dump_part\|--out [^ ]*\|AF_SP_FR=[^ ]*' $O/$n/cmd.txt | tr '\n' ' ')"; done
+     rm -f $O/go_run4.RUNEND; watch $O/go_run4.RUNEND w9_1 w0_1
+     PIDS=""; for n in w9_1 w0_1; do runone4 $n & PIDS="$PIDS $!"; sleep 20; done; wait $PIDS; touch $O/go_run4.RUNEND;;
+vid4) GTW=/dev/shm/dkta/ag_data/gt_wolf
+     for n in w9_1 w0_1; do
+       ( g=$(claim_wait $BASHPID); V=$O/$n/vj; HD=/dev/shm/dkta/w5s0_vid/$n; mkdir -p $V $HD
+         $PY -u exe/lb_roll_to_h5.py --dump $O/$n/pred.pt --traj $GTW --out $HD/h5 > $V/h5.log 2>&1
+         CUDA_VISIBLE_DEVICES=$g $PY -u exe/lb_render.py --sim $HD/h5 --config $GTW/config.json --shape wolf --out $V/fem_wolf.mp4 --frame_label 0 --caption " " < /dev/null > $V/r.log 2>&1
+         rm -f $CL/$g; rm -rf $HD
+         say "$n 영상 $(stat -c %s $V/fem_wolf.mp4 2>&1) $(tail -1 $V/r.log | cut -c1-160)"
+         rclone copy $V $R/$n/vj -q ) & sleep 5
+     done; wait;;
+an4) $PY -u exe/w5s0_an.py $O w9_1 w0_1 > $O/an4.log 2>&1; say "an4 rc=$? $(tail -4 $O/an4.log | tr '\n' ' ' | cut -c1-900)"
+     rclone copy $O $R --include "an4.log" --include "w5s0_an.json" -q
+     for n in w9_1 w0_1; do rm -f $O/$n/pred.pt; done; say "pred.pt 지움 (노드 /dev/shm 내 덤프, R2 에는 안 올림)";;
 an2) $PY -u exe/startpt_an.py $O q9_1 q5_1 > $O/an2a.log 2>&1; say "an2a rc=$?"
      $PY -u exe/startpt2_an.py $O q9_1 q5_1 > $O/an2.log 2>&1; say "an2 rc=$? $(tail -3 $O/an2.log | tr '\n' ' ' | cut -c1-600)"
      rclone copy $O $R --include "an2*.log" --include "startpt_q*.json" --include "startpt2_*.json" -q;;
