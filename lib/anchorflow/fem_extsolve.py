@@ -167,3 +167,41 @@ def _dump():
             json.dump(ST, f_, ensure_ascii=False, default=str)
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------- 절 CM119: 헤시안 투영을 0 자르기 대신 절댓값으로 (모래 ao_elem_s 본문 안만)
+ABS = dict(n=0)
+ABS_OLD = ("float d_ = fmaxf(D[m][m], 0.f);", "lt = isfinite(lt) ? fmaxf(lt, 0.f) : 0.f; lf = isfinite(lf) ? fmaxf(lf, 0.f) : 0.f;")
+ABS_NEW = ("float d_ = fabsf(D[m][m]);   /* 절 CM119 --xabs */", "lt = isfinite(lt) ? fabsf(lt) : 0.f; lf = isfinite(lf) ? fabsf(lf) : 0.f;   /* 절 CM119 --xabs */")
+
+
+def _abs_patch(code):
+    h = "ao_elem_s("
+    i = code.find("__global__ void __launch_bounds__(128) " + h)
+    if i < 0 or "절 CM119 --xabs" in code:
+        return code
+    j = code.find("\n}\n", i)
+    body = code[i:j]
+    for a, b in zip(ABS_OLD, ABS_NEW):
+        assert body.count(a) == 1, ("xabs: 바꿀 자리", a, body.count(a))
+        body = body.replace(a, b)
+    ABS["n"] += 1
+    return code[:i] + body + code[j:]
+
+
+def install_abs(out):
+    """헤시안 주값 블록 고유값·쌍 계수의 음수를 0 대신 절댓값으로 (Chen et al. 2024 'Trust-region eigenvalue filtering for projected Newton' 의 abs 투영).
+    양정치 유지, 힘·커밋 그대로 (헤시안만). 모래 경로 ao_elem_s 본문 안만 (수박 aq_elem 안 건드림)."""
+    from . import fem_an_rt as ART
+    cpm = ART.cp
+    orm = cpm.RawModule
+
+    def RawModule(*a, **kw):
+        if "code" in kw:
+            kw["code"] = _abs_patch(kw["code"])
+        elif a:
+            a = (_abs_patch(a[0]),) + tuple(a[1:])
+        return orm(*a, **kw)
+    cpm.RawModule = RawModule
+    ST["abs"] = ABS
+    print("[절 CM119] --xabs 켬 -- 모래 헤시안 투영 = 절댓값 (ao_elem_s)", flush=True)

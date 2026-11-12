@@ -20,7 +20,7 @@ if [ ! -s /dev/shm/dkta/ag_data/wolf.pt ]; then mkdir -p /dev/shm/dkta/ag_data; 
 [ -s /dev/shm/dkta/ag_data/gt_wolf/config.json ] || { say "gt_wolf 없음 -- 멈춤"; exit 1; }
 base9() { rclone cat $RS/w9_1/cmd.txt | tr -d '\n' | sed -e 's/  */ /g' -e "s#--out [^ ]*\$#--out $O/$1#"; }
 base5() { rclone cat $RS/p5_1/cmd.txt | tr -d '\n' | sed -e 's/  */ /g' -e "s#--out [^ ]*\$#--out $O/$1#" -e 's# --frames 12 # --frames 50 #' -e 's# --bar_cnt # --bar_cnt --dump --dump_part --dump_F #' -e 's#^ *#AF_SP_FR=1,50 #'; }
-put() { mkdir -p $O/$1; echo "$2" > $O/$1/cmd.txt; rclone copyto $O/$1/cmd.txt $R/$1/cmd.txt -q; say "$1: $(grep -o -- 'wolfh13_wrap.py --w13 [0-9]\|extsolve_wrap.py[^.]*\.py\|--tb [0-9.]*\|--cg [0-9]*\|--tolP [0-9e.-]*\|--frames [0-9]*\|--out [^ ]*\|AF_SP_FR=[^ ]*' $O/$1/cmd.txt | tr '\n' ' ')"; }
+put() { mkdir -p $O/$1; echo "$2" > $O/$1/cmd.txt; rclone copyto $O/$1/cmd.txt $R/$1/cmd.txt -q; say "$1: $(grep -o -- 'wolfh13_wrap.py --w13 [0-9]\|extsolve_wrap.py[^.]*\.py\|--newton [0-9]*\|--tb [0-9.]*\|--cg [0-9]*\|--tolP [0-9e.-]*\|--frames [0-9]*\|--out [^ ]*\|AF_SP_FR=[^ ]*' $O/$1/cmd.txt | tr '\n' ' ')"; }
 w13() { sed "s# -u exe/startpt_wrap.py --sp 1 exe/wolfh12_wrap.py # -u exe/startpt_wrap.py --sp 1 exe/wolfh13_wrap.py --w13 $1 exe/wolfh12_wrap.py #"; }
 xs() { sed "s# -u exe/startpt_wrap.py --sp 1 exe/wolfh12_wrap.py # -u exe/startpt_wrap.py --sp 1 exe/extsolve_wrap.py $1 exe/wolfh12_wrap.py #"; }
 conv() { sed -e 's# --tb 16.7 # --tb 1000 #' -e 's# --cg 5 # --cg 40 #' -e 's# --tolP 1e-1 # --tolP 1e-2 #'; }
@@ -60,6 +60,17 @@ chkn) # 절 CM119 nlwhy: 뉴턴 반복별 기록 감싸개를 startpt 감싸개 
      nlw() { sed "s# -u exe/startpt_wrap.py --sp 1 # -u exe/startpt_wrap.py --sp 1 exe/nlwhy_wrap.py #"; }
      for n in cvb b9; do put n$n "$(rclone cat $R/$n/cmd.txt | tr -d "\\n" | sed "s#--out [^ ]*\$#--out $O/n$n#" | nlw)"; done;;
 rn)  runset rn ncvb nb9;;
+chkn2) # 절 CM119 2 차: nb9 (H9 + 기록) · ncvb (수렴 + 기록) 명령에서 글자만
+     B=$(cat $O/nb9/cmd.txt); C=$(cat $O/ncvb/cmd.txt)
+     ins() { sed "s# exe/wolfh12_wrap.py # exe/extsolve_wrap.py $1 exe/wolfh12_wrap.py #"; }
+     o() { sed "s#--out [^ ]*\$#--out $O/$1#"; }
+     put na "$(echo "$B" | o na | ins '--xabs 1')"
+     put nax "$(echo "$B" | o nax | ins '--xabs 1 --xs 2')"
+     put nc2 "$(echo "$B" | o nc2 | sed 's# --cg 5 # --cg 2 #')"
+     put nc10 "$(echo "$B" | o nc10 | sed 's# --cg 5 # --cg 10 #')"
+     put nd10 "$(echo "$C" | o nd10 | sed -e 's# --newton 60 # --newton 10 #' -e 's# --cg 100 # --cg 20 #')"
+     put nad10 "$(echo "$C" | o nad10 | sed -e 's# --newton 60 # --newton 10 #' -e 's# --cg 100 # --cg 20 #' | ins '--xabs 1')";;
+rn2) runset rn2 na nax nc2 nc10 nd10 nad10;;
 rcvb) [ $(wc -c < $O/cvb/cmd.txt) -gt 100 ] || { say "cvb cmd 비었음"; exit 1; }; runset rcvb cvb;;
 rv)  # vast (조정자 11-12): H9 · 모드 2 · --xs 1/2/3 · H5 · cvb
      for n in b9 m2 x1 x2 x3 e5 cvb; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk·chk2 먼저"; exit 1; }; done
