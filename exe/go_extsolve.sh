@@ -56,6 +56,10 @@ r2)  for n in x1 x2 x3; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- c
      runset r2 x1 x2 x3;;
 chk3) put cvb "$(rclone cat r2:storage/result/anchorflow/lbours/wolfcv/convabl/b9/cmd.txt | tr -d '\n' | sed -e 's/  */ /g' -e "s#--out [^ ]*\$#--out $O/cvb#" -e 's# exe/fem_an_rt_sim.py # --tb 16.7 --tb_m 0.8 --tb_w 2 --tb 1000 exe/fem_an_rt_sim.py #')"
      say "cvb 명령 길이 $(wc -c < $O/cvb/cmd.txt): $(grep -o -- '--tb [0-9.]*\|--newton [0-9]*\|--cg [0-9]*\|--tolN [^ ]*\|--tolP [^ ]*\|--xit_from [0-9]*\|--xg [0-9]*' $O/cvb/cmd.txt | tr '\n' ' ')";;
+chkn) # 절 CM119 nlwhy: 뉴턴 반복별 기록 감싸개를 startpt 감싸개 다음에 (cvb·b9 명령 그대로)
+     nlw() { sed "s# -u exe/startpt_wrap.py --sp 1 # -u exe/startpt_wrap.py --sp 1 exe/nlwhy_wrap.py #"; }
+     for n in cvb b9; do put n$n "$(rclone cat $R/$n/cmd.txt | tr -d "\\n" | sed "s#--out [^ ]*\$#--out $O/n$n#" | nlw)"; done;;
+rn)  runset rn ncvb nb9;;
 rcvb) [ $(wc -c < $O/cvb/cmd.txt) -gt 100 ] || { say "cvb cmd 비었음"; exit 1; }; runset rcvb cvb;;
 rv)  # vast (조정자 11-12): H9 · 모드 2 · --xs 1/2/3 · H5 · cvb
      for n in b9 m2 x1 x2 x3 e5 cvb; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk·chk2 먼저"; exit 1; }; done
