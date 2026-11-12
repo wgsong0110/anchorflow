@@ -56,6 +56,12 @@ run) for n in p9_1 p5_1; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- 
      PIDS=""; for n in p9_1 p5_1; do runone $n & PIDS="$PIDS $!"; sleep 20; done; wait $PIDS; touch $O/go_run.RUNEND;;
 an)  $PY -u exe/startpt_an.py $O p9_1 p5_1 > $O/an.log 2>&1; say "an rc=$? $(tail -3 $O/an.log | tr '\n' ' ' | cut -c1-600)"
      rclone copy $O $R --include "an.log" --include "startpt_*.json" -q;;
+run2) for n in q9_1 q5_1; do s_=p${n:1}; mkdir -p $O/$n; sed "s# --out [^ ]*\$# --out $O/$n#" $O/$s_/cmd.txt | sed "s#--out $O/$s_ #--out $O/$n #" > $O/$n/cmd.txt; rclone copyto $O/$n/cmd.txt $R/$n/cmd.txt -q; say "$n: $(cut -c1-300 $O/$n/cmd.txt) ... $(grep -o -- '--out [^ ]*' $O/$n/cmd.txt)"; done
+     rm -f $O/go_run2.RUNEND; watch $O/go_run2.RUNEND q9_1 q5_1
+     PIDS=""; for n in q9_1 q5_1; do runone $n & PIDS="$PIDS $!"; sleep 20; done; wait $PIDS; touch $O/go_run2.RUNEND;;
+an2) $PY -u exe/startpt_an.py $O q9_1 q5_1 > $O/an2a.log 2>&1; say "an2a rc=$?"
+     $PY -u exe/startpt2_an.py $O q9_1 q5_1 > $O/an2.log 2>&1; say "an2 rc=$? $(tail -3 $O/an2.log | tr '\n' ' ' | cut -c1-600)"
+     rclone copy $O $R --include "an2*.log" --include "startpt_q*.json" --include "startpt2_*.json" -q;;
 esac
 echo "끝 $(date '+%F %T')" > $O/go_$STG.END; rclone copyto $O/go_$STG.END $R/go_$STG.END -q
 say "끝"

@@ -229,6 +229,7 @@ def _pre(sv, W, name, args):
         if W.kstep + 1 < KS:
             W.kstep += 1; W.ns = 0
             _snap(sv, W, S, NR, P(sv.U), ("U_이전끝", name, -1))
+            _snap(sv, W, S, NR, args[2], ("v_시작", name, -1))                              # 절 CM114: 걸음 시작 노드 속도 vk
             W.kstep -= 1
 
         def _p():
@@ -389,6 +390,13 @@ def _analyze(s, W, t):
     uk, inv = torch.unique(key, return_inverse=True)
     first = torch.full((len(uk),), N, device=dev, dtype=torch.int64).scatter_reduce(0, inv, torch.arange(N, device=dev), reduce="amin")
     nidc = nid[first[uk >= 0]]
+    cmap = torch.cumsum((uk >= 0).long(), 0) - 1
+    pcell = torch.where(uk[inv] >= 0, cmap[inv], torch.full_like(inv, -1))                  # 절 CM114: 입자 -> 칸 번호 (입자 차례는 프레임 사이 고정)
+    trel = getattr(s, "trel", None)
+    held = (trel[:N] > float(t)).float() if trel is not None else torch.zeros(N, device=dev)
+    nc_ = int(nidc.shape[0])
+    cnt = torch.zeros(nc_, device=dev).index_add_(0, pcell.clamp(min=0), (pcell >= 0).float())
+    hf = torch.zeros(nc_, device=dev).index_add_(0, pcell.clamp(min=0), held * (pcell >= 0).float()) / cnt.clamp_min(1)
     a0 = h0[nidc]
     hs = a0.max(1).values - a0.min(1).values
     hb = a0.min(1).values
@@ -405,7 +413,7 @@ def _analyze(s, W, t):
     def rr(v):
         a = a0 + v[nidc]
         return (a.max(1).values - a.min(1).values) / hs.clamp_min(1e-12)
-    out = dict(lay=lay.short().cpu().numpy(), hb=hb.float().cpu().numpy(), m=mn[nidc].sum(1).float().cpu().numpy(), dx=dx)
+    out = dict(pcell=pcell.int().cpu().numpy(), held=hf.half().cpu().numpy(), lay=lay.short().cpu().numpy(), hb=hb.float().cpu().numpy(), m=mn[nidc].sum(1).float().cpu().numpy(), dx=dx)
     steps = []
     for k in range(KS):
         valid = [j for j in range(NS) if flg[k, j]]
@@ -419,9 +427,17 @@ def _analyze(s, W, t):
         out[f"k{k}_next"] = (W.w8[k, :nn][nidc] >= 0).sum(1).short().cpu().numpy()
         tags = []; R = []; RC = []; RF = []
         prev = None
+        snapv = {}
         for j in valid:
             tg = INFO["meta"].get(f"{k}:{j}")
             v = W.sn[k, j, :nn].double()
+            if tg:
+                snapv.setdefault(tg[0] + ":" + tg[1], v)                                     # 첫 사본 (같은 이름이면 처음 것)
+                snapv[tg[0] + ":" + tg[1] + ":last"] = v
+            if tg and tg[0].startswith("v_"):
+                vt = (v[nidc] * (wsg > 0)).sum(1) / 4.0; vb = (v[nidc] * (wsg < 0)).sum(1) / 4.0
+                out[f"k{k}_vrate"] = ((vt - vb) / hs.clamp_min(1e-12)).float().cpu().numpy()   # 칸 세로 압축률 (1/s, 음수 = 줄어듦)
+                continue
             tags.append([str(q) for q in tg] if tg else ["?", "?", -1])
             R.append(rr(v))
             if prev is None or tg[0].startswith("Ut") or tg[0].startswith("yh"):
@@ -431,6 +447,23 @@ def _analyze(s, W, t):
                 RC.append(rr(vC)); RF.append(rr(vF))
             if not (tg and (tg[0].startswith("Ut") or tg[0].startswith("yh"))):
                 prev = v
+        tags = [t for t in tags if not t[0].startswith("v_")]
+        # 절 CM114: 꼭짓점 구속 몫·고착·덮어쓴 변위
+        kb = getattr(s, "kb", None)
+        if kb is not None:
+            out[f"k{k}_kb"] = kb[:nn][nidc].half().cpu().numpy()
+        out[f"k{k}_stk"] = (s.an[:nn] / s.mqn[:nn].clamp_min(1e-30)).clamp(0, 1)[nidc].half().cpu().numpy()
+        out[f"k{k}_sk"] = sk[nidc].half().cpu().numpy()
+        out[f"k{k}_mnc"] = mn[nidc].float().cpu().numpy()
+        Ut_ = snapv.get("Ut_관성예측:rt_ga_step0")
+        ymt = snapv.get("y:mt_floor_n")
+        yh_ = snapv.get("yh_기준:rt_grad")
+        if Ut_ is not None and ymt is not None:
+            dm_ = (ymt - Ut_)[nidc]
+            out[f"k{k}_dmt"] = dm_.float().cpu().numpy()                                     # mt_floor_n 이 덮어쓴 법선 변위 (m)
+            out[f"k{k}_dmt_tb"] = ((dm_ * (wsg > 0)).sum(1) / 4.0 - (dm_ * (wsg < 0)).sum(1) / 4.0).float().cpu().numpy()   # 위 평균 − 아래 평균 (음수 = 칸을 줄임)
+        if Ut_ is not None and yh_ is not None:
+            out[f"k{k}_dyh"] = (yh_ - Ut_)[nidc].float().cpu().numpy()
         out[f"k{k}_r"] = torch.stack(R).float().cpu().numpy()
         out[f"k{k}_rC"] = torch.stack(RC).float().cpu().numpy()
         out[f"k{k}_rF"] = torch.stack(RF).float().cpu().numpy()
