@@ -101,15 +101,22 @@ cvchk) mkdir -p $Q; H8=$(rclone cat $RB/wolfh12/h8_1/cmd.txt | tr -d '\n' | sed 
      B5=$(rclone cat $RB/wolfbar/b5_1/cmd.txt | tr -d '\n' | sed -e 's/  */ /g' -e 's/$/ /' -e 's# -u exe/wolfbar_wrap.py --wbdg 1 --wbks 1 exe/speed13_wrap.py # -u exe/speed13_wrap.py #' -e 's# --bar_cnt # --bar_cnt --dump --dump_part --dump_F #')
      mk() { local n=$1 c="$2"; mkdir -p $Q/$n; echo "$c" | sed -e "s#^ *#AF_SP_FR=1,50 #" -e "s# -u exe/# -u exe/startpt_wrap.py --sp 1 exe/#" -e "s# --out [^ ]* \$# --out $Q/$n#" > $Q/$n/cmd.txt; rclone copyto $Q/$n/cmd.txt $RQ/$n/cmd.txt -q; say "$n: $(cut -c1-8000 $Q/$n/cmd.txt)"; }
      mk a9 "$H8"
-     mk b9 "$(echo "$H8" | sed -e 's# --tb 16.7 --tb_m 0.8 --tb_w 2 # #' -e 's# --newton 6 # --newton 60 #' -e 's# --cg 5 # --cg 100 #' -e 's# --tolN 1e-2 # --tolN 1e-4 #' -e 's# --tolP 1e-1 # --tolP 1e-3 #' -e 's# --xit_from 2 # #' -e 's# --xg 1 # #')"
+     mk b9 "$(echo "$H8" | sed -e 's# --tb_w 2 # --tb_w 2 --tb 1000 #' -e 's# --newton 6 # --newton 60 #' -e 's# --cg 5 # --cg 100 #' -e 's# --tolN 1e-2 # --tolN 1e-4 #' -e 's# --tolP 1e-1 # --tolP 1e-3 #' -e 's# --xit_from 2 # #' -e 's# --xg 1 # #')"
      mk c9 "$(echo "$H8" | sed -e 's# --w8e 1 # --w8e 0 #')"
      mk d5 "$B5";;
 cvrun) for n in a9 b9 c9 d5; do [ -s $Q/$n/cmd.txt ] || { say "$n cmd 없음"; exit 1; }; done
      rm -f $Q/go_cvrun.RUNEND
      ( while [ ! -f $Q/go_cvrun.RUNEND ]; do sleep 120; for n in a9 b9 c9 d5; do [ -f $Q/$n/log.txt ] && { tail -c 2500 $Q/$n/log.txt; echo; echo "칸 파일 $(ls $Q/$n/sp 2>/dev/null | wc -l)"; } | rclone rcat $RQ/$n/log_tail.txt; done; done ) &
      PIDS=""; for n in a9 b9 c9 d5; do runone5 $n & PIDS="$PIDS $!"; sleep 20; done; wait $PIDS; touch $Q/go_cvrun.RUNEND;;
+cvb) mkdir -p $Q/b9; sed -i 's# --tb_m 0.8 --tb_w 2 # --tb_m 0.8 --tb_w 2 --tb 1000 #' $Q/b9/cmd.txt; rclone copyto $Q/b9/cmd.txt $RQ/b9/cmd.txt -q
+     say "b9 (예산 1000 ms = 절 CM93 aC_1 과 같은 꼴; --tc 는 --tb 판이라 --tb 그대로 두고 뒤에 1000): $(grep -o -- '--tb [0-9.]*\|--newton [0-9]*\|--cg [0-9]*\|--tolN [^ ]*\|--tolP [^ ]*\|--xit_from [0-9]*\|--xg [0-9]*' $Q/b9/cmd.txt | tr '\n' ' ')"
+     rm -f $Q/go_cvb.RUNEND
+     ( while [ ! -f $Q/go_cvb.RUNEND ]; do sleep 120; [ -f $Q/b9/log.txt ] && { tail -c 2500 $Q/b9/log.txt; echo; echo "칸 파일 $(ls $Q/b9/sp 2>/dev/null | wc -l)"; } | rclone rcat $RQ/b9/log_tail.txt; done ) &
+     runone5 b9; touch $Q/go_cvb.RUNEND;;
 cvvid) GTW=/dev/shm/dkta/ag_data/gt_wolf
      for n in a9 b9 c9; do
+       [ -s $Q/$n/vj/fem_wolf.mp4 ] && continue                                    # 이미 렌더한 판은 건너뜀
+       [ -s $Q/$n/pred.pt ] || { say "$n 덤프 없음"; continue; }
        ( g=$(claim_wait $BASHPID); V=$Q/$n/vj; HD=/dev/shm/dkta/convabl_vid/$n; mkdir -p $V $HD
          $PY -u exe/lb_roll_to_h5.py --dump $Q/$n/pred.pt --traj $GTW --out $HD/h5 > $V/h5.log 2>&1
          CUDA_VISIBLE_DEVICES=$g $PY -u exe/lb_render.py --sim $HD/h5 --config $GTW/config.json --shape wolf --out $V/fem_wolf.mp4 --frame_label 0 --caption " " < /dev/null > $V/r.log 2>&1
