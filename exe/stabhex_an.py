@@ -155,8 +155,11 @@ for S in ("lego", "mic", "ficus"):
                 if M["ref"] is None and d < a.tol:
                     M["ref"] = 2 * n
         M["ref_converged"] = M["ref"] is not None
-        if M["ref"] is None and Ns:
-            M["ref"] = Ns[-1]
+        if M["ref"] is None and Ns:                                 # 미수렴: 가장 작은 끝난 N 에서 두 배씩 이어지는 사슬의 끝 (중간에 발산한 N 이 있으면 거기서 멈춤)
+            c_ = Ns[0]
+            while 2 * c_ in fin:
+                c_ *= 2
+            M["ref"] = c_
         if M["ref"] is not None:
             XR = fin[M["ref"]]
             for n in Ns:
