@@ -67,6 +67,23 @@ s0)
   metrics $D wolf
   up $D smoke; say "s0 끝"
   ;;
+rt)
+  # 이어 돌리기 확인: A = 4 프레임 한 번에, B = 3 프레임 (t=2 체크포인트 남김) 뒤 같은 출력으로 --frames 4 --resume (t=3 부터)
+  D=$O/rtest; mkdir -p $D
+  ( g=$(claim_wait $BASHPID); X="$TR --flow $IN/gflow_bread.npz --aux $IN/aux_bread.npz --riem_eps 1e-1 --riem_lr 100 --ckpt_every 2 --save_traj"
+    CUDA_VISIBLE_DEVICES=$g $PY -u $X --frames 4 --out $D/A.npz --video $D/A.mp4 < /dev/null > $D/A.log 2>&1
+    CUDA_VISIBLE_DEVICES=$g $PY -u $X --frames 3 --out $D/B.npz --video $D/B.mp4 < /dev/null > $D/B1.log 2>&1
+    CUDA_VISIBLE_DEVICES=$g $PY -u $X --frames 4 --out $D/B.npz --video $D/B.mp4 --resume < /dev/null > $D/B2.log 2>&1
+    rm -f $CL/$g
+    $PY -c "
+import numpy as np
+a, b = np.load('$D/A.npz'), np.load('$D/B.npz')
+print('A', a['metrics'][:, 1].tolist()); print('B', b['metrics'][:, 1].tolist())
+print('traj 최대 차', float(np.abs(a['traj'].astype(np.float32) - b['traj'].astype(np.float32)).max()), 'curve 길이', a['curve'].shape, b['curve'].shape)
+" > $D/cmp.txt 2>&1
+    say "이어 돌리기 확인 $(grep -a '이어 돌리기' $D/B2.log | head -1) | $(cat $D/cmp.txt | tr '\n' ' ')" )
+  up $D rtest
+  ;;
 tune)
   D=$O/tune; mkdir -p $D; Q=$D/queue.txt
   [ -f $Q ] || for e in 1e-3 1e-2 1e-1 1; do for eta in 0.1 0.5 1 10 100; do echo "$e $eta"; done; done > $Q
