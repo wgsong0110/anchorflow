@@ -7,12 +7,12 @@
 #   an    = 분석 (CPU, exe/stabhex_an.py) -> stabhex_an.json
 #   vid   = 덤프 판 3DGS 렌더 (exe/rep_ip.py --render_npz, 같은 렌더러) + 비교 합성 (exe/stabhex_compose.py)
 #   speed = 단독 시간 (카드 하나에 다른 계산 프로세스 0 일 때 차례로; 기록·덤프·진단 환경 변수 없음)
-# 노드 / ·/tmp 는 안 씀: 코드·TMPDIR·캐시·입력 /dev/shm/dkta, 결과 /home/dkta/work/stabhex.
+# 노드 / ·/tmp 는 안 씀: 코드·TMPDIR·캐시·입력 /dev/shm/dkta, 결과 /dev/shm/dkta/stabhex/work (/home 여유 21 GB 라; 판마다 R2 로).
 export PATH=/home/dkta/bin:$PATH
 H=$1; STG=$2
 if [[ "$STG" == *,* ]]; then for st in ${STG//,/ }; do bash "$0" "$H" "$st"; done; exit 0; fi       # 여러 단계 차례로
 R=r2:storage/result/anchorflow/lbours/stabhex
-O=/home/dkta/work/stabhex; C=$(pwd -P); SD=/dev/shm/dkta/stabhex/data
+O=/dev/shm/dkta/stabhex/work; C=$(pwd -P); SD=/dev/shm/dkta/stabhex/data
 W=/home/dkta/work/stab
 export TMPDIR=/dev/shm/dkta/tmp; mkdir -p $TMPDIR $O $SD /dev/shm/dkta/cache
 export PYTHONUTF8=1 OMP_NUM_THREADS=8 XDG_CACHE_HOME=/dev/shm/dkta/cache CUPY_CACHE_DIR=/dev/shm/dkta/cache/cupy_stabhex

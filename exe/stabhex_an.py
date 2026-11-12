@@ -26,7 +26,7 @@ from anchorflow import stabstat as ss                              # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--root", default="/home/dkta/work/stab")
-ap.add_argument("--hex", default="/home/dkta/work/stabhex")
+ap.add_argument("--hex", default="/dev/shm/dkta/stabhex/work")
 ap.add_argument("--jobs", default="exe/stabhex_jobs.txt")
 ap.add_argument("--out", required=True)
 ap.add_argument("--tol", type=float, default=0.005)
