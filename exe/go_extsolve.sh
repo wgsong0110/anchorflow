@@ -54,13 +54,28 @@ r2)  for n in x1 x2 x3; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- c
      runset r2 x1 x2 x3;;
 ra)  for n in b9 m2 m1 e5 pc m2pc x1 x2 x3; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk·chk2 먼저"; exit 1; }; done
      runset ra b9 m2 m1 e5 x1 x2 x3 pc m2pc;;
+tm)  # 시간 판 (단독: 차례로, 판마다 계산 프로세스 0 인 카드): wolfh12/h8_1 명령에서 덤프만 뺌 (기록 감싸개 없음), tm_runs.txt = '이름:차수' (0 = H9 그대로)
+     for spec in $(rclone cat $R/code/tm_runs.txt); do n=${spec%%:*}; k=${spec#*:}
+       c=$(rclone cat r2:storage/result/anchorflow/lbours/wolfh12/h8_1/cmd.txt | tr -d '\n' | sed -e 's/  */ /g' -e 's# --dump_part # #; s# --dump_F # #; s# --dump # #' -e "s#--out [^ ]*\$#--out $O/$n#")
+       [ "$k" != 0 ] && c=$(echo "$c" | sed "s# -u exe/wolfh12_wrap.py # -u exe/extsolve_wrap.py --xs $k exe/wolfh12_wrap.py #")
+       put $n "$c"; runone $n; done;;
+reg) # 다른 씬 회귀 (단독, 차례로): speed13 oXL_1·oXF_1·oXB_1 (H9 판정 명령) 그대로와 --xs K (κ 1 씬이라 확장 커널 0 이어야 함), reg_k.txt = K
+     K=$(rclone cat $R/code/reg_k.txt)
+     for sc in oXL_1 oXF_1 oXB_1; do
+       c=$(rclone cat r2:storage/result/anchorflow/lbours/speed13/$sc/cmd.txt | tr -d '\n' | sed -e 's/  */ /g')
+       miss=""; for f in $(echo "$c" | grep -o -- '--data [^ ]*\|--rr_traj [^ ]*' | awk '{print $2}'); do [ -e $f ] || miss="$miss $f"; done
+       [ -n "$miss" ] && { say "$sc 자료 없음:$miss -- 건너뜀"; continue; }
+       for k in 0 $K; do n=g${sc:2:1}_$k
+         cc=$(echo "$c" | sed "s#--out [^ ]*\$#--out $O/$n#")
+         [ "$k" != 0 ] && cc=$(echo "$cc" | sed "s# -u exe/speed13_wrap.py # -u exe/extsolve_wrap.py --xs $k exe/speed13_wrap.py #")
+         put $n "$cc"; runone $n; done; done;;
 r1)  for n in b9 m2 m1 e5 pc m2pc; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk 먼저"; exit 1; }; done
      runset r1 b9 m2 m1 e5 pc m2pc;;
-an)  RUNS=$(cat $O/an_runs.txt 2>/dev/null || echo "b9 m2 m1 e5 x1 x2 x3 pc m2pc")
+an)  RUNS=$(rclone cat $R/code/an_runs.txt 2>/dev/null || echo "b9 m2 m1 e5 x1 x2 x3 pc m2pc")
      $PY -u exe/extsolve_an.py $O $RUNS > $O/an.log 2>&1; say "an rc=$? $(tail -8 $O/an.log | tr '\n' ' ' | cut -c1-2500)"
      rclone copy $O $R --include "an.log" --include "extsolve_an.json" -q;;
 vid) GTW=/dev/shm/dkta/ag_data/gt_wolf
-     for n in $(cat $O/vid_runs.txt); do
+     for n in $(rclone cat $R/code/vid_runs.txt); do
        ( g=$(claim_wait $BASHPID); V=$O/$n/vj; HD=/dev/shm/dkta/extsolve_vid/$n; mkdir -p $V $HD
          $PY -u exe/lb_roll_to_h5.py --dump $O/$n/pred.pt --traj $GTW --out $HD/h5 > $V/h5.log 2>&1
          CUDA_VISIBLE_DEVICES=$g $PY -u exe/lb_render.py --sim $HD/h5 --config $GTW/config.json --shape wolf --out $V/fem_wolf.mp4 --frame_label 0 --caption " " < /dev/null > $V/r.log 2>&1
