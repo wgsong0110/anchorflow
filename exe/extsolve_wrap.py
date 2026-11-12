@@ -16,24 +16,26 @@ sys.setrecursionlimit(max(sys.getrecursionlimit(), 14000))
 argv = sys.argv[1:]
 out = argv[argv.index("--out") + 1] if "--out" in argv else "."
 os.makedirs(out, exist_ok=True)
-O = dict(xs="0", xslo="0.1", xshi="1.1", xabs="0")
-while argv and argv[0] in ("--xs", "--xslo", "--xshi", "--xabs"):
+O = dict(xs="0", xslo="0.1", xshi="1.1", xabs="0", xapex="0")
+while argv and argv[0] in ("--xs", "--xslo", "--xshi", "--xabs", "--xapex"):
     O[argv[0][2:]] = argv[1]
     del argv[:2]
-K = int(float(O["xs"])); ABS = int(float(O["xabs"]))
+K = int(float(O["xs"])); ABS = int(float(O["xabs"])); APX = int(float(O["xapex"]))
 
 _orig = runpy.run_path
 _done = [False]
 
 
 def run_path(path, *a, **kw):
-    if (K or ABS) and not _done[0] and os.path.basename(path) == "fem_an_rt_sim.py":
+    if (K or ABS or APX) and not _done[0] and os.path.basename(path) == "fem_an_rt_sim.py":
         _done[0] = True
         from anchorflow import fem_extsolve as XS
         if K:
             XS.install(out, k=K, lo=float(O["xslo"]), hi=float(O["xshi"]))
         if ABS:
             XS.install_abs(out)
+        if APX:
+            XS.install_apex(out)
     return _orig(path, *a, **kw)
 
 

@@ -71,6 +71,14 @@ chkn2) # 절 CM119 2 차: nb9 (H9 + 기록) · ncvb (수렴 + 기록) 명령에�
      put nd10 "$(echo "$C" | o nd10 | sed -e 's# --newton 60 # --newton 10 #' -e 's# --cg 100 # --cg 20 #')"
      put nad10 "$(echo "$C" | o nad10 | sed -e 's# --newton 60 # --newton 10 #' -e 's# --cg 100 # --cg 20 #' | ins '--xabs 1')";;
 rn2) runset rn2 na nax nc2 nc10 nd10 nad10;;
+chkn3) B=$(cat $O/nb9/cmd.txt); C=$(cat $O/ncvb/cmd.txt)
+     ins() { sed "s# exe/wolfh12_wrap.py # exe/extsolve_wrap.py $1 exe/wolfh12_wrap.py #"; }
+     o() { sed "s#--out [^ ]*\$#--out $O/$1#"; }
+     put nap "$(echo "$B" | o nap | ins '--xapex 1')"
+     put napx "$(echo "$B" | o napx | ins '--xapex 1 --xs 2')"
+     put nap10 "$(echo "$C" | o nap10 | sed -e 's# --newton 60 # --newton 10 #' -e 's# --cg 100 # --cg 20 #' | ins '--xapex 1')"
+     put ncap "$(echo "$C" | o ncap | ins '--xapex 1')";;
+rn3) runset rn3 nap napx nap10 ncap;;
 rcvb) [ $(wc -c < $O/cvb/cmd.txt) -gt 100 ] || { say "cvb cmd 비었음"; exit 1; }; runset rcvb cvb;;
 rv)  # vast (조정자 11-12): H9 · 모드 2 · --xs 1/2/3 · H5 · cvb
      for n in b9 m2 x1 x2 x3 e5 cvb; do [ -s $O/$n/cmd.txt ] || { say "$n cmd.txt 없음 -- chk·chk2 먼저"; exit 1; }; done

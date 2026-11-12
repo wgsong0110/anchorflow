@@ -205,3 +205,40 @@ def install_abs(out):
     cpm.RawModule = RawModule
     ST["abs"] = ABS
     print("[절 CM119] --xabs 켬 -- 모래 헤시안 투영 = 절댓값 (ao_elem_s)", flush=True)
+
+
+# ---------------------------------------------------------------- 절 CM119: 꼭짓점 (st 2, τ̂ = 0) 가우스 점의 헤시안 = 참 접선 0 (모래 ao_elem_s 본문 안만)
+APX = dict(n=0)
+APX_OLD = ("dm[m] = (d_ > 0.f && isfinite(d_)) ? d_ : 0.f; }", "C[6+pp] = vq*0.5f*(lt + lf);")
+APX_NEW = ("dm[m] = (d_ > 0.f && isfinite(d_)) ? d_ : 0.f; if (st == 2) dm[m] = 0.f; }   /* 절 CM119 --xapex */",
+           "if (st == 2) { lt = 0.f; lf = 0.f; }   /* 절 CM119 --xapex */ C[6+pp] = vq*0.5f*(lt + lf);")
+
+
+def _apex_patch(code):
+    i = code.find("__global__ void __launch_bounds__(128) ao_elem_s(")
+    if i < 0 or "절 CM119 --xapex" in code:
+        return code
+    j = code.find("\n}\n", i)
+    body = code[i:j]
+    for a, b in zip(APX_OLD, APX_NEW):
+        assert body.count(a) == 1, ("xapex: 바꿀 자리", a, body.count(a))
+        body = body.replace(a, b)
+    APX["n"] += 1
+    return code[:i] + body + code[j:]
+
+
+def install_apex(out):
+    """꼭짓점 상태 (원뿔 꼭짓점, 반환 뒤 응력 0) 점만 헤시안 기여 0 (그 점의 참 접선; 힘은 이미 0). 탄성·꼬리 점은 그대로 (절 CM108 T2 는 꼬리까지 바꿔 나빠짐)."""
+    from . import fem_an_rt as ART
+    cpm = ART.cp
+    orm = cpm.RawModule
+
+    def RawModule(*a, **kw):
+        if "code" in kw:
+            kw["code"] = _apex_patch(kw["code"])
+        elif a:
+            a = (_apex_patch(a[0]),) + tuple(a[1:])
+        return orm(*a, **kw)
+    cpm.RawModule = RawModule
+    ST["apex"] = APX
+    print("[절 CM119] --xapex 켬 -- 꼭짓점 점 헤시안 0 (ao_elem_s)", flush=True)
