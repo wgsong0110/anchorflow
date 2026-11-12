@@ -383,7 +383,9 @@ def _analyze(s, W, t):
         dif = (tot - gn)[act].abs()
         stat[sl] = dict(it2=it2, code=int(itb[si]), chk_max=float(dif.max()) if bool(act.any()) else 0.0, chk_ref=float(gn[act].abs().max()) if bool(act.any()) else 0.0,
                         pm_other=int(((pm != 0) & (pm != 1) & (pm != 2) & act).sum()), nT=int((((tn - 1).abs() > 1e-3) & act).sum()), pm2=int(((pm == 2) & act).sum()),
-                        tn_q=[float(q) for q in torch.quantile(tn[act].float(), torch.tensor([0.0, 0.01, 0.5], device=dev))] if bool(act.any()) else None, nw8=int(((w8 >= 0) & act).sum()),
+                        tn_q=[float(q) for q in torch.quantile(tn[act].float(), torch.tensor([0.0, 0.01, 0.5], device=dev))] if bool(act.any()) else None,
+                        nact=int(act.sum()), pm_cnt={int(v): int(((pm == v) & act).sum()) for v in torch.unique(pm[act]).tolist()[:8]},
+                        sk_q=[float(q) for q in torch.quantile(sk[act].float(), torch.tensor([0.0, 0.1, 0.5, 0.9, 1.0], device=dev))] if bool(act.any()) else None, nw8=int(((w8 >= 0) & act).sum()),
                         sumabs={nm: float(g_[act].abs().sum()) for nm, g_ in T})
         if si == 1:
             ce = ((w8[nidc] >= 0).sum(1)).short(); ct = (((tn[nidc] - 1).abs() > 1e-3).sum(1)).short()
