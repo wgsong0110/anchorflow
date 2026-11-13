@@ -1,6 +1,6 @@
 #!/bin/bash
 # 절 CM127 묶음 linwhy 진입점 (exe/go_lagpl.sh 꼴). 코드 디렉토리에서. 사용: bash exe/go_linwhy.sh <커밋> <단계[,단계]>
-#   판 목록 = R2 lbours/wolfcv/linwhy/code/spec_<단계>.txt, 줄마다 '이름 기준판(R2 extsolve/<기준>/cmd.txt) 프레임수 감싸개인자(_ 는 빈칸) env(+ 로 이음, 예 LW_F=8,20+LW_IT=0)'
+#   판 목록 = R2 lbours/wolfcv/linwhy/code/spec_<단계>.txt, 줄마다 '이름 기준판(R2 extsolve/<기준>/cmd.txt) 프레임수 감싸개인자(~ 는 빈칸) env(+ 로 이음, 예 LW_F=8,20+LW_IT=0)'
 #   단계 <이름> = 그 spec 의 판을 명령 만들고 (cmd.txt) 빈 카드에 동시에 돌림, an = 집계 (exe/linwhy_an.py).
 # 판 디렉토리·덤프 = /home/dkta/work/linwhy/<판> (지우지 않음, R2 lbours/wolfcv/linwhy/<판> 로 통째로).
 export PATH=/home/dkta/bin:$PATH
@@ -45,7 +45,7 @@ an2) RUNS=$(rclone cat $R/code/an2_runs.txt 2>/dev/null)
      while read n base nf wargs envs; do [ -z "$n" ] && continue; [[ $n == \#* ]] && continue
        C=$(rclone cat $RX/$base/cmd.txt | tr -d "\n")
        [ ${#C} -gt 100 ] || { say "$base 명령 못 읽음"; continue; }
-       wa=${wargs//_/ }
+       wa=${wargs//\~/ }
        C=$(echo "$C" | sed -e "s#--out [^ ]*\$#--out $O/$n#" -e "s#--frames [0-9]*#--frames $nf#" -e "s# -u exe/startpt_wrap.py # -u exe/linwhy_wrap.py $wa exe/startpt_wrap.py #")
        mkdir -p $O/$n; echo "${envs//+/ } $C" | sed 's/^ //' > $O/$n/cmd.txt
        rclone copyto $O/$n/cmd.txt $R/$n/cmd.txt -q
