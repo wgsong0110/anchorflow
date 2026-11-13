@@ -71,9 +71,10 @@ def lanczos(op, n, k, dev, seed=0, v0=None, vec=0):
     return ev, m
 
 
-def pcg(Aop, Mop, b, iters, rec_lz=True):
+def pcg(Aop, Mop, b, iters, rec_lz=True, snaps=(1, 2, 5, 10, 20, 50, 100, 200)):
     """보통 PCG (Fletcher-Reeves β = r·z 비). 잔차 이력 |r_i|/|b| 와 pAp ≤ 0 · rz ≤ 0 수, (α, β) 로 만든 M⁻¹A 리츠 값."""
     x = torch.zeros_like(b)
+    xs = {}
     r = b.clone()
     z = Mop(r)
     p = z.clone()
@@ -95,6 +96,8 @@ def pcg(Aop, Mop, b, iters, rec_lz=True):
         r -= a * Ap
         hist.append(float(r.norm()) / nb)
         phi.append(-0.5 * float(torch.dot(x, b + r)))
+        if (i + 1) in snaps:
+            xs[i + 1] = x.float().cpu().numpy()
         z = Mop(r)
         rzn = float(torch.dot(r, z))
         if not (rzn > 0):
@@ -115,7 +118,7 @@ def pcg(Aop, Mop, b, iters, rec_lz=True):
                 e[j] = math.sqrt(max(be[j], 0.0)) / al[j]
         T = np.diag(d) + np.diag(e, 1) + np.diag(e, -1)
         ritz = np.linalg.eigvalsh(T)
-    return dict(hist=np.array(hist), phi=np.array(phi), npap=npap, nrz=nrz, ritz=ritz, rz0=rz0, x=x)
+    return dict(hist=np.array(hist), phi=np.array(phi), xs=xs, npap=npap, nrz=nrz, ritz=ritz, rz0=rz0, x=x)
 
 
 def fgmres(Aop, Mop, b, m):
@@ -460,8 +463,11 @@ def install(out):
                         own.index_add_(0, qn[m_], torch.ones(int(m_.sum()), dtype=torch.int32, device=dev))
             arr["own"] = own[nid].cpu().numpy()
         # 선택: 색칠 탐침 조립
-        if ST["ASM"] == s._lw_fr and s._lw_it == ST["IT"][0]:
+        if ST["ASM"] == -2 or (ST["ASM"] == s._lw_fr and s._lw_it == ST["IT"][0]):
             arr.update(assemble(s, Afull, X, inner, idx, capN, IP, dev, o))
+        if getattr(s, "_lw_sx", None) is not None:
+            arr.update(s._lw_sx); s._lw_sx = None
+            arr["b_red"] = b.float().cpu().numpy(); arr["idx_red"] = idx.cpu().numpy().astype(np.int32)
         if getattr(s, "_lw_low", None) is not None:
             arr["lowmode"] = s._lw_low[nid].float().cpu().numpy(); s._lw_low = None
         s._lw_arr = arr
@@ -620,6 +626,11 @@ def install(out):
             out["bad_" + nm] = [r_["npap"], r_["nrz"]]
         for nm, r_ in (("De", rDe), ("VE", rVE), ("M", rM)):
             out["ritz_" + nm] = [float(r_["ritz"][0]), float(r_["ritz"][-1])] if r_["ritz"] is not None else None
+        sx = {}
+        for nm, r_ in (("M", rM), ("I", rI), ("De", rDe), ("Da", rDa), ("VE", rVE), ("Mf", rMf), ("Ref", rRef)):
+            for kk, xv in r_["xs"].items():
+                sx[f"x_{nm}_{kk}"] = xv
+        s._lw_sx = sx
         out["t_exp"] = time.time() - t0
         print(f"[절 CM127] 시험: D̃ 근사 오차 {out['Dapprox_relerr']} λ(D̃⁻¹Ã) {out['lam_DeA']} 낮은 모드 {out['lowmodes'][0]} | 에너지 오차 5·20 회: "
               + " ".join(f"{k}:{out['eA_' + k][min(5, len(out['eA_' + k]) - 1)]:.2g}/{out['eA_' + k][min(20, len(out['eA_' + k]) - 1)]:.2g}" for k in ("M", "J", "I", "De", "Da", "VE", "VA")), flush=True)
