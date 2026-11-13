@@ -36,6 +36,10 @@ case $STG in
 an)  RUNS=$(rclone cat $R/code/an_runs.txt 2>/dev/null)
      $PY -u exe/linwhy_an.py $O $RUNS > $O/an.log 2>&1; say "an rc=$? $(tail -30 $O/an.log | tr '\n' ' ' | cut -c1-3000)"
      rclone copyto $O/an.log $R/an.log -q;;
+an2) RUNS=$(rclone cat $R/code/an2_runs.txt 2>/dev/null)
+     $PY -u exe/extsolve_an.py $O $RUNS > $O/an2.log 2>&1; say "an2 rc=$? $(tail -12 $O/an2.log | tr '\n' ' ' | cut -c1-3000)"
+     $PY -u exe/convabl_an.py $O $RUNS > $O/an2_cv.log 2>&1; say "an2_cv rc=$? $(tail -12 $O/an2_cv.log | tr '\n' ' ' | cut -c1-3000)"
+     rclone copy $O $R --include "an2*.log" --include "extsolve_an.json" --include "convabl_an.json" -q;;
 *)   rclone cat $R/code/spec_$STG.txt > $O/spec_$STG.txt || { say "spec_$STG 없음"; exit 1; }
      RUNS=""
      while read n base nf wargs envs; do [ -z "$n" ] && continue; [[ $n == \#* ]] && continue
