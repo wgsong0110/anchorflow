@@ -39,7 +39,7 @@ def _dump():
         pass
 
 
-def lanczos(op, n, k, dev, seed=0, v0=None):
+def lanczos(op, n, k, dev, seed=0, v0=None, vec=0):
     """대칭 연산자 op (f64 n 벡터) 의 랑초시 k 단계 (완전 재직교 두 번). 돌려줌: 리츠 값 (오름), 단계 수."""
     g = torch.Generator(device=dev).manual_seed(seed)
     v = torch.randn(n, dtype=f64, device=dev, generator=g) if v0 is None else v0.clone().to(f64)
@@ -60,6 +60,12 @@ def lanczos(op, n, k, dev, seed=0, v0=None):
         V[j + 1] = w / b
     m = len(al)
     T = np.diag(al) + np.diag(be[:m - 1], 1) + np.diag(be[:m - 1], -1)
+    if vec:
+        ev, Y = np.linalg.eigh(T)
+        Yt = torch.from_numpy(Y[:, :vec]).to(dev)
+        X = (V[:m].T @ Yt).T.contiguous()
+        del V
+        return ev, m, X
     ev = np.linalg.eigvalsh(T)
     del V
     return ev, m
@@ -456,6 +462,8 @@ def install(out):
         # 선택: 색칠 탐침 조립
         if ST["ASM"] == s._lw_fr and s._lw_it == ST["IT"][0]:
             arr.update(assemble(s, Afull, X, inner, idx, capN, IP, dev, o))
+        if getattr(s, "_lw_low", None) is not None:
+            arr["lowmode"] = s._lw_low[nid].float().cpu().numpy(); s._lw_low = None
         s._lw_arr = arr
         return o
 
@@ -507,7 +515,13 @@ def install(out):
         Da = torch.where(inner[:, None, None], Da, torch.eye(3, device=dev, dtype=torch.float64).expand(capN, 3, 3))
         De2 = torch.where(inner[:, None, None], De, torch.eye(3, device=dev, dtype=torch.float64).expand(capN, 3, 3))
         De2 = 0.5 * (De2 + De2.transpose(1, 2))
-        Dei, Dai = torch.linalg.inv(De2), torch.linalg.inv(Da)
+        def sinv(Dm):
+            dt = torch.linalg.det(Dm)
+            good = torch.isfinite(dt) & (dt.abs() > 1e-300)
+            return torch.where(good[:, None, None], torch.linalg.inv(torch.where(good[:, None, None], Dm, E3)), torch.zeros_like(Dm)), int((~good & inner).sum())
+        (Dei, nbe), (Dai, nba) = sinv(De2), sinv(Da)
+        out["n_sing"] = [nbe, nba]
+        De2 = torch.where((torch.linalg.det(De2).abs() > 1e-300)[:, None, None], De2, E3)
         dd = (De2 - Da)[inner].flatten(1).norm(dim=1) / De2[inner].flatten(1).norm(dim=1)
         out["Dapprox_relerr"] = [float(torch.quantile(dd.float(), q)) for q in (0.5, 0.9, 0.99)]
         out["De_norm_ratio"] = float(De2[inner].flatten(1).norm(dim=1).median() / Dn[inner].flatten(1).norm(dim=1).median())
@@ -529,8 +543,32 @@ def install(out):
             y = Aop(y)
             Z.zero_(); Z[idn, idc] = y
             return torch.bmm(Lei, Z[:, :, None]).squeeze(2)[idn, idc]
-        evS, _ = lanczos(symDe, int(idx.numel()), 80, dev, 12)
+        evS, _, Ys = lanczos(symDe, int(idx.numel()), 200, dev, 12, vec=3)
         out["lam_DeA"] = [float(evS[0]), float(evS[-1])]
+        out["lam_DeA_low5"] = [float(q) for q in evS[:5]]
+        # 가장 낮은 모드 위치: u = L⁻ᵀ y
+        mn_ = s.mn.view(-1)[:capN].float()
+        light = (mn_ < 1e-2 * mn_[inner].median()) & inner
+        ownm = torch.zeros(capN, dtype=torch.bool, device=dev)
+        for a_ in range(3):
+            for b_ in range(3):
+                for c_ in range(3):
+                    ww = Wt[:, a_] * Wt[:, 3 + b_] * Wt[:, 6 + c_]
+                    ownm[(b0 + (a_ * nb1 + b_) * nb2 + c_)[ww != 0]] = True
+        bar_ = (s.bKn.view(-1)[:capN] > 0) if getattr(s, "bKn", None) is not None else torch.zeros_like(inner)
+        pmn = s.pm.view(-1)[:capN] != 0
+        lows = []
+        for jv in range(Ys.shape[0]):
+            Z.zero_(); Z[idn, idc] = Ys[jv]
+            u = torch.bmm(Lei.transpose(1, 2), Z[:, :, None]).squeeze(2)
+            un = (u ** 2).sum(1)
+            tot = float(un.sum())
+            lows.append(dict(lam=float(evS[jv]), own=float(un[ownm].sum() / tot), light=float(un[light].sum() / tot), bar=float(un[bar_].sum() / tot),
+                             pm=float(un[pmn].sum() / tot), top10=float(torch.topk(un, 10).values.sum() / tot), top100=float(torch.topk(un, 100).values.sum() / tot),
+                             nlight=int(light.sum()), nown=int((ownm & inner).sum())))
+            if jv == 0:
+                s._lw_low = un
+        out["lowmodes"] = lows
         NP = ST["NPCG"]
         rDe = pcg(Aop, JDe, b, NP); rDa = pcg(Aop, JDa, b, NP)
         # (c) 층 0 을 Ã·D̃ 로 바꾼 V 순환 (거친 층 = 실행기 그대로): z = ω D̃⁻¹ r; z += Q Vc(Qᵀ (r − Ã z)); z += ω D̃⁻¹ (r − Ã z), Q = T P (내부 몫)
@@ -568,8 +606,6 @@ def install(out):
         out["lam_DaA_pow30"] = lam_a
         VE, VA = vmx(JDe, om), vmx(JDa, 1.0 / lam_a)
         rVE = pcg(Aop, VE, b, min(NP, 200)); rVA = pcg(Aop, VA, b, min(NP, 200))
-        evVE, _ = lanczos(VE, int(idx.numel()), 60, dev, 14)
-        out["lzVE"] = [float(evVE[0]), float(evVE[-1])]
         # 기준 φ* (정확 D̃ V 순환 PCG 600)
         rRef = pcg(Aop, VE, b, 600)
         phis = [rRef["phi"].min(), rDe["phi"].min(), rM["phi"].min()]
@@ -582,8 +618,10 @@ def install(out):
             out["eA_" + nm] = eA(r_)
             out["res_" + nm] = r_["hist"].tolist()
             out["bad_" + nm] = [r_["npap"], r_["nrz"]]
+        for nm, r_ in (("De", rDe), ("VE", rVE), ("M", rM)):
+            out["ritz_" + nm] = [float(r_["ritz"][0]), float(r_["ritz"][-1])] if r_["ritz"] is not None else None
         out["t_exp"] = time.time() - t0
-        print(f"[절 CM127] 시험: D̃ 근사 오차 {out['Dapprox_relerr']} λ(D̃⁻¹Ã) {out['lam_DeA']} λ(VE·Ã) {out['lzVE']} | 에너지 오차 5·20 회: "
+        print(f"[절 CM127] 시험: D̃ 근사 오차 {out['Dapprox_relerr']} λ(D̃⁻¹Ã) {out['lam_DeA']} 낮은 모드 {out['lowmodes'][0]} | 에너지 오차 5·20 회: "
               + " ".join(f"{k}:{out['eA_' + k][min(5, len(out['eA_' + k]) - 1)]:.2g}/{out['eA_' + k][min(20, len(out['eA_' + k]) - 1)]:.2g}" for k in ("M", "J", "I", "De", "Da", "VE", "VA")), flush=True)
         return out
 
