@@ -180,6 +180,12 @@ def install(out):
             _dump()
 
     def ctl(s, op, it=0):
+        if getattr(s, "_lw_on", False):
+            dbg = ST.setdefault("dbg", {})
+            kk = f"ctl{op}"
+            dbg[kk] = dbg.get(kk, 0) + 1
+            if op == 5 and it == 0:
+                dbg.setdefault("c5", []).append([getattr(s, "_lw_k", None), getattr(s, "_lw_it", None)]) if len(dbg.get("c5", [])) < 20 else None
         if getattr(s, "_lw_on", False) and not getattr(s, "_lw_in", False):
             if op == 0:
                 s._lw_k = -1
@@ -208,6 +214,9 @@ def install(out):
     def k(s, name, n, args, b=128):
         if not getattr(s, "_lw_on", False) or getattr(s, "_lw_in", False):
             return ok(s, name, n, args, b)
+        dbg = ST.setdefault("dbgk", {})
+        if len(dbg) < 200 or name in dbg:
+            dbg[name] = dbg.get(name, 0) + 1
         if name == "rt_pinit":
             s._lw_pin = (name, n, tuple(args), b)
         if name == "rt_sc_roll" and getattr(s, "_lw_pend", None) is not None:
@@ -217,6 +226,7 @@ def install(out):
         if rec is not None and name in ("rt_cg1m", "rt_cg1"):
             s._lw_rec = None
             ct = s.CT.cpu().tolist()
+            ST.setdefault("ct_at", []).append(ct[:8])
             if not (ct[0] or ct[1]):
                 try:
                     analyze(s, rec)
@@ -247,13 +257,15 @@ def install(out):
             t_ = getattr(s, nm, None)
             if torch.is_tensor(t_):
                 keep[nm] = t_.clone()
+                if nm in ("r", "z", "zo", "p", "Tp", "KTp", "Ap", "dl", "m0u", "m0t", "m0KT", "w8acc"):
+                    keep[nm] = keep[nm].view(-1)
         mlv = [{kk: v.clone() for kk, v in L.items() if torch.is_tensor(v) and kk in ("z", "y", "KT", "t", "r")} for L in getattr(s, "ML", [])]
         mg_pow0 = s.mg_pow
         try:
             res = _analyze(s, seg, keep, IP, nn, capN, dev)
         finally:
             for nm, t_ in keep.items():
-                getattr(s, nm).copy_(t_)
+                getattr(s, nm).view(-1).copy_(t_.view(-1))
             for L, d in zip(getattr(s, "ML", []), mlv):
                 for kk, v in d.items():
                     L[kk].copy_(v)
@@ -271,7 +283,7 @@ def install(out):
         i32 = np.int32
         pin = s._lw_pin
         assert pin is not None, "rt_pinit 인자 없음"
-        mn = s.mn[:capN].float()
+        mn = s.mn.view(-1)[:capN].float()
         w8b = getattr(s, "w8b", None)
         act = torch.zeros(capN, dtype=torch.bool, device=dev)
         act[:nn] = mn[:nn] > 0
@@ -286,12 +298,12 @@ def install(out):
         nmv = [0, 0]
 
         def Afull(xf):
-            s.z.copy_(xf)
+            s.z.view(-1)[:capN * 3].copy_(xf)
             s.k(*pin)
             for (nm, n_, a_, b_) in seg:
                 s.k(nm, n_, a_, b_)
             nmv[0] += 1
-            return s.Ap
+            return s.Ap.view(-1)[:capN * 3]
 
         def Aop(x):
             X.zero_(); X[idx] = x.float()
@@ -307,7 +319,7 @@ def install(out):
             rin.zero_(); rin[idx] = x.float()
             return Mfull(rin)[idx].to(f64)
 
-        Dv = s.Dinv[:capN * 9].view(capN, 3, 3)
+        Dv = s.Dinv.view(-1)[:capN * 9].view(capN, 3, 3)
 
         def Jop(x):
             rin.zero_(); rin[idx] = x.float()
@@ -334,12 +346,13 @@ def install(out):
         b = keep["r"][idx].to(f64)
         o["bnorm"] = float(b.norm())
         y0 = Afull(keep["z"].clone()).clone()
+        dm = inner.repeat_interleave(3)
         o["chk_Ap"] = float((y0[idx] - keep["Ap"][idx]).norm() / keep["Ap"][idx].norm().clamp_min(1e-300))
-        o["leakA"] = float(y0[~inner.repeat_interleave(3)].abs().max() / y0[idx].abs().max().clamp_min(1e-300))
+        o["leakA"] = float(y0[~dm].abs().max() / y0[idx].abs().max().clamp_min(1e-300))
         zz = Mfull(keep["r"].clone()).clone()
         o["chk_Mz"] = float((zz[idx] - keep["z"][idx]).norm() / keep["z"][idx].norm().clamp_min(1e-300))
         # Mi (질량 대각) 범위
-        Mi = (s.meff[:capN].float() * float(it2)).repeat_interleave(3)[idx]
+        Mi = (s.meff.view(-1)[:capN].float() * float(it2)).repeat_interleave(3)[idx]
         o["Mi"] = [float(Mi.min()), float(Mi.median()), float(Mi.max())]
         # 1. 대칭
         g = torch.Generator(device=dev).manual_seed(1)
@@ -390,10 +403,10 @@ def install(out):
         # 노드 배열 (활성 노드만)
         nid = torch.nonzero(act).squeeze(1)
         arr = dict(nid=nid.cpu().numpy().astype(np.int32), IP=IP, A=s.A.float().cpu().numpy(), Ai=s.Ai.float().cpu().numpy(),
-                   mn=mn[nid].cpu().numpy(), meff=s.meff[:capN][nid].float().cpu().numpy(), sk=s.sk[:capN][nid].cpu().numpy(), pm=s.pm[:capN][nid].cpu().numpy(),
+                   mn=mn[nid].cpu().numpy(), meff=s.meff.view(-1)[:capN][nid].float().cpu().numpy(), sk=s.sk.view(-1)[:capN][nid].cpu().numpy(), pm=s.pm.view(-1)[:capN][nid].cpu().numpy(),
                    w8b=(w8b[:capN][nid].cpu().numpy() if w8b is not None else np.zeros(len(nid), np.int32)),
-                   bKn=(s.bKn[:capN][nid].float().cpu().numpy() if getattr(s, "bKn", None) is not None else np.zeros(len(nid), np.float32)),
-                   r0=keep["r"].view(capN, 3)[nid].cpu().numpy(), evA=evA, evM=evM, evA0=evA0, evMf=evMf,
+                   bKn=(s.bKn.view(-1)[:capN][nid].float().cpu().numpy() if getattr(s, "bKn", None) is not None else np.zeros(len(nid), np.float32)),
+                   r0=keep["r"][:capN * 3].view(capN, 3)[nid].cpu().numpy(), evA=evA, evM=evM, evA0=evA0, evMf=evMf,
                    ritzM=(rM["ritz"] if rM["ritz"] is not None else np.zeros(0)), ritzJ=(rJ["ritz"] if rJ["ritz"] is not None else np.zeros(0)),
                    ritzMf=(rMf["ritz"] if rMf["ritz"] is not None else np.zeros(0)),
                    xM=_scatter(rM["x"], idx, capN, nid), xMf=_scatter(rMf["x"], idx, capN, nid))
@@ -405,7 +418,7 @@ def install(out):
             c = q >> 3
             cb = s.cb.view(-1, 3)[:nq // 8 + 1].long()
             nb1, nb2 = int(IP[7]), int(IP[8])
-            Vq = s.Vq[:nq].float()
+            Vq = s.Vq.view(-1)[:nq].float()
             sq = st[:nq]
             Va = torch.zeros(capN, device=dev, dtype=torch.float32); Vt = torch.zeros(capN, device=dev, dtype=torch.float32); Vl = torch.zeros(capN, device=dev, dtype=torch.float32)
             for o_ in range(27):
@@ -507,8 +520,8 @@ def install(out):
         torch.cuda.synchronize()
         capN = int(s.capN)
         nid = torch.from_numpy(arr["nid"]).long().to(s.dev)
-        arr["rfin"] = s.r.view(-1, 3)[:capN][nid].cpu().numpy()
-        arr["dlfin"] = s.dl.view(-1, 3)[:capN][nid].cpu().numpy()
+        arr["rfin"] = s.r.reshape(-1, 3)[:capN][nid].cpu().numpy()
+        arr["dlfin"] = s.dl.reshape(-1, 3)[:capN][nid].cpu().numpy()
         arr["real_r2"] = np.array(s._lw_hist, dtype=np.float64)
         o["real_prel"] = (np.sqrt(np.array(s._lw_hist)) / max(o["bnorm"], 1e-300)).tolist()
         o["real_ct"] = s.CT.cpu().tolist()
