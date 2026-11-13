@@ -1,6 +1,7 @@
 #!/bin/bash
 # 절 CM126 묶음 escwhy (wolf 입자 이탈 원인 걸음별 기록) 의 vast.ai 판 (exe/vast_formab2.sh 세팅 그대로). onstart 로 받아 tmux 에서 돎.
 #   env: R2_ACCESS_KEY R2_SECRET R2_ENDPOINT XS_COMMIT (R2 lbours/wolfcv/escwhy/code/escwhy_<커밋>.tar)
+#        ESC_G0 = 첫 카드 번호 (기본 0). 판 6 번째 칸 = 감싸개 앞 끼움 (예 exe/lagpl_wrap.py=--xlag=1)
 #        ESC_RUNS = 카드별 묶음 '+', 묶음 안 차례 ',', 판 = 이름:원본판:F0[:F1][:추가플래그(=는 공백, ~ 는 구분)]
 #          원본판 = R2 lbours/wolfcv/formab/<원본판>/cmd.txt 를 그대로 쓰고 python -u 바로 뒤에 exe/escwhy_wrap.py exe/nlwhy_wrap.py 를 끼움 (기록만, 결과 불변).
 #   결과: 판마다 R2 lbours/wolfcv/escwhy/<이름> (cmd·log·fem.jsonl·nl.jsonl·pred.pt·esc/fNNN.npz 모두, 60 초마다 + 끝에 통째로 동기화, 아무것도 지우지 않음).
@@ -46,8 +47,8 @@ export PYTHONUTF8=1 OMP_NUM_THREADS=8
 say "[자료] wolf.pt $(stat -c %s $AG/wolf.pt 2>&1) gt_wolf $(ls $AG/gt_wolf 2>/dev/null | wc -l) 개 $(tail -1 /root/xs/gt.log | cut -c1-200) 코드 $(ls $D/lib/anchorflow/fem_escwhy.py 2>&1) pip $(ls /root/xs/pip.done 2>&1)"
 [ -f /root/xs/pip.done ] && [ -s $AG/wolf.pt ] && [ -s $AG/gt_wolf/config.json ] && [ -f $D/lib/anchorflow/fem_escwhy.py ] || { say "[세팅 실패]"; echo "세팅 실패 $(date)" | rclone rcat $RX/vast_$TAG.END; exit 1; }
 O=/home/dkta/work/escwhy; mkdir -p $O
-run() { local spec=$1 g=$2; IFS=: read -r n src f0 f1 xf <<< "$spec"; f1=${f1:-1000}; xf=${xf:-}; mkdir -p $O/$n
-  rclone cat $RF/$src/cmd.txt | sed -e "s# --out [^ ]*\$# --out $O/$n#" -e "s#/bin/python -u exe/#/bin/python -u exe/escwhy_wrap.py exe/nlwhy_wrap.py exe/#" > $O/$n/cmd.txt
+run() { local spec=$1 g=$2; IFS=: read -r n src f0 f1 xf xw <<< "$spec"; f1=${f1:-1000}; xf=${xf:-}; xw=$(echo "${xw:-}" | tr '=~' '  '); mkdir -p $O/$n
+  rclone cat $RF/$src/cmd.txt | sed -e "s# --out [^ ]*\$# --out $O/$n#" -e "s#/bin/python -u exe/#/bin/python -u exe/escwhy_wrap.py exe/nlwhy_wrap.py ${xw:+$xw }exe/#" > $O/$n/cmd.txt
   if [ -n "$xf" ]; then x2=$(echo "$xf" | tr '=~' '  '); sed -i -e "s# --out # $x2 --out #" $O/$n/cmd.txt; fi
   echo "ESC_F0=$f0 ESC_F1=$f1 $(cat $O/$n/cmd.txt)" > $O/$n/cmd.txt
   rclone copyto $O/$n/cmd.txt $RX/$n/cmd.txt -q
@@ -56,7 +57,7 @@ run() { local spec=$1 g=$2; IFS=: read -r n src f0 f1 xf <<< "$spec"; f1=${f1:-1
   say "$n rc=$? $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200) $(grep -a '발산\|rror' $O/$n/log.txt | tail -1 | cut -c1-200) 기록 $(ls $O/$n/esc 2>/dev/null | wc -l) 프레임"
   rclone copy $O/$n $RX/$n -q --transfers 8; say "$n R2 올림 (덤프 포함)"; }
 ( while sleep 60; do rclone copy $O $RX -q --transfers 8; done ) & WP=$!
-NG=$(nvidia-smi -L | wc -l); PIDS=""; gi=0
+NG=$(nvidia-smi -L | wc -l); PIDS=""; gi=${ESC_G0:-0}
 for grp in ${ESC_RUNS//+/ }; do g=$((gi % NG)); gi=$((gi + 1))
   ( for sp in ${grp//,/ }; do run $sp $g; done ) & PIDS="$PIDS $!"; done
 wait $PIDS; kill $WP 2>/dev/null
