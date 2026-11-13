@@ -5,6 +5,7 @@
 #     b5 원본 · r1 HHT ρ∞ 1.0 · ns 바닥 고착 끔 (--fl_nost) · sc S_구속 + C (--w5s 1 --w5c 1, 절 CM70 정답 격자 구속 받침) · s1 S_구속만 · c1 C 만
 #     cv 수렴 (뉴턴 60 · PCG 100 · tolN 1e-4 · tolP 1e-3 · 예산 끔 --tb 1000, --xit_from·--xg 뺌, 절 CM125 cvb 와 같은 조건)
 #     k4 프레임당 걸음 4 (--K 4, --ksplit 3 --ks_big 뺌 -- K 1 전용)
+#     h1 셀 1 (해상도 몫; --cell 2 -> 1) · gk ghost penalty 강성만 0 (--w5gk0 1, 절 CM70 진단; 수렴 위에서 매달림 몫 가르기)
 #     조합: 판 이름을 _ 로 이어 붙임 (예 cv_sc = 수렴 + S_구속 + C), 고침 판 x* 는 맨 끝 토막
 #     x* 고침 판 (exe/cm134_wrap.py <플래그>, ext2_wrap.py 앞): flags() 참고. z* = 같은 판 6 프레임 연기.
 #   판 디렉토리 /home/dkta/work/cm134/<판> -> R2 lbours/wolfcv/cm134/<판> (덤프 포함, 안 지움). 끝에 an (convabl_an · cm134_an · sinv_esc) · 렌더.
@@ -27,6 +28,8 @@ edits1() { case $1 in
   c1) echo "s#--l3fr 1 --s9c 1#--l3fr 1 --w5c 1 --s9c 1#";;
   cv) echo "s#--newton 6 --cg 5 --tolN 1e-2 --tolP 1e-1#--newton 60 --cg 100 --tolN 1e-4 --tolP 1e-3#;s#--tb_w 2 exe/#--tb_w 2 --tb 1000 exe/#;s# --xit_from 2##;s# --xg 1##";;
   k4) echo "s#--K 1 #--K 4 #;s# --ksplit 3 --ks_big##";;
+  h1) echo "s#--cell 2 #--cell 1 #";;
+  gk) echo "s#--s9c 1 --s9y 1#--w5gk0 1 --s9c 1 --s9y 1#";;
   x*) echo "s#^##";;
   *) echo "?";; esac; }
 edits() { local n=${1#z} e o=""; for t in ${n//_/ }; do e=$(edits1 $t); [ "$e" = "?" ] && { echo "?"; return; }; o="$o;$e"; done; echo "${o#;}"; }
@@ -39,7 +42,7 @@ chk1() { case $1 in   # 고친 글자 확인
   b5) grep -q -- "--rho 0.8 " $2;; r1) grep -q -- "--rho 1.0 " $2;; ns) grep -q -- "--fl_nost" $2;; sc) grep -q -- "--w5s 1 --w5c 1" $2;;
   s1) grep -q -- "--w5s 1 --s9c" $2 && ! grep -q -- "--w5c" $2;; c1) grep -q -- "--w5c 1 --s9c" $2 && ! grep -q -- "--w5s" $2;;
   cv) grep -q -- "--newton 60 --cg 100 --tolN 1e-4 --tolP 1e-3" $2 && grep -q -- "--tb 1000 exe/" $2 && ! grep -q -- "--xit_from" $2;;
-  k4) grep -q -- "--K 4 " $2 && ! grep -q -- "--ksplit" $2;; x*) grep -q -- "exe/cm134_wrap.py $(wflags $1) exe/ext2_wrap.py" $2;; *) false;; esac; }
+  k4) grep -q -- "--K 4 " $2 && ! grep -q -- "--ksplit" $2;; h1) ! grep -q -- "--cell 2 " $2;; gk) grep -q -- "--w5gk0 1 --s9c" $2;; x*) grep -q -- "exe/cm134_wrap.py $(wflags $1) exe/ext2_wrap.py" $2;; *) false;; esac; }
 chk() { local n=${1#z} t; for t in ${n//_/ }; do chk1 $t $2 || return 1; done; }
 mk() { local n=$1 E C W; E=$(edits $n); [ "$E" = "?" ] && { say "$n 모르는 판"; return 1; }
   C=$(rclone cat $SRC | tr -d "\n")
