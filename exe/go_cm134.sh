@@ -31,6 +31,8 @@ edits1() { case $1 in
   k4) echo "s#--K 1 #--K 4 #;s# --ksplit 3 --ks_big##";;
   h1) echo "s#--cell 2 #--cell 1 #";;
   gk) echo "s#--s9c 1 --s9y 1#--w5gk0 1 --s9c 1 --s9y 1#";;
+  es1) echo "s#--tag wolf#--e_scale 0.1 --tag wolf#";;
+  es2) echo "s#--tag wolf#--e_scale 0.01 --tag wolf#";;
   hcx) echo "s# --hc 5 --tc 8##";;
   mfx) echo "s# --mf2 1##";;
   barx) echo "s# --fl_bar --fl_bst 1 --y0eb##";;
@@ -51,7 +53,7 @@ chk1() { case $1 in   # 고친 글자 확인
   b5) grep -q -- "--rho 0.8 " $2;; r1) grep -q -- "--rho 1.0 " $2;; ns) grep -q -- "--fl_nost" $2;; sc) grep -q -- "--w5s 1 --w5c 1" $2;;
   s1) grep -q -- "--w5s 1 --s9c" $2 && ! grep -q -- "--w5c" $2;; c1) grep -q -- "--w5c 1 --s9c" $2 && ! grep -q -- "--w5s" $2;;
   cv) grep -q -- "--newton 60 --cg 100 --tolN 1e-4 --tolP 1e-3" $2 && grep -q -- "--tb 1000 exe/" $2 && ! grep -q -- "--xit_from" $2;;
-  k4) grep -q -- "--K 4 " $2 && ! grep -q -- "--ksplit" $2;; h1) ! grep -q -- "--cell 2 " $2;; gk) grep -q -- "--w5gk0 1 --s9c" $2;; hcx) ! grep -q -- "--hc 5" $2;; mfx) ! grep -q -- "--mf2" $2;; barx) ! grep -q -- "--fl_bar" $2;; pbx) ! grep -q -- "--pbc" $2;; l3x) ! grep -q -- "--l3 10" $2;; mlx) grep -q -- "--mlow 1e-6" $2;; fpx) ! grep -q -- "--fp_interp" $2;; ibe) grep -q -- "--integ be" $2;; x*) grep -q -- "exe/cm134_wrap.py $(wflags $1) exe/ext2_wrap.py" $2;; *) false;; esac; }
+  k4) grep -q -- "--K 4 " $2 && ! grep -q -- "--ksplit" $2;; h1) ! grep -q -- "--cell 2 " $2;; gk) grep -q -- "--w5gk0 1 --s9c" $2;; es1) grep -q -- "--e_scale 0.1 " $2;; es2) grep -q -- "--e_scale 0.01 " $2;; hcx) ! grep -q -- "--hc 5" $2;; mfx) ! grep -q -- "--mf2" $2;; barx) ! grep -q -- "--fl_bar" $2;; pbx) ! grep -q -- "--pbc" $2;; l3x) ! grep -q -- "--l3 10" $2;; mlx) grep -q -- "--mlow 1e-6" $2;; fpx) ! grep -q -- "--fp_interp" $2;; ibe) grep -q -- "--integ be" $2;; x*) grep -q -- "exe/cm134_wrap.py $(wflags $1) exe/ext2_wrap.py" $2;; *) false;; esac; }
 chk() { local n=${1#[zy]} t; for t in ${n//_/ }; do chk1 $t $2 || return 1; done; }
 mk() { local n=$1 E C W; E=$(edits $n); [ "$E" = "?" ] && { say "$n 모르는 판"; return 1; }
   C=$(rclone cat $SRC | tr -d "\n")
