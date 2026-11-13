@@ -6,6 +6,7 @@
 #     cv 수렴 (뉴턴 60 · PCG 100 · tolN 1e-4 · tolP 1e-3 · 예산 끔 --tb 1000, --xit_from·--xg 뺌, 절 CM125 cvb 와 같은 조건)
 #     k4 프레임당 걸음 4 (--K 4, --ksplit 3 --ks_big 뺌 -- K 1 전용)
 #     h1 셀 1 (해상도 몫; --cell 2 -> 1) · gk ghost penalty 강성만 0 (--w5gk0 1, 절 CM70 진단; 수렴 위에서 매달림 몫 가르기)
+#     y<판> = 같은 판 14 프레임 (낙하 가속 측정용 짧은 판). 빼기 시험 (cv_sc 위): hcx --hc 5 --tc 8 · mfx --mf2 · barx --fl_bar --y0eb · pbx --pbc --bar_cnt · l3x --l3* · mlx --mlow 1e-6 · fpx --fp_interp · ibe --integ be
 #     조합: 판 이름을 _ 로 이어 붙임 (예 cv_sc = 수렴 + S_구속 + C), 고침 판 x* 는 맨 끝 토막
 #     x* 고침 판 (exe/cm134_wrap.py <플래그>, ext2_wrap.py 앞): flags() 참고. z* = 같은 판 6 프레임 연기.
 #   판 디렉토리 /home/dkta/work/cm134/<판> -> R2 lbours/wolfcv/cm134/<판> (덤프 포함, 안 지움). 끝에 an (convabl_an · cm134_an · sinv_esc) · 렌더.
@@ -30,10 +31,18 @@ edits1() { case $1 in
   k4) echo "s#--K 1 #--K 4 #;s# --ksplit 3 --ks_big##";;
   h1) echo "s#--cell 2 #--cell 1 #";;
   gk) echo "s#--s9c 1 --s9y 1#--w5gk0 1 --s9c 1 --s9y 1#";;
+  hcx) echo "s# --hc 5 --tc 8##";;
+  mfx) echo "s# --mf2 1##";;
+  barx) echo "s# --fl_bar --fl_bst 1 --y0eb##";;
+  pbx) echo "s# --pbc##;s# --bar_cnt##";;
+  l3x) echo "s#--l3 10 --l3sc 1 --l3fr 1 ##";;
+  mlx) echo "s#--mlow 1e-3#--mlow 1e-6#";;
+  fpx) echo "s# --fp_interp##";;
+  ibe) echo "s# --ga hht # #;s#--rho 0.8 #--integ be #;s# --fp_interp##";;
   x*) echo "s#^##";;
   *) echo "?";; esac; }
-edits() { local n=${1#z} e o=""; for t in ${n//_/ }; do e=$(edits1 $t); [ "$e" = "?" ] && { echo "?"; return; }; o="$o;$e"; done; echo "${o#;}"; }
-wflags() { local n=${1#z}; case ${n##*_} in
+edits() { local n=${1#[zy]} e o=""; for t in ${n//_/ }; do e=$(edits1 $t); [ "$e" = "?" ] && { echo "?"; return; }; o="$o;$e"; done; echo "${o#;}"; }
+wflags() { local n=${1#[zy]}; case ${n##*_} in
   x1) echo "--xpc 1";;
   x2) echo "--xpc 1 --xfl 1";;
   x3) echo "--xfl 1";;
@@ -42,20 +51,20 @@ chk1() { case $1 in   # 고친 글자 확인
   b5) grep -q -- "--rho 0.8 " $2;; r1) grep -q -- "--rho 1.0 " $2;; ns) grep -q -- "--fl_nost" $2;; sc) grep -q -- "--w5s 1 --w5c 1" $2;;
   s1) grep -q -- "--w5s 1 --s9c" $2 && ! grep -q -- "--w5c" $2;; c1) grep -q -- "--w5c 1 --s9c" $2 && ! grep -q -- "--w5s" $2;;
   cv) grep -q -- "--newton 60 --cg 100 --tolN 1e-4 --tolP 1e-3" $2 && grep -q -- "--tb 1000 exe/" $2 && ! grep -q -- "--xit_from" $2;;
-  k4) grep -q -- "--K 4 " $2 && ! grep -q -- "--ksplit" $2;; h1) ! grep -q -- "--cell 2 " $2;; gk) grep -q -- "--w5gk0 1 --s9c" $2;; x*) grep -q -- "exe/cm134_wrap.py $(wflags $1) exe/ext2_wrap.py" $2;; *) false;; esac; }
-chk() { local n=${1#z} t; for t in ${n//_/ }; do chk1 $t $2 || return 1; done; }
+  k4) grep -q -- "--K 4 " $2 && ! grep -q -- "--ksplit" $2;; h1) ! grep -q -- "--cell 2 " $2;; gk) grep -q -- "--w5gk0 1 --s9c" $2;; hcx) ! grep -q -- "--hc 5" $2;; mfx) ! grep -q -- "--mf2" $2;; barx) ! grep -q -- "--fl_bar" $2;; pbx) ! grep -q -- "--pbc" $2;; l3x) ! grep -q -- "--l3 10" $2;; mlx) grep -q -- "--mlow 1e-6" $2;; fpx) ! grep -q -- "--fp_interp" $2;; ibe) grep -q -- "--integ be" $2;; x*) grep -q -- "exe/cm134_wrap.py $(wflags $1) exe/ext2_wrap.py" $2;; *) false;; esac; }
+chk() { local n=${1#[zy]} t; for t in ${n//_/ }; do chk1 $t $2 || return 1; done; }
 mk() { local n=$1 E C W; E=$(edits $n); [ "$E" = "?" ] && { say "$n 모르는 판"; return 1; }
   C=$(rclone cat $SRC | tr -d "\n")
   [ ${#C} -gt 100 ] || { say "k5 명령 못 읽음"; return 1; }
   mkdir -p $O/$n
   C=$(echo "$C" | sed -e 's#^ESC_F0=5 ESC_F1=30 RM_F0=5 RM_F1=30 ##' -e 's#exe/resmode_wrap.py exe/escwhy_wrap.py ##' -e "$E")
   W=$(wflags $n); if [ -n "$W" ]; then C=$(echo "$C" | sed -e "s#exe/speed12_wrap.py exe/ext2_wrap.py#exe/speed12_wrap.py exe/cm134_wrap.py $W exe/ext2_wrap.py#"); fi
-  case $n in z*) C=$(echo "$C" | sed -e 's#AF_SP_FR=1,50#AF_SP_FR=1,6#' -e 's# --frames 50 # --frames 6 #');; esac
+  case $n in z*) C=$(echo "$C" | sed -e 's#AF_SP_FR=1,50#AF_SP_FR=1,6#' -e 's# --frames 50 # --frames 6 #');; y*) C=$(echo "$C" | sed -e 's#AF_SP_FR=1,50#AF_SP_FR=1,14#' -e 's# --frames 50 # --frames 14 #');; esac
   echo "$C" | sed -e "s#--out [^ ]*\$#--out $O/$n#" > $O/$n/cmd.txt
   rclone copyto $O/$n/cmd.txt $R/$n/cmd.txt -q
   grep -q "resmode_wrap\|escwhy_wrap\|ESC_F0" $O/$n/cmd.txt && { say "$n 기록 감싸개가 남음"; return 1; }
   chk $n $O/$n/cmd.txt || { say "$n 명령 고침 확인 실패"; return 1; }
-  case $n in z*) grep -q -- " --frames 6 " $O/$n/cmd.txt || { say "$n 프레임 고침 확인 실패"; return 1; };; *) grep -q -- " --frames 50 " $O/$n/cmd.txt || { say "$n 프레임 50 아님"; return 1; };; esac
+  case $n in y*) grep -q -- " --frames 14 " $O/$n/cmd.txt || { say "$n 프레임 고침 확인 실패"; return 1; };; z*) grep -q -- " --frames 6 " $O/$n/cmd.txt || { say "$n 프레임 고침 확인 실패"; return 1; };; *) grep -q -- " --frames 50 " $O/$n/cmd.txt || { say "$n 프레임 50 아님"; return 1; };; esac
   grep -q -- "--out $O/$n\$" $O/$n/cmd.txt || { say "$n --out 확인 실패"; return 1; }
   say "$n 명령: $(grep -o 'cm134_wrap.py[^e]*exe/ext2_wrap.py\|--rho [0-9.]*\|--fl_nost\|--w5[sc] 1\|--K [0-9]*\|--frames [0-9]*\|--tb [0-9.]*\|--newton [0-9]*\|--cg [0-9]*\|--out [^ ]*' $O/$n/cmd.txt | tr '\n' ' ')"; }
 runone() { local n=$1 g=$2
