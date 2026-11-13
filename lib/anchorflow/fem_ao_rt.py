@@ -10,6 +10,7 @@
 시각은 장치 버퍼 tbuf[0] (프레임 시작 시각) 로 그래프 밖에서 매 프레임 채운다 (그래프는 한 번만 캡처)."""
 import math
 
+import os
 import numpy as np
 import torch
 
@@ -21,6 +22,10 @@ P = ART.P
 from . import fem_nsd_diag as NSDM                                                  # noqa: E402  절 CM9.3 진단
 
 AO_SRC = r'''
+#ifndef AF_CTAN_MODE
+#define AF_CTAN_MODE 0
+#endif
+
 __device__ __forceinline__ int ao_dpf(const float* S, float cdp, float* sgn, float* sg, float* ep, float* e, float& tr, float& rho, float& s) {
     for (int i=0;i<3;i++) { sgn[i] = (S[i] < 0.f) ? -1.f : 1.f; sg[i] = fmaxf(fabsf(S[i]), 1e-14f); ep[i] = logf(sg[i]); }
     tr = ep[0] + ep[1] + ep[2];
@@ -366,8 +371,24 @@ __global__ void __launch_bounds__(128) ao_elem_s(const int* IP, const int* cb, c
     // 헤시안 주값 계수
     float M[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) M[a*3+b] = F[a*3]*V[b] + F[a*3+1]*V[3+b] + F[a*3+2]*V[6+b];
     float C[12];
+    // 절 CM138 --ctan: 헤시안을 반환 사상과 일관되게 (AF_CTAN_MODE 0 = 옛 판: 시험 X 의 탄성 접선 ('초기 강성법'); 1 = 꼭짓점 (st 2, 응력 0) 점의 접선 0; 2 = 1 + 꼬리 (st 1) 점의 DP 반환 일관 접선 (대칭화))
+    float Cc[3][3];
+    for (int i=0;i<3;i++) for (int j=0;j<3;j++) Cc[i][j] = ((i==j) ? 2.f*mu : 0.f) + lam;
+#if AF_CTAN_MODE >= 1
+    if (st == 2) { for (int i=0;i<3;i++) { pe[i] = 0.f; for (int j=0;j<3;j++) Cc[i][j] = 0.f; } }
+#endif
+#if AF_CTAN_MODE >= 2
+    if (st == 1) {
+        float nn_[3], beta = -2.f*mu*cdp;
+        for (int i=0;i<3;i++) nn_[i] = e[i]/rho;
+        float Ct[3][3];
+        for (int i=0;i<3;i++) for (int j=0;j<3;j++) Ct[i][j] = K3 + beta*(nn_[i] + (tr/rho)*(((i==j) ? 1.f : 0.f) - 1.f/3.f - nn_[i]*nn_[j]));
+        for (int i=0;i<3;i++) for (int j=0;j<3;j++) Cc[i][j] = 0.5f*(Ct[i][j] + Ct[j][i]);
+        for (int i=0;i<3;i++) pe[i] = p[i];
+    }
+#endif
     { float D[3][3], Ev[3][3], Dk[3][3];
-      for (int i=0;i<3;i++) for (int j=0;j<3;j++) { D[i][j] = (((i==j) ? 2.f*mu : 0.f) + lam)/(ss[i]*ss[j]) - ((i==j) ? pe[i]/ss[i] : 0.f); Dk[i][j] = D[i][j]; }
+      for (int i=0;i<3;i++) for (int j=0;j<3;j++) { D[i][j] = Cc[i][j]/(ss[i]*ss[j]) - ((i==j) ? pe[i]/ss[i] : 0.f); Dk[i][j] = D[i][j]; }
       jac3f(D, Ev);
       float dm[3]; for (int m=0;m<3;m++) { float d_ = fmaxf(D[m][m], 0.f); dm[m] = (d_ > 0.f && isfinite(d_)) ? d_ : 0.f; }
       const int RI[6] = {0,1,2,0,0,1}, RJ[6] = {0,1,2,1,2,2};
@@ -938,6 +959,8 @@ __global__ void aq_vbar(const int* IP, const float* cm, float* vm) {
     for (int a=0;a<3;a++) vm[n*3+a] = (c > 0.f) ? vm[n*3+a]/c : 0.f;
 }
 '''
+AO_SRC = "#define AF_CTAN_MODE %d\n" % int(os.environ.get("AF_CTAN", "0")) + AO_SRC
+
 
 
 HB = "    if (blockIdx.x*blockDim.x >= IP[9]) return;\n    int n = blockIdx.x*blockDim.x + threadIdx.x;\n"
