@@ -65,6 +65,21 @@ vid) GTW=/dev/shm/dkta/ag_data/gt_wolf
          say "$n 영상 $(stat -c %s $V/fem_wolf.mp4 2>&1) $(tail -1 $V/r.log | cut -c1-160)"
          rclone copy $V $R/$n/vj -q ) & sleep 5
      done; wait;;
+regprep) # 회귀 자료를 R2 에서 speed13 명령 경로 그대로 (레고 L000 · ficus_v0 · bread 정답은 PG h5 를 pg_h5_to_pt.py 로, fem_ag_prep.sh 와 같은 명령)
+     M=r2:storage/result/anchorflow/_vastmirror; RA=r2:storage/result/anchorflow
+     mkdir -p /dev/shm/dkta/anerr_data /home/dkta/work/lbdata/test_low /home/dkta/work/lbours/ficus_v0 /dev/shm/dkta/t2chain /home/dkta/work/topo
+     rclone copyto $M/lbpt/test_low/L000.pt /dev/shm/dkta/anerr_data/L000.pt -q &
+     rclone copyto $M/lbdata/config.json /home/dkta/work/lbdata/config.json -q &
+     rclone copy $M/lbdata/test_low/L000 /home/dkta/work/lbdata/test_low/L000 --transfers 16 -q &
+     rclone copyto $RA/lbours/ficus_v0/data/F_pg_v0/F_pg_v0.pt /dev/shm/dkta/anerr_data/F_pg_v0.pt -q &
+     rclone copy $RA/lbours/ficus_v0/gt /home/dkta/work/lbours/ficus_v0/gt --transfers 16 -q &
+     [ -s /dev/shm/dkta/ag_data/bread.pt ] || rclone copyto $RA/lbours/fem_ag_data/bread.pt /dev/shm/dkta/ag_data/bread.pt -q &
+     rclone copy $M/topo/pg_bread_plastic /home/dkta/work/topo/pg_bread_plastic --transfers 16 -q &
+     rclone copyto $M/topo/bread_plastic_config.json /home/dkta/work/topo/bread_plastic_config.json -q &
+     wait
+     [ -s /dev/shm/dkta/t2chain/gt_bread/config.json ] || CUDA_VISIBLE_DEVICES="" $PY -u exe/pg_h5_to_pt.py --h5_dir /home/dkta/work/topo/pg_bread_plastic --config /home/dkta/work/topo/bread_plastic_config.json --out_pt /dev/shm/dkta/gt_bread_unused.pt --out_dir /dev/shm/dkta/t2chain/gt_bread > $O/gt_bread.log 2>&1
+     rm -f /dev/shm/dkta/gt_bread_unused.pt
+     say "regprep $(ls -la /dev/shm/dkta/anerr_data | tail -n +4 | awk '{print $5, $9}' | tr '\n' ' ') L000 $(ls /home/dkta/work/lbdata/test_low/L000 | wc -l) ficus $(ls /home/dkta/work/lbours/ficus_v0/gt | wc -l) bread $(ls /dev/shm/dkta/t2chain/gt_bread 2>/dev/null | wc -l) $(tail -1 $O/gt_bread.log | cut -c1-160)";;
 reg) # 다른 씬 회귀: speed13 oXL_1·oXF_1·oXB_1 명령 그대로와 --xlag K (모래 아닌 씬은 ao_elem_s 를 안 써서 1 은 같은 결과여야 함)
      K=$(rclone cat $R/code/reg_k.txt)
      for sc in oXL_1 oXF_1 oXB_1; do
