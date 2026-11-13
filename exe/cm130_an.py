@@ -91,7 +91,7 @@ for f_ in fs:
     # 큰 에너지 가우스 점 (상위 1 % psi 몫) 의 자리 몫
     Eqv = Vq * pq; srt = np.argsort(Eqv)[::-1]; top = srt[:max(1, nq // 100)]
     for nmz, msk in (("floor", flq), ("ext", extq), ("apex", apq), ("front", frq), ("inv", inv)):
-        r_[f"Eq_{nmz}"] = float(Eqv[msk].sum() / max(Eq, 1e-30)); r_[f"nq_{nmz}"] = int((msk & (Vq > 0)).sum())
+        r_[f"sh_{nmz}"] = float(Eqv[msk].sum() / max(Eq, 1e-30)); r_[f"nq_{nmz}"] = int((msk & (Vq > 0)).sum())
         r_[f"inv_{nmz}"] = int((inv & msk & (Vq > 0)).sum())
     r_["Eq_top1pct"] = float(Eqv[top].sum() / max(Eq, 1e-30))
     r_["ratio_p_over_loc_big_med"] = float(np.median(pp1[big] / np.maximum(loc[big], 1e-9))) if big.any() else None
@@ -110,8 +110,8 @@ for f_ in fs:
     rows.append(r_)
     print(f"{fr:2d} | {Eq:.3g} · {EqX:.3g} · {Eq0:.3g} | {Ep0:.3g} · {Ep1:.3g} | {Ep1 / max(Eq, 1e-30):.3g} | {r_['nqinv']} · {r_['Eq_inv'] / max(Eq, 1e-30):.3f} | "
           f"{r_['npinv']} ({r_['npinv_anyb']}) · {r_['Ep_inv'] / max(Ep1, 1e-30):.3f} | {r_['nbig']} · {r_['loc_big_med']} · {r_['ratio_p_over_loc_big_med']}", flush=True)
-    print(f"   자리 몫 (가우스 E): 바닥 {r_['Eq_floor']:.3f} ({r_['nq_floor']} 점) 확장 {r_['Eq_ext']:.3f} ({r_['nq_ext']}) 꼭짓점 {r_['Eq_apex']:.3f} ({r_['nq_apex']}) 앞면 {r_['Eq_front']:.3f} ({r_['nq_front']}) "
-          f"뒤집힘 {r_['Eq_inv']/max(Eq,1e-30):.3f} 상위1% {r_['Eq_top1pct']:.3f} | 뒤집힌 점 자리: 바닥 {r_['inv_floor']} 확장 {r_['inv_ext']} 꼭짓점 {r_['inv_apex']} 앞면 {r_['inv_front']} "
+    print(f"   자리 몫 (가우스 E, 괄호 = 점 수 몫): 바닥 {r_['sh_floor']:.3f} ({r_['nq_floor']/max(1,(Vq>0).sum()):.3f}) 확장 {r_['sh_ext']:.3f} ({r_['nq_ext']/max(1,(Vq>0).sum()):.3f}) 꼭짓점 {r_['sh_apex']:.3f} ({r_['nq_apex']/max(1,(Vq>0).sum()):.3f}) 앞면 {r_['sh_front']:.3f} ({r_['nq_front']/max(1,(Vq>0).sum()):.3f}) "
+          f"뒤집힘 {r_['sh_inv']:.3f} 상위1% {r_['Eq_top1pct']:.3f} | 뒤집힌 점 자리: 바닥 {r_['inv_floor']} 확장 {r_['inv_ext']} 꼭짓점 {r_['inv_apex']} 앞면 {r_['inv_front']} "
           f"상태 {r_.get('inv_state')} z중앙 {r_.get('inv_zmed')} psi중앙 {r_.get('inv_psi_med')} det최소 {r_.get('inv_detmin')}", flush=True)
     print(f"   입자 둘레 뒤집힌 점 있음 {r_['nanyb']} 개: 입자 E {r_['Ep_anyb']:.3g} 대 자리 가중 가우스 E {r_['Eloc_anyb']:.3g} | 둘레 뒤집힘 없음: 입자 E {r_['E_noinv_part']:.3g} 대 자리 {r_['E_noinv_loc']:.3g} | "
           f"뒤집힌 입자 z중앙 {r_.get('pinv_zmed')} psi중앙 {r_.get('pinv_psi_med')} 자리psi중앙 {r_.get('pinv_loc_med')} 둘레 뒤집힌 가중 중앙 {r_.get('pinv_wfrac_med')} | 칸 못 찾은 입자 {r_['unmapped']}", flush=True)
