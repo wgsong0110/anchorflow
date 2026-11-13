@@ -58,3 +58,19 @@ for f in range(F0, F1 + 1):
     vg0 = (GT[f - 1][sel, 2] - GT[f - 2][sel, 2]) / 0.04; vg1 = (GT[f][sel, 2] - GT[f - 1][sel, 2]) / 0.04
     a_g = (vg1 - vg0).mean() / 0.04 if sel.sum() else float("nan")
     print(line + f"입자 n{sel.sum()} 판 {a_p:6.2f} 정답 {a_g:6.2f}", flush=True)
+
+# ---- 항별 분해 (수렴 판용; 노드 방정식 (m/tau^2)(Y - Ut) + T f = 0, tau^2/h^2 = 0.268 = 중력 계수 적합값 (k5 f12 free 노드 Ut - U0 - h V0 = c1 A0 + tau^2 g)) ----
+if os.environ.get("CM135_TERMS"):
+    T2 = 0.268 * 0.04 ** 2
+    print("\n항별 분해 (질량 가중 평균, z 성분 m/s^2): 관성 (Y-Ut)/tau^2 | 탄성 -Fn/m | 장벽 -BG/m | 잔차 G0/m | 중력 -9.8 포함은 Ut 안")
+    for f in range(F0, F1 + 1):
+        z = np.load(os.path.join(esc, f"f{f:03d}.npz")); IP = z["IP"]; A = z["A"].astype(np.float64)
+        nid = z["nid"].astype(np.int64); nb1, nb2 = int(IP[7]), int(IP[8]); i = nid // (nb1 * nb2); j = (nid // nb2) % nb1; k = nid % nb2
+        X = np.stack([i + IP[0], j + IP[1], k + IP[2]], 1).astype(np.float64) @ A.T
+        front = 1.5 - f * 0.04 / 1.5; mn = z["mn"].astype(np.float64); KB = z["KB"][0]; PM = z["PM"][0]; AN = z["AN"][0]
+        for lab, cond in [("자유 높은 노드 (KB>0.99)", (KB > 0.99)), ("부분구속 (0<KB<0.99)", (KB > 0.01) & (KB <= 0.99))]:
+            m = (X[:, 0] > front - 0.06) & (X[:, 2] > 0.8) & (mn > 0) & cond & (PM != 2) & (AN == 0)
+            if m.sum() < 5: continue
+            w = mn[m]; av = lambda a: float(np.average(a[m], weights=w))
+            Y = z["Y"][0][:, 2]; Ut = z["Ut"][0][:, 2]; Fz = z["Fn"][0][:, 2]; G0 = z["G0"][0][:, 2]; BG = z["BG"][0]
+            print(f"f{f:02d} {lab} n{m.sum():5d} 질량 {w.sum():.3f}: 관성 {av((Y-Ut)/T2):6.2f} | 탄성 {av(-Fz/mn):6.2f} | 장벽 {av(-BG/mn):6.2f} | G0/m {av(G0/mn):7.2f} | A0 {av(z['A0'][0][:,2]):6.2f} A1 {av(z['A1'][0][:,2]):6.2f} | KB 평균 {av(KB):.2f}")
