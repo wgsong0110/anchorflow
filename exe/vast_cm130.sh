@@ -36,6 +36,7 @@ fi
 W=/home/dkta/work; MI=$R/_vastmirror; AG=/dev/shm/dkta/ag_data; mkdir -p $AG
 rclone copyto $R/lbours/fem_ag_data/wolf.pt $AG/wolf.pt -q &
 rclone copy $MI/i-physgaussian $W/i-physgaussian --transfers 16 -q &
+rclone copy $MI/pgmodel/wolf_whitebg-trained $W/pgmodel/wolf_whitebg-trained --transfers 16 -q &
 rclone copyto $MI/PhysGaussian/config/wolf_config.json $W/PhysGaussian/config/wolf_config.json -q &
 rclone copy $MI/topo/pg_wolf_sand $W/topo/pg_wolf_sand --transfers 16 -q &
 D=/root/sv/code/$H; mkdir -p $D; rclone cat $RX/code/cm130_$H.tar | tar -x -C $D
