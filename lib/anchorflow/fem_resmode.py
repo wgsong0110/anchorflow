@@ -34,7 +34,9 @@ __global__ void rm_cpw(const int* IP, const float* src, float* dst, int w, int* 
 
 
 def P(t):
-    return np.uint64(0) if t is None else np.uint64(t.data_ptr())
+    if t is None:
+        return np.uint64(0)
+    return np.uint64(t.data_ptr()) if hasattr(t, "data_ptr") else np.uint64(t)               # 실행기 인자는 이미 포인터 (np.uint64)
 
 
 def patch(code):
