@@ -74,6 +74,7 @@ def pcg(Aop, Mop, b, iters, rec_lz=True):
     rz = float(torch.dot(r, z))
     nb = float(b.norm())
     hist = [1.0]
+    phi = [0.0]
     al, be = [], []
     npap = nrz = 0
     rz0 = rz
@@ -87,6 +88,7 @@ def pcg(Aop, Mop, b, iters, rec_lz=True):
         x += a * p
         r -= a * Ap
         hist.append(float(r.norm()) / nb)
+        phi.append(-0.5 * float(torch.dot(x, b + r)))
         z = Mop(r)
         rzn = float(torch.dot(r, z))
         if not (rzn > 0):
@@ -107,7 +109,7 @@ def pcg(Aop, Mop, b, iters, rec_lz=True):
                 e[j] = math.sqrt(max(be[j], 0.0)) / al[j]
         T = np.diag(d) + np.diag(e, 1) + np.diag(e, -1)
         ritz = np.linalg.eigvalsh(T)
-    return dict(hist=np.array(hist), npap=npap, nrz=nrz, ritz=ritz, rz0=rz0, x=x)
+    return dict(hist=np.array(hist), phi=np.array(phi), npap=npap, nrz=nrz, ritz=ritz, rz0=rz0, x=x)
 
 
 def fgmres(Aop, Mop, b, m):
@@ -399,6 +401,14 @@ def install(out):
         o["ritz_Mf"] = [float(rMf["ritz"][0]), float(rMf["ritz"][-1])] if rMf["ritz"] is not None else None
         o["gm_Mf"] = fgmres(Aop, Mop, b, ST["NGM"]).tolist()
         s.W.copy_(Wcur)
+        # 6. 확장 반영 전처리 시험 (진단): Ã 블록 대각 D̃ (색칠 탐침 = 정확 · 근사 D_j + Σ_o c_oj² T D_o T) 야코비, 층 0 을 Ã·D̃ 로 바꾼 V 순환 (거친 층 그대로)
+        try:
+            ex = experiments(s, o, Afull, Aop, Mop, b, X, inner, outer, idx, capN, IP, dev, nr, it2, rM, rJ, rI, rMf)
+            o.update(ex)
+        except Exception:
+            import traceback
+            o["exp_err"] = traceback.format_exc()[-1500:]
+            print("[절 CM127] 시험 오류", o["exp_err"], flush=True)
         o["nmv"] = list(nmv)
         # 노드 배열 (활성 노드만)
         nid = torch.nonzero(act).squeeze(1)
@@ -448,6 +458,134 @@ def install(out):
             arr.update(assemble(s, Afull, X, inner, idx, capN, IP, dev, o))
         s._lw_arr = arr
         return o
+
+    def Tmats(s, capN, nr, dev):
+        sk = s.sk.view(-1)[:capN].float(); pm = s.pm.view(-1)[:capN]
+        n = torch.tensor(nr, dtype=torch.float32, device=dev)
+        I = torch.eye(3, device=dev).expand(capN, 3, 3)
+        Pp = I - n[:, None] * n[None, :]
+        T = torch.where((pm == 0)[:, None, None], sk[:, None, None] * I, sk[:, None, None] * Pp + (I - Pp))
+        T = torch.where((pm == 2)[:, None, None], torch.zeros_like(T), T)
+        return T
+
+    def experiments(s, o, Afull, Aop, Mop, b, X, inner, outer, idx, capN, IP, dev, nr, it2, rM, rJ, rI, rMf):
+        i32 = np.int32
+        out = {}
+        t0 = time.time()
+        # (a) 정확 D̃: 반경 R 색칠 탐침 (같은 색 노드 사이 Ã 결합 0)
+        Rr = ST["R"]; Pp = 2 * Rr + 1
+        nb1, nb2 = int(IP[7]), int(IP[8])
+        n = torch.arange(capN, device=dev)
+        gi, gj, gk = n // (nb1 * nb2), (n // nb2) % nb1, n % nb2
+        col = ((gi % Pp) * Pp + (gj % Pp)) * Pp + (gk % Pp)
+        De = torch.zeros(capN, 3, 3, device=dev, dtype=torch.float64)
+        for cc in torch.unique(col[inner]).tolist():
+            sel = inner & (col == cc)
+            for comp in range(3):
+                X.zero_(); X.view(capN, 3)[sel, comp] = 1.0
+                y = Afull(X).view(capN, 3)
+                De[sel, :, comp] = y[sel].to(torch.float64)
+        out["t_probe"] = time.time() - t0
+        # (b) 근사 D̃ (절 CM94 wolfh13 정의): D_j + T_j (Σ_o c_oj² D_o) T_j, D = (Dinv)⁻¹ (rt_grad 의 Mi + T B T 블록)
+        E3 = torch.eye(3, device=dev, dtype=torch.float64).expand(capN, 3, 3)
+        Dsrc = s.Dinv.view(-1)[:capN * 9].view(capN, 3, 3).double()
+        actn = (s.mn.view(-1)[:capN] > 0)
+        okd = actn & torch.isfinite(Dsrc).flatten(1).all(1) & (torch.linalg.det(torch.where(torch.isfinite(Dsrc), Dsrc, torch.zeros_like(Dsrc))).abs() > 0)
+        Dn = torch.linalg.inv(torch.where(okd[:, None, None], Dsrc, E3))
+        Dn = torch.where(okd[:, None, None], Dn, torch.zeros_like(Dn))
+        acc = torch.zeros(capN, 3, 3, device=dev, dtype=torch.float64)
+        on_ = torch.nonzero(outer).squeeze(1)
+        b0 = s.w8b[on_].long(); Wt = s.w8w.view(-1, 9)[on_].double()
+        for a_ in range(3):
+            for b_ in range(3):
+                for c_ in range(3):
+                    ww = Wt[:, a_] * Wt[:, 3 + b_] * Wt[:, 6 + c_]
+                    qn = b0 + (a_ * nb1 + b_) * nb2 + c_
+                    acc.index_add_(0, qn, (ww ** 2)[:, None, None] * Dn[on_])
+        T = Tmats(s, capN, nr, dev).double()
+        Da = Dn + T @ acc @ T
+        Da = torch.where(inner[:, None, None], Da, torch.eye(3, device=dev, dtype=torch.float64).expand(capN, 3, 3))
+        De2 = torch.where(inner[:, None, None], De, torch.eye(3, device=dev, dtype=torch.float64).expand(capN, 3, 3))
+        De2 = 0.5 * (De2 + De2.transpose(1, 2))
+        Dei, Dai = torch.linalg.inv(De2), torch.linalg.inv(Da)
+        dd = (De2 - Da)[inner].flatten(1).norm(dim=1) / De2[inner].flatten(1).norm(dim=1)
+        out["Dapprox_relerr"] = [float(torch.quantile(dd.float(), q)) for q in (0.5, 0.9, 0.99)]
+        out["De_norm_ratio"] = float(De2[inner].flatten(1).norm(dim=1).median() / Dn[inner].flatten(1).norm(dim=1).median())
+        idn = idx // 3; idc = idx % 3
+        Z = torch.zeros(capN, 3, device=dev, dtype=torch.float64)
+
+        def jac(Dinv_):
+            def f(x):
+                Z.zero_(); Z[idn, idc] = x
+                return torch.bmm(Dinv_, Z[:, :, None]).squeeze(2)[idn, idc]
+            return f
+        JDe, JDa = jac(Dei), jac(Dai)
+
+        # λ(D̃⁻¹Ã): 대칭형 L⁻¹ Ã L⁻ᵀ
+        Le = torch.linalg.cholesky(De2); Lei = torch.linalg.inv(Le)
+        def symDe(x):
+            Z.zero_(); Z[idn, idc] = x
+            y = torch.bmm(Lei.transpose(1, 2), Z[:, :, None]).squeeze(2)[idn, idc]
+            y = Aop(y)
+            Z.zero_(); Z[idn, idc] = y
+            return torch.bmm(Lei, Z[:, :, None]).squeeze(2)[idn, idc]
+        evS, _ = lanczos(symDe, int(idx.numel()), 80, dev, 12)
+        out["lam_DeA"] = [float(evS[0]), float(evS[-1])]
+        NP = ST["NPCG"]
+        rDe = pcg(Aop, JDe, b, NP); rDa = pcg(Aop, JDa, b, NP)
+        # (c) 층 0 을 Ã·D̃ 로 바꾼 V 순환 (거친 층 = 실행기 그대로): z = ω D̃⁻¹ r; z += Q Vc(Qᵀ (r − Ã z)); z += ω D̃⁻¹ (r − Ã z), Q = T P (내부 몫)
+        Lc = s.ML[0]
+        res_f = torch.zeros(capN * 3, dtype=torch.float32, device=dev)
+        cor = torch.zeros(capN * 3, dtype=torch.float32, device=dev)
+        LM = s.LM
+
+        def coarse(e):
+            res_f.zero_(); res_f.view(capN, 3)[idn, idc] = e.float()
+            s.k("rt_mg_node", capN, (i32(0), P(LM), i32(4), P(s.meff), it2, P(s.sk), P(s.pm), *[np.float32(q) for q in nr], P(s.Dinv), P(s.W), P(res_f), P(None), P(None), P(s.m0u), P(None)), b=256)
+            if s.mv2:
+                s.k("rt_mg_restrict3", Lc["capn"] * 16, (i32(0), P(LM), P(s.m0u), P(Lc["r"]), i32(3)), b=256)
+            else:
+                s.k("rt_mg_restrict", Lc["capn"], (i32(0), P(LM), P(s.m0u), P(Lc["r"]), i32(3)), b=256)
+            s.mg_vc(1, Lc["r"], Lc["z"])
+            s.k("rt_mg_prolong", capN, (i32(0), P(LM), P(Lc["z"]), P(s.m0u), i32(0)), b=256)
+            s.k("rt_mg_node", capN, (i32(0), P(LM), i32(4), P(s.meff), it2, P(s.sk), P(s.pm), *[np.float32(q) for q in nr], P(s.Dinv), P(s.W), P(s.m0u), P(None), P(None), P(cor), P(None)), b=256)
+            return cor.view(capN, 3)[idn, idc].to(f64)
+
+        def vmx(Jop, om):
+            def f(r):
+                z = om * Jop(r)
+                z = z + coarse(r - Aop(z))
+                return z + om * Jop(r - Aop(z))
+            return f
+        lD = out["lam_DeA"][1]
+        om = 1.0 / lD
+        # 근사 D̃ 의 λmax (거듭제곱 30)
+        g = torch.Generator(device=dev).manual_seed(13)
+        v = torch.randn(int(idx.numel()), dtype=f64, device=dev, generator=g)
+        lam_a = 1.0
+        for _ in range(30):
+            w = JDa(Aop(v)); lam_a = float(torch.dot(v, w) / torch.dot(v, v)); v = w / w.norm()
+        out["lam_DaA_pow30"] = lam_a
+        VE, VA = vmx(JDe, om), vmx(JDa, 1.0 / lam_a)
+        rVE = pcg(Aop, VE, b, min(NP, 200)); rVA = pcg(Aop, VA, b, min(NP, 200))
+        evVE, _ = lanczos(VE, int(idx.numel()), 60, dev, 14)
+        out["lzVE"] = [float(evVE[0]), float(evVE[-1])]
+        # 기준 φ* (정확 D̃ V 순환 PCG 600)
+        rRef = pcg(Aop, VE, b, 600)
+        phis = [rRef["phi"].min(), rDe["phi"].min(), rM["phi"].min()]
+        ph = float(min(phis))
+        out["phi_ref"] = ph; out["ref_res"] = float(rRef["hist"][-1])
+
+        def eA(r_):
+            return [float(math.sqrt(max(q - ph, 0.0) / max(-ph, 1e-300))) for q in r_["phi"]]
+        for nm, r_ in (("M", rM), ("J", rJ), ("I", rI), ("Mf", rMf), ("De", rDe), ("Da", rDa), ("VE", rVE), ("VA", rVA)):
+            out["eA_" + nm] = eA(r_)
+            out["res_" + nm] = r_["hist"].tolist()
+            out["bad_" + nm] = [r_["npap"], r_["nrz"]]
+        out["t_exp"] = time.time() - t0
+        print(f"[절 CM127] 시험: D̃ 근사 오차 {out['Dapprox_relerr']} λ(D̃⁻¹Ã) {out['lam_DeA']} λ(VE·Ã) {out['lzVE']} | 에너지 오차 5·20 회: "
+              + " ".join(f"{k}:{out['eA_' + k][min(5, len(out['eA_' + k]) - 1)]:.2g}/{out['eA_' + k][min(20, len(out['eA_' + k]) - 1)]:.2g}" for k in ("M", "J", "I", "De", "Da", "VE", "VA")), flush=True)
+        return out
 
     def _scatter(x, idx, capN, nid):
         full = torch.zeros(capN * 3, dtype=f64, device=x.device)
