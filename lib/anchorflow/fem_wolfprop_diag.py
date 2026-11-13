@@ -188,7 +188,8 @@ class Ctx:
         fix = body & (pm == 2)
         pin = body & ~fix & (kb < 1.0)
         stk = body & ~fix & ~pin & (sk < 1.0)
-        regs = dict(all=body, near1=body & (hgt < s.cell), near3=body & (hgt < 3 * s.cell), pin=body & (kb < 0.5), rest=body & ~(kb < 0.5))
+        regs = dict(all=body, near1=body & (hgt < s.cell), near3=body & (hgt < 3 * s.cell), pin=body & (kb < 0.5), rest=body & ~(kb < 0.5),
+                    fh=body & (kb >= 0.99) & ~fix & (hgt > 0.32) & (X[:, 0] > 1.5 - (fi + 1) * s.h / 1.5 + 0.06))     # 절 CM137: 방출된 쪽 6 cm 너머, 높이 > 0.8 m, 자유 (구속 인자 1) 노드
         out = dict(cell=s.cell, t0=fi * s.h, nn=nn, mass={k: float(mn[r].sum()) for k, r in regs.items()}, nnode={k: int(r.sum()) for k, r in regs.items()},
                    nkind=dict(fix=int(fix.sum()), pin=int(pin.sum()), pin_half=int((body & (kb < 0.5)).sum()), stk=int(stk.sum()), free=int((body & ~fix & ~pin & ~stk).sum())),
                    mkind=dict(fix=float(mn[fix].sum()), pin=float(mn[pin].sum()), stk=float(mn[stk].sum())),
