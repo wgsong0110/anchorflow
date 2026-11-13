@@ -10223,3 +10223,26 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 - 판정 순서대로 예산 높이에서 불합격 -> 회귀 (레고·ficus·bread)·정답 나란히 영상 안 만듦. 기본 판 안 바꿈 (`--lw`·`--xjd` 새 플래그, 기본 0).
 ### CM127.5 출력·실행
 - R2 lbours/wolfcv/linwhy/: 측정 판 s1·s2 (연기), c1·b1·h1 (run1), c2·b2 (run2, 전처리 시험), c4·b4 (run4, 조립·반복 해 사본; c4 는 f30 조립 중 GPU 메모리 부족으로 f20 두 개만), 고친 판 xc·xb (run3), xe·xb15 (run5): 판마다 cmd.txt·log.txt·lw.jsonl·lwinfo.json·lw/fFFF_iII.npz (노드별 r0·끝 r·해·리츠 값·가장 낮은 모드·조립 Ã·반복 해 사본)·nl.jsonl·fem.jsonl·pred.pt·sp/; exact4.log (직접 풀이 대조), an2.log·an2_cv.log, go_*.log, vast.log, vast_inst/, code/linwhy_<커밋>.tar. 덤프 안 지움. 클러스터 안 씀.
+
+## CM129. wolf 모래에 local-global (Projective Dynamics 꼴) 풀이 -- local = 가우스점 반환 사상 정확히, global = 걸음 안 상수 SPD 행렬 (조정자 11-13, 사용자 wolf 완전 위임; 절 CM118~CM122·CM125~CM128 다음; 금지 그대로, 기본 판 안 바꿈) -- **불합격** -- 가지 k1new, 커밋 91b06eb (lib/anchorflow/fem_pd.py · exe/pd_wrap.py `--xpd` · exe/go_pd.sh · exe/vast_pd.sh · 로컬 모형 exe/pd_model.py), vast.ai A40 ×2 인스턴스 60446570 (300 W = 기본, 11-13 04:03~04:10 UTC, 끝나고 destroy 확인; 앞서 RTX A6000 ×2 60446296 은 카드 1 전력 한도 200 W 라 바로 destroy·blocklist), 결과 R2 lbours/wolfcv/pd/{p1,p0,pc,b9} (pred.pt·sp/·nl.jsonl·fem.jsonl 덤프 포함), 모형 기록 R2 lbours/wolfcv/pd/model/
+### CM129.0 정의 (`--xpd 1`, 기본 0 = 모듈 안 부름)
+- local: ao_elem_s 의 힘 경로 그대로 = 가우스점마다 시험 X 에 반환 사상 (ao_dpf, 정답 PG sand 식) 을 정확히 건 τ̂ 로 힘 (투영 변형 p_q 를 V_q C0 (f_q − p_q) = τ̂ f⁻ᵀ 꼴로 쓴 것과 같음).
+- global: 헤시안 저장 계수를 U = M = I, C = V_q C0 (C0 = 쉼 상태 선형 탄성 = Hencky 헤시안 at I: 주값 2μδ + λ, 쌍 lt 0 · lf 2μ) 로 바꿈 -> ao_mv_q 곱·노드 대각 블록이 M/τ² + Σ V_q Bᵀ C0 B (B: 노드 변위 -> 걸음 시작 격자 기준 증분 dA). 확장 접기 Eᵀ(·)E·바닥 장벽 헤시안은 실행기 그대로 (global 에 들어감). 걸음 안 상수 (장벽 몫만 반복마다 바뀜). 반복 x <- x − A⁻¹ g(x), g = 참 잔차라 수렴하면 cvb 와 같은 해. 선형 풀이 = 실행기 PCG (p1·pc 는 절 CM127 xjac 블록 야코비 = Ã 와 맞는 전처리, p0 는 지금 MG).
+- 모래 커널 (ao_elem_s) 글자만 치환 (cupy.RawModule, 자리 1 곳 확인 -- 로그 '[절 CM129] ... ao_elem_s 1 곳'); 레고·ficus·bread 재질 커널은 글자 그대로.
+### CM129.1 로컬 원리 시험 (exe/pd_model.py, numpy, 2 차원 평면 변형 모래 기둥 0.4 × 0.8 m, 칸 0.04 m 쌍선형, τ 0.04 s, wolf 와 같은 E·ν·ρ·φ, 바닥 고착; 잔차 = ‖g‖/‖m g‖)
+- 뉴턴 (시험 X Hencky 탄성 접선 + 0 자르기, 선형 풀이 정확) 과 PD (s = 1) 의 f1~f3 잔차 이력이 세 자리까지 같음 (반복 3·10·40: 0.82·0.67·0.56) -- 모래 탄성 변형이 작아 (자중 응력 / E ~ 1e-4) F_E ≈ 회전이라 Hencky 탄성 헤시안 ≈ 쉼 상태 헤시안 = PD 행렬. 곧 지금 뉴턴이 이미 상수 행렬 local-global 과 거의 같은 반복.
+- PD 400 회도 ρ 중앙 0.999, 잔차 0.3 × 무게에서 멈춤 (s 0.5 도 같음); PD + Anderson (m 5·15) 은 잔차가 1~7 × 무게에서 흔들리며 안 줄음 (수렴 안 한 채 빨리 무너짐). 꼭짓점 (응력 0) 점 위 노드는 참 강성 0 인데 행렬은 V C0 (m/τ² 의 1e4~1e5 배) 라 고정 행렬 반복의 그 방향 수축이 1 − O(m/τ² / (V C0 k²)) 에 가까움 -- 행렬을 걸음마다 바꿔도 같은 C0 이면 같음 (추정이 아니라 모형 수치로 확인한 것은 수축 0.999 까지; 원인 식은 추정).
+### CM129.2 결과 (각 1 판 wolf 50 프레임, A40; 집계 exe/extsolve_an.py · convabl_an.py · sinv_esc.py, ρ = .xstmp/nl/rho.py)
+| 판 | 끝 | 프레임 ms 평균 · 최대 | f30 · f50 질량중심 mm (정답 93 · 53) | r<0.7 칸 f10~30 | 오차 % | 이탈 (첫 · 최대 입자) | 뉴턴 ρ 반복 0~1 · 1~2 |
+|---|---|---|---|---|---|---|---|
+| H9 같은 인스턴스 b9 (`--xpd 0`) | 50 | 13.0 · 17.6 | 58 · 24 | 13518 | 4.348 | f43 · 12 | 0.81 · 0.97 |
+| PD + xjac p1 | 50 | 10.5 · 15.2 | 57 · 48 (이탈 입자 몫, 절 CM119 nb9 63 과 같은 꼴) | 12503 | 4.379 | **f9 · 91** | 0.80 · 0.91 |
+| PD + MG p0 | f47 (발산 48) | 47.5 · 99.4 | 57 · - | 13400 | - | f8 · 124 | 0.84 · 0.90 |
+| cvb + PD + xjac pc (뉴턴 60 · PCG 100) | f18 (발산 19) | 1643 | - | 569 (f≤18) | 0.319 (18 프레임) | f15 · 252 | 아래 |
+- 판정 2 (반복 크게): pc 질량중심 f5~f12 383·381·377 mm 로 cvb (ncvb) 383·382·378 과 1 mm 안, f14~f18 368·362·352·340·326 대 cvb 371·366·359·350·339 로 갈라지고 (f15 부터 입자 이탈) f19 발산 -- 처음 12 프레임은 같은 해로 가나 끝까지 못 감. 뉴턴 ρ (f≤18) pc 0.47·0.46·0.56·0.82·**0.94·0.97** (반복 0~1·1~2·2~5·5~10·10~30·30~60) 대 cvb 0.68·0.34·0.53·0.81·**0.93·0.98** -- 1 차 꼬리 수축이 같음 (모형의 'Hencky 탄성 헤시안 ≈ PD 행렬' 과 맞음).
+### CM129.3 결론
+- **확인한 것**: (1) 예산 판 (p1, 10.5 ms) 은 높이·칸 압축이 H9 와 같음 (f30 57 대 58, r<0.7 1.25 만 대 1.35 만) -- 판정 1 불합격, 게다가 이탈이 f9 부터 91 개로 H9 (f43 · 12) 보다 나쁨. MG 전처리 판 (p0) 은 47 ms·f48 발산. (2) 반복을 크게 하면 f12 까지는 cvb 해와 1 mm 안이나 f15 이탈·f19 발산 -- 판정 2 불합격. (3) 1 차 꼬리 수축은 뉴턴과 같음 (0.94·0.97 대 0.93·0.98). 모형에서도 PD 와 지금 뉴턴의 잔차 이력이 같고 Anderson 가속은 수렴 안 함.
+- **추정 (확인 안 함)**: E 5e7 · τ 0.04 s 에서 모래 탄성 변형이 작아 지금 뉴턴의 헤시안 자체가 이미 PD 행렬과 거의 같음 -- 그래서 local-global 로 바꿔도 얻는 것이 없고, 남은 문제는 어느 쪽이든 '꼭짓점·꼬리 점의 참 강성 (0·전단 무름) 과 행렬의 탄성 강성 차' (절 CM120·CM126) 임. 상수 행렬 방법 (PD·ADMM-PD) 은 그 차를 원리상 못 메움.
+- 판정 순서대로 불합격 -> 회귀 (레고·ficus·bread)·영상 fem_wolf_pd_cmp.mp4 안 만듦. 기본 판 안 바꿈 (`--xpd` 새 플래그, 기본 0).
+### CM129.4 출력·실행
+- R2 lbours/wolfcv/pd/{p1,p0,pc,b9} (cmd·log·summary·fem.jsonl·nl.jsonl·sp/·pred.pt·esc.log·esc.json·pdinfo.json), go_run.log·go_an2.log·an2.log·an2_cv.log·extsolve_an.json·convabl_an.json, vast.log, code/pd_91b06eb.tar·spec_run.txt·an2_runs.txt, model/ (로컬 모형 기록). 덤프 안 지움. 끝 대조 'R2 대조 2 개 차이' 는 p0 nl.jsonl 을 감시 루프와 본 복사가 같이 올리다 생긴 경합 (rclone md5 오류 줄); R2 의 네 판 nl.jsonl 은 마지막 프레임 (50·47·18·50) 까지 있음을 확인. 클러스터 안 씀.
