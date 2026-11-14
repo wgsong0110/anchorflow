@@ -92,6 +92,7 @@ ap.add_argument("--ga_y0ut", action="store_true", help="절 CM2 정의 변경 �
 ap.add_argument("--pbc", action="store_true", help="절 CM2 재질 판: 정답 config 입자 속도 구속 (순차 방출·병진, exe/fem_ao_rt_sim.py 와 같음)")
 ap.add_argument("--pbc_ns", type=int, default=4)
 ap.add_argument("--rel0", action="store_true", help="절 CM141 진단 (기본 끔): 순차 방출 구속을 없애 모든 입자를 t=0 에 동시에 해제 (구속 입자 시각 -1e30)")
+ap.add_argument("--relfix", type=float, default=0.0, help="절 CM142 진단 (기본 0 끔): 앞면 x 를 고정 -- x 가 이 값보다 큰 입자만 t=0 에 해제, 나머지는 영구 구속 (시각 +1e30)")
 ap.add_argument("--lift", type=float, default=0.0, help="절 CM141 진단 (기본 0): 모든 프레임 입자 z 에 더함 (바닥 위에서 자유낙하 거리를 벌림; 정답 대조는 무의미)")
 ap.add_argument("--mlow", type=float, default=0.0, help="절 CM2 재질 판: 거의 빈 노드 문턱 = mlow x 첫 프레임 노드 질량 중앙값 (관성 예측 고정; 0 = 없음)")
 ap.add_argument("--visc_rpic", action="store_true", help="절 CM2 재질 판: 정답 rpic_damping -> 등가 점성 (절 AG.20)")
@@ -271,6 +272,8 @@ if MATNAME in ("sand", "foam", "plasticine", "watermelon"):                     
             PVB = None
         if a.rel0:
             TREL = torch.full_like(TREL, -1e30)
+        if a.relfix > 0:
+            TREL = torch.where(_x0b[:, 0] > a.relfix, torch.full_like(TREL, -1e30), torch.full_like(TREL, 1e30))
     MTHR = 0.0
     if a.mlow > 0:                                                                     # 첫 프레임 노드 질량 중앙값 (exe/fem_ao_rt_sim.py 와 같은 식)
         _y = d["x"][0].to(dev).double() @ lat.Ai.T
