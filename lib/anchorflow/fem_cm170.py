@@ -11,7 +11,8 @@ import os
 import numpy as np
 import torch
 
-ST = dict(out=".", nsrc=0, nalloc=0, nsum=0, nframe=0, nwrite=0, err=None, F0=1, F1=0, names={}, itau2={})
+LSN = ("rt_lsyN", "rt_fixdir", "rt_sc_clear_g", "rt_elem_lsN", "rt_bar_lsN", "rt_lsgate", "rt_lspickN", "rt_sc_clear")
+ST = dict(lsn={}, out=".", nsrc=0, nalloc=0, nsum=0, nframe=0, nwrite=0, err=None, F0=1, F1=0, names={}, itau2={})
 LOG = [None]
 MARK = "// ---- 절 CM170 cm170"
 HEAD = "__global__ void ao_commit("
@@ -86,7 +87,11 @@ def install(out):
             KK, nt = CW._kmax(s), int(s.nt)
             s.c170S = torch.zeros(KK * nt, NS, 8, device=s.dev, dtype=torch.float64)
             s.c170A = s.A.float().contiguous().reshape(-1).clone()
-            s._c170_on = False; s._c170_post = False; s._c170_seq = {}
+            s.c170L = torch.zeros((KK * nt,) + tuple(s.SC.shape), device=s.dev, dtype=torch.float64)
+            s.c170W = torch.zeros(KK * nt, 14, 8, device=s.dev, dtype=torch.float64)
+            s.c170X = torch.tensor([9, 10, 14, 20, 21, 40, 59, 63], device=s.dev)
+            s._c170_w = {}
+            s._c170_on = False; s._c170_post = False; s._c170_wsnap = False; s._c170_seq = {}
             ST["nalloc"] += 1
         except Exception as e:
             ST["err"] = "alloc " + repr(e)
@@ -99,9 +104,9 @@ def install(out):
         r = octl(s, op, it)
         if getattr(s, "c170S", None) is not None and getattr(s, "cwS3", None) is not None:
             if op == 2:
-                s._c170_on = True; s._c170_post = False; s._c170_seq[row(s)] = 0; ST["names"][row(s)] = []
+                s._c170_on = True; s._c170_post = False; s._c170_wsnap = False; s._c170_seq[row(s)] = 0; ST["names"][row(s)] = []
             elif op == 3:
-                s._c170_on = False; s._c170_post = True
+                s._c170_on = False; s._c170_post = False; s._c170_wsnap = True; s._c170_w[row(s)] = 0; ST["lsn"][row(s)] = []
         return r
 
     def summ(s, name, args, slot, itau2):
@@ -114,6 +119,14 @@ def install(out):
         r = ok(s, name, n, args, b)
         if getattr(s, "c170S", None) is not None and getattr(s, "cwS3", None) is not None:
             i = row(s)
+            if name in LSN and not s._c170_post and s._c170_wsnap:
+                q = s._c170_w.get(i, 0)
+                if q < 14:
+                    s.c170W[i, q].copy_(s.SC[s.c170X]); s._c170_w[i] = q + 1
+                    ST["lsn"].setdefault(i, []).append(name)
+            if name == "rt_lsup" and s._c170_wsnap:
+                s._c170_post = True; s._c170_wsnap = False
+                s.dcopy(s.c170L[i], s.SC)                                          # 선탐색 판정 직후 (nlwhy 도 이 시점 SC[14] 를 읽음)
             if name == "rt_grad":
                 it2 = float(args[2]); ST["itau2"][i] = it2
                 summ(s, name, args, NS - 1, it2)
@@ -138,7 +151,7 @@ def install(out):
             f_ = fi + 1
             win = ST["F0"] <= f_ <= ST["F1"]
             if getattr(s, "c170S", None) is not None:
-                s.c170S.zero_()
+                s.c170S.zero_(); s.c170L.zero_()
             r = fn(s, *a)
             if win and getattr(s, "c170S", None) is not None and getattr(s, "cwS3", None) is not None:
                 try:
@@ -146,6 +159,7 @@ def install(out):
                     nt = int(s.nt)
                     S_ = s.c170S.cpu().numpy()
                     D = s.DG.cpu().numpy()
+                    L_ = s.c170L.cpu().numpy(); W_ = s.c170W.cpu().numpy()
                     its = []
                     try:
                         G_ = s.cwG.cpu().numpy()
@@ -170,7 +184,7 @@ def install(out):
                         p_ = S_[it, NS - 2]
                         o = dict(it=it, M=M, n=float(g_[7]), itau2=it2, inert_def=float(g_[1] * it2 / M), inert_slv=float(g_[2] / M), inert_x=float(g_[5] * it2 / M),
                                  names=nm, fz=fz, fx=fx, resid=float(g_[1] * it2 / M + (fz[-1] if fz else 0.0)),
-                                 post_inert=float(p_[1] * it2 / M) if p_[0] > 0 else None, dl_slv=float(p_[6] / M) if p_[0] > 0 else None, cg=cgi(it), g2=float(D[2 * it, 1]), rz=float(D[2 * it, 0]))
+                                 post_inert=float(p_[1] * it2 / M) if p_[0] > 0 else None, dl_slv=float(p_[6] / M) if p_[0] > 0 else None, cg=cgi(it), sc1=[float(v) for v in D[2 * it + 1][:64]], scL=[float(v) for v in L_[it][:64]], lsn=ST["lsn"].get(it, []), lsw=[[float(v) for v in W_[it, j]] for j in range(len(ST["lsn"].get(it, [])))], g2=float(D[2 * it, 1]), rz=float(D[2 * it, 0]))
                         its.append(o)
                     LOG[0].write(json.dumps(dict(f=f_, K=int(s.Kcur), its=its), ensure_ascii=False) + "\n"); LOG[0].flush()
                     ST["nwrite"] += 1
