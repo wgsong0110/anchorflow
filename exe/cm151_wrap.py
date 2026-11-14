@@ -13,7 +13,8 @@ while argv and argv[0] in ("--fi", "--fidg"):
     O[argv[0][2:]] = argv[1]; del argv[:2]
 MODE, DG = int(float(O["fi"])), int(float(O["fidg"]))
 assert DG, "cm151_wrap 은 --fidg 1 필요"
-FR = (10, 20, 30)
+_e = os.environ.get("CM151_FR", "10,20,30")
+FR = tuple(range(int(_e.split("-")[0]), int(_e.split("-")[1]) + 1)) if "-" in _e else tuple(int(v) for v in _e.split(","))
 _orig = runpy.run_path; _done = [False]
 def run_path(path, *a, **kw):
     if not _done[0] and os.path.basename(path) in ("fem_an_rt_sim.py", "fem_ao_rt_sim.py"):

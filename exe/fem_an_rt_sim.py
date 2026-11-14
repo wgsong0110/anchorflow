@@ -63,6 +63,7 @@ ap.add_argument("--cap_mul", type=float, default=2.0, help="절 BD: 고정 용�
 ap.add_argument("--det", action="store_true", help="결정적 합산 (같은 명령 두 번이 비트 단위로 같게; lib/anchorflow/fem_an_det.py, MG 와 함께 못 씀) -- 판정용, 속도는 비결정 판으로")
 ap.add_argument("--ga", choices=["ga", "hht"], default=None, help="generalized-α (Chung-Hulbert) 또는 HHT-α (implicit-err 절 AN.err3 증분 포텐셜 꼴, 시작점 = 걸음 시작 위치, 끝 = Newmark 위치 식)")
 ap.add_argument("--rho", type=float, default=0.7)
+ap.add_argument("--fric_mul", type=float, default=1.0, help="절 CM152 진단 전용: 재질 판 마찰각 (cfg friction_angle, 없으면 PG 기본 25도) 에 곱함. 1 = 끔 (그대로). 고침 아님, 원인 가르기")
 ap.add_argument("--no_areset", action="store_true", help="고착 노드 걸음 끝 가속도 0 처치 끔")
 ap.add_argument("--scheme", choices=["theta", "trbdf2"], default=None, help="단계 방식 (안 주면 --integ: mid = θ ½, be = θ 1)")
 ap.add_argument("--theta", type=float, default=0.5)
@@ -148,6 +149,9 @@ RTC.RAWPTR[0] = True
 os.makedirs(a.out, exist_ok=True)
 d = torch.load(a.data, map_location="cpu", weights_only=False)
 cfg = d["cfg"]
+if a.fric_mul != 1.0:                                                                  # 절 CM152 진단
+    cfg = dict(cfg); cfg["friction_angle"] = float(cfg.get("friction_angle", 25.0)) * a.fric_mul
+    print(f"[절 CM152] 마찰각 x{a.fric_mul} -> {cfg['friction_angle']} 도", flush=True)
 if a.lift != 0.0:
     d["x"] = d["x"].clone(); d["x"][..., 2] += a.lift
 h = float(cfg["frame_dt"])
