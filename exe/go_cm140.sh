@@ -29,7 +29,8 @@ line() { local g=$1; shift; for n in "$@"; do runone $n $g; done; }
 for n in ${G0//,/ } ${G1//,/ }; do mk $n || exit 1; done
 ( line 0 ${G0//,/ } ) & P1=$!; sleep 15; ( line 1 ${G1//,/ } ) & P2=$!; wait $P1 $P2
 RUNS=""; for n in ${G0//,/ } ${G1//,/ }; do [ -s $O/$n/summary.json ] && RUNS="$RUNS $n"; done
+$PY -u exe/cm148_an.py $O ${G0//,/ } ${G1//,/ } > $O/an148_$(date +%H%M).log 2>&1
 RR=""; RN=""; for n in $RUNS; do [[ $n == *R* || $n == *F* ]] && RR="$RR $n" || RN="$RN $n"; done; RUNS="$RN"; [ -n "$RR" ] && $PY -u exe/cm142_an.py $O $RR > $O/an142_$(date +%H%M).log 2>&1; $PY -u exe/convabl_an.py $O $RUNS > $O/an_$(date +%H%M).log 2>&1; say "an rc=$?"
 $PY -u exe/cm140_an.py /dev/shm/dkta/ag_data/wolf.pt $O $RUNS > $O/an140_$(date +%H%M).log 2>&1; say "an140 rc=$?"
-rclone copy $O $R --include "an_*.log" --include "an140_*.log" --include "an142_*.log" --include "cm140_an.json" --include "convabl_an.json" -q
+rclone copy $O $R --include "an_*.log" --include "an140_*.log" --include "an142_*.log" --include "an148_*.log" --include "cm140_an.json" --include "convabl_an.json" -q
 say "끝 R2 대조 $(rclone check $O $R --one-way -q 2>&1 | grep -c ERROR) 개 차이"
