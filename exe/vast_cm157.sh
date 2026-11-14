@@ -38,12 +38,22 @@ W=/home/dkta/work; AG=/dev/shm/dkta/ag_data; SD=/dev/shm/dkta/anerr_data; mkdir 
 rclone copyto $R/vastpkg/L000.pt $SD/L000.pt -q &
 rclone copyto $R/lbours/ficus_v0/data/F_pg_v0/F_pg_v0.pt $SD/F_pg_v0.pt -q &
 rclone copyto $R/lbours/fem_ag_data/bread.pt $AG/bread.pt -q &
+MI=$R/_vastmirror
+rclone copy $MI/i-physgaussian $W/i-physgaussian --transfers 16 -q &
+for m in lego_whitebg-trained ficus_whitebg-trained bread-trained; do rclone copy $MI/pgmodel/$m $W/pgmodel/$m --transfers 16 -q & done
+rclone copy $MI/lbdata/test_low/L000 $W/lbdata/test_low/L000 -q --include meta.json --include sim_0000000000.h5 &
+rclone copyto $MI/lbdata/config.json $W/lbdata/config.json -q &
+rclone copy $R/lbours/ficus_v0/gt $W/lbours/ficus_v0/gt -q --include meta.json --include config.json --include sim_0000000000.h5 &
+rclone copy $MI/topo/pg_bread_plastic $W/topo/pg_bread_plastic --transfers 16 -q &
+rclone copyto $MI/topo/bread_plastic_config.json $W/topo/bread_plastic_config.json -q &
 D=/root/sv/code/$H; mkdir -p $D; rclone cat $RX/code/cm157_$H.tar | tar -x -C $D
 wait
 cd $D || exit 1
 export PYTHONUTF8=1 OMP_NUM_THREADS=8
+[ -s $AG/gt_bread/config.json ] || CUDA_VISIBLE_DEVICES=0 python -u exe/pg_h5_to_pt.py --h5_dir $W/topo/pg_bread_plastic --config $W/topo/bread_plastic_config.json --out_pt /root/sv/gtbread_unused.pt --out_dir $AG/gt_bread --out_dir_n 1 > /root/sv/gt.log 2>&1
+say "[렌더 자료] lego $(ls $W/lbdata/test_low/L000 | tr '\n' ' ') ficus $(ls $W/lbours/ficus_v0/gt | tr '\n' ' ') bread $(ls $AG/gt_bread | tr '\n' ' ') pgmodel $(ls $W/pgmodel | tr '\n' ' ') $(tail -1 /root/sv/gt.log | cut -c1-150)"
 say "[자료] L000 $(stat -c %s $SD/L000.pt 2>&1) ficus $(stat -c %s $SD/F_pg_v0.pt 2>&1) bread $(stat -c %s $AG/bread.pt 2>&1) 코드 $(ls $D/exe/go_cm157.sh 2>&1) pip $(ls /root/sv/pip.done 2>&1)"
-[ -f /root/sv/pip.done ] && [ -s $SD/L000.pt ] && [ -s $SD/F_pg_v0.pt ] && [ -s $AG/bread.pt ] && [ -f $D/exe/go_cm157.sh ] || { say "[세팅 실패]"; echo "세팅 실패 $(date)" | rclone rcat $RX/vast.END; exit 1; }
+[ -f /root/sv/pip.done ] && [ -s $SD/L000.pt ] && [ -s $SD/F_pg_v0.pt ] && [ -s $AG/bread.pt ] && [ -f $D/exe/go_cm157.sh ] && [ -s $AG/gt_bread/config.json ] && [ -s $W/lbdata/config.json ] && [ -d $W/i-physgaussian/gaussian-splatting ] && [ -d $W/pgmodel/bread-trained ] || { say "[세팅 실패]"; echo "세팅 실패 $(date)" | rclone rcat $RX/vast.END; exit 1; }
 say "[준비 끝] GPU 일 시작: $STG"
 bash exe/go_cm157.sh $H ${XS_G:?} ${XS_RUNS:?} < /dev/null >> $LOG 2>&1
 rclone copyto $LOG $RX/vast.log -q
