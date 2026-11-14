@@ -13,6 +13,7 @@ cm140_cmd() { local RS=""; local n=${1%%_*} src=$2 out=$3 C X="" S=""
              N12*) S="s#--newton 6 --cg 5#--newton 12 --cg 10#"; n=${n#N12};; esac
   case $n in W[CS]*) local W5=""; [[ $n == *C* ]] && W5="${W5}--w5c 1 "; [[ $n == *S* ]] && W5="${W5}--w5s 1 "; C=$(echo "$C" | sed -e "s#--l3fr 1 #--l3fr 1 $W5#"); n="B";; esac   # WC = 절 CM70 C 만 · WS = S_구속 만 · WCS = 둘 (= CM139 F)
   case $n in ND) S="s# --descent##"; n="B";; L0) S="s#--ls_n 10#--ls_n 0#"; n="B";; NDL0) S="s# --descent##;s#--ls_n 10#--ls_n 0#"; n="B";; esac   # ND = 하강 방향 보장 끔 · L0 = 에너지 선탐색 끔 (보폭은 장벽·뒤집힘 실현 가능 한도만)
+  case $n in P*) S="${S:+$S;}s#--pbc --mlow#--pbc --pbc_phi --mlow#"; n=${n#P}; [ -z "$n" ] && n=B;; esac   # P 접두 (절 CM141 (b)): --pbc_phi (절 CM27 (e), 정답 서브스텝 구속의 닫힌 꼴 k_구속 = φ(x), 기본 판은 e^-x)
   case $n in R*) RS="s#--frames 50 #--frames 12 --rel0 --lift 0.5 #"; n=${n#R}; [ -z "$n" ] && n=B;; esac   # R 접두 (절 CM141): 순차 방출 없이 t=0 에 동시 해제 + 0.5 m 들어올림, 12 프레임 (RB, RV = 수렴, RT...)
   case $n in A1) X="exe/anderson_wrap.py --anx 1 ";; A2) X="exe/anderson_wrap.py --anx 2 ";; B|"") X="";; *) echo "모르는 판 $1" >&2; return 1;; esac
   C=$(echo "$C" | sed -e "s#exe/startpt_wrap.py --sp 1 #exe/startpt_wrap.py --sp 1 $X#")
