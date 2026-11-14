@@ -4,6 +4,7 @@
 #   판 디렉토리 /home/dkta/work/cm140/<판> -> R2 lbours/wolfcv/cm140/<판> (덤프 포함, 안 지움). 끝에 exe/convabl_an.py 집계 + 정답 높이.
 export PATH=/home/dkta/bin:$PATH
 H=$1; G0=$2; G1=$3
+[ "$G0" = APEX ] && { bash exe/cm149_run.sh; exit 0; }
 R=r2:storage/result/anchorflow/lbours/wolfcv/cm140
 O=/home/dkta/work/cm140
 PY=/home/dkta/.conda/envs/af/bin/python
