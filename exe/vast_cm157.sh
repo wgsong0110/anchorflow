@@ -43,6 +43,7 @@ rclone copy $MI/i-physgaussian $W/i-physgaussian --transfers 16 -q &
 for m in lego_whitebg-trained ficus_whitebg-trained bread-trained; do rclone copy $MI/pgmodel/$m $W/pgmodel/$m --transfers 16 -q & done
 rclone copy $MI/lbdata/test_low/L000 $W/lbdata/test_low/L000 -q --include meta.json --include sim_0000000000.h5 &
 rclone copyto $MI/lbdata/config.json $W/lbdata/config.json -q &
+rclone copyto $MI/stab/lego/init/sim_0000000000.h5 $W/stab/lego/init/sim_0000000000.h5 -q &
 rclone copy $R/lbours/ficus_v0/gt $W/lbours/ficus_v0/gt -q --include meta.json --include config.json --include sim_0000000000.h5 &
 rclone copy $MI/topo/pg_bread_plastic $W/topo/pg_bread_plastic --transfers 16 -q &
 rclone copyto $MI/topo/bread_plastic_config.json $W/topo/bread_plastic_config.json -q &
