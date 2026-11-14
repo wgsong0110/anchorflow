@@ -158,7 +158,7 @@ def install(out):
                         i_ = max(getattr(s, "_cw_k", 0), 0) * 0 + it
                         g = G_[i_]
                         nz = [j for j in range(g.shape[0]) if g[j, 0] != 0]
-                        return dict(n=len(nz), rz0=float(g[nz[0], 0]) if nz else 0.0, rz1=float(g[nz[-1], 0]) if nz else 0.0, rr1=float(g[nz[-1], 5]) if nz else 0.0)
+                        return dict(n=len(nz), pap=[float(g[j, 2]) for j in nz], rz=[float(g[j, 0]) for j in nz], pr=[float(g[j, 4]) for j in nz], rz0=float(g[nz[0], 0]) if nz else 0.0, rz1=float(g[nz[-1], 0]) if nz else 0.0, rr1=float(g[nz[-1], 5]) if nz else 0.0)
                     for it in range(nt):
                         g_ = S_[it, NS - 1]
                         if g_[0] <= 0:
