@@ -35,7 +35,7 @@ if [ ! -f /root/sv/pip.done ]; then
   python -c "import torch, cupy, h5py, diff_gaussian_rasterization; print('[pip] torch', torch.__version__, torch.cuda.is_available(), 'cupy', cupy.__version__)" 2>&1 | tail -1 | tee -a $LOG && touch /root/sv/pip.done
 fi
 W=/home/dkta/work; AG=/dev/shm/dkta/ag_data; SD=/dev/shm/dkta/anerr_data; mkdir -p $AG $SD
-rclone copyto $R/lbours/vastpkg/L000.pt $SD/L000.pt -q &
+rclone copyto $R/vastpkg/L000.pt $SD/L000.pt -q &
 rclone copyto $R/lbours/ficus_v0/data/F_pg_v0/F_pg_v0.pt $SD/F_pg_v0.pt -q &
 rclone copyto $R/lbours/fem_ag_data/bread.pt $AG/bread.pt -q &
 D=/root/sv/code/$H; mkdir -p $D; rclone cat $RX/code/cm157_$H.tar | tar -x -C $D
