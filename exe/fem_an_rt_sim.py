@@ -91,6 +91,8 @@ ap.add_argument("--y0eb", action="store_true", help="절 CM8 (B, 정의 변경, 
 ap.add_argument("--ga_y0ut", action="store_true", help="절 CM2 정의 변경 셋째: 뉴턴 시작점 = 관성 예측 ŷ (고착 반영; 장벽 판은 걸음 시작 U 에서 ŷ 쪽으로 활성 표본점 d > 0 인 최대 2^-k)")
 ap.add_argument("--pbc", action="store_true", help="절 CM2 재질 판: 정답 config 입자 속도 구속 (순차 방출·병진, exe/fem_ao_rt_sim.py 와 같음)")
 ap.add_argument("--pbc_ns", type=int, default=4)
+ap.add_argument("--rel0", action="store_true", help="절 CM141 진단 (기본 끔): 순차 방출 구속을 없애 모든 입자를 t=0 에 동시에 해제 (구속 입자 시각 -1e30)")
+ap.add_argument("--lift", type=float, default=0.0, help="절 CM141 진단 (기본 0): 모든 프레임 입자 z 에 더함 (바닥 위에서 자유낙하 거리를 벌림; 정답 대조는 무의미)")
 ap.add_argument("--mlow", type=float, default=0.0, help="절 CM2 재질 판: 거의 빈 노드 문턱 = mlow x 첫 프레임 노드 질량 중앙값 (관성 예측 고정; 0 = 없음)")
 ap.add_argument("--visc_rpic", action="store_true", help="절 CM2 재질 판: 정답 rpic_damping -> 등가 점성 (절 AG.20)")
 ap.add_argument("--no_vfill", action="store_true")
@@ -145,6 +147,8 @@ RTC.RAWPTR[0] = True
 os.makedirs(a.out, exist_ok=True)
 d = torch.load(a.data, map_location="cpu", weights_only=False)
 cfg = d["cfg"]
+if a.lift != 0.0:
+    d["x"] = d["x"].clone(); d["x"][..., 2] += a.lift
 h = float(cfg["frame_dt"])
 DM.REGION_DENSITY[0] = bool(a.region_density)
 m64 = DM.traj_mass(d, dev).double()
@@ -265,6 +269,8 @@ if MATNAME in ("sand", "foam", "plasticine", "watermelon"):                     
                 PVB[m_] = torch.tensor(b_[3], device=dev, dtype=torch.float64)
         if not bool((PVB != 0).any()):
             PVB = None
+        if a.rel0:
+            TREL = torch.full_like(TREL, -1e30)
     MTHR = 0.0
     if a.mlow > 0:                                                                     # 첫 프레임 노드 질량 중앙값 (exe/fem_ao_rt_sim.py 와 같은 식)
         _y = d["x"][0].to(dev).double() @ lat.Ai.T
