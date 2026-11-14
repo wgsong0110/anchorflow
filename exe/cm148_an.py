@@ -6,5 +6,7 @@ for n in sys.argv[2:]:
     if not os.path.exists(p): print(n, "nl 없음"); continue
     d = {}
     for l in open(p):
-        o = json.loads(l); d[o["f"]] = (o.get("q_apex", 0) / max(o.get("nq", 1), 1), o.get("q_tail", 0) / max(o.get("nq", 1), 1))
+        o = json.loads(l); its = [q for st in o["steps"] for q in st["its"] if q.get("pl")]
+        if not its: continue
+        pl = its[-1]["pl"]; t = max(sum(pl[:3]), 1); d[o["f"]] = (pl[2] / t, pl[1] / t)      # pl = [탄성, 꼬리, 꼭짓점, ...] 마지막 반복의 소성 상태별 가우스 점 수
     print(f"{n:16s} 꼭짓점 몫 " + " ".join(f"f{f} {d[f][0]:.3f}" for f in (10, 15, 20, 25, 30, 40) if f in d) + " | 꼬리 몫 " + " ".join(f"f{f} {d[f][1]:.3f}" for f in (10, 20, 30) if f in d), flush=True)
