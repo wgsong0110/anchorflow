@@ -45,6 +45,7 @@ rclone copy $MI/lbdata/test_low/L000 $W/lbdata/test_low/L000 -q --include meta.j
 rclone copyto $MI/lbdata/config.json $W/lbdata/config.json -q &
 rclone copyto $MI/stab/lego/init/sim_0000000000.h5 $W/stab/lego/init/sim_0000000000.h5 -q &
 rclone copy $R/lbours/ficus_v0/gt $W/lbours/ficus_v0/gt -q --include meta.json --include config.json --include sim_0000000000.h5 &
+rclone copy $MI/topo/pg_ficus_elastic_v0 $W/topo/pg_ficus_elastic_v0 -q &
 rclone copy $MI/topo/pg_bread_plastic $W/topo/pg_bread_plastic --transfers 16 -q &
 rclone copyto $MI/topo/bread_plastic_config.json $W/topo/bread_plastic_config.json -q &
 D=/root/sv/code/$H; mkdir -p $D; rclone cat $RX/code/cm157_$H.tar | tar -x -C $D
