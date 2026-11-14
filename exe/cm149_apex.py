@@ -3,7 +3,13 @@
 층 = 시작 높이 z0 구간. 같이: 평균 J = det F, J > 1 몫, 꼭짓점 아닌 입자의 평균 ln J.  사용: python exe/cm149_apex.py <h5 디렉토리> <표 이름=pred.pt 경로> ... """
 import sys, glob, os
 import numpy as np
-import h5py, torch
+import h5py
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import torch
+except ImportError:
+    torch = None
+    import cm130_ptload as L                                   # 로컬 arm64 (torch 없음): numpy 로 pred.pt 읽기
 h5d = sys.argv[1]; runs = [a.split("=", 1) for a in sys.argv[2:]]
 FR = (10, 15, 20, 25, 30, 35, 40); TOL = 1e-5
 def load_h5(f):
@@ -20,8 +26,8 @@ def row(name, F):
         a = apex[m].mean(); jm = np.log(np.abs(J[m & ~apex]) + 1e-12).mean() if (m & ~apex).any() else float("nan")
         out.append(f"{ln} 꼭짓점 {a:.3f} J>1 {(J[m] > 1).mean():.3f} lnJ(비꼭짓점) {jm:+.4f}")
     print(f"{name:14s} " + " | ".join(out), flush=True)
-R = {n: torch.load(p, map_location="cpu", weights_only=False)["F"] for n, p in runs}
+R = {n: (torch.load(p, map_location="cpu", weights_only=False)["F"] if torch else L.load(p)["F"]) for n, p in runs}
 for f in FR:
     print(f"== f{f}")
     _, Fg = load_h5(f); row("정답", Fg)
-    for n, Fa in R.items(): row(n, Fa[f - 1].numpy().reshape(-1, 3, 3))
+    for n, Fa in R.items(): row(n, np.asarray(Fa[f - 1]).reshape(-1, 3, 3))
