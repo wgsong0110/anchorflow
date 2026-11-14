@@ -35,5 +35,6 @@ RR=""; RN=""; for n in $RUNS; do [[ $n == *R* || $n == *F* ]] && RR="$RR $n" || 
 $PY -u exe/cm140_an.py /dev/shm/dkta/ag_data/wolf.pt $O $RUNS > $O/an140_$(date +%H%M).log 2>&1; say "an140 rc=$?"
 for n in $RUNS; do [ -f $O/$n/cm151_f30.npz ] && $PY -u exe/cm151_an.py $O/$n /home/dkta/work/topo/pg_wolf_sand/simulation_ply $O/$n > $O/$n/cm151_an.log 2>&1; rclone copy $O/$n $R/$n --include "cm151_an.log" --include "cm151_hist.png" -q; done
 for n in $RUNS; do [ -f $O/$n/cm151_f22.npz ] && [ ! -f $O/$n/cm151_f30.npz ] && $PY -u exe/cm152_an.py $O/$n $O/$n/cm152_an.log > $O/$n/cm152_an.log 2>&1; rclone copy $O/$n $R/$n --include "cm152_an.log" -q; done
+for n in $RUNS; do [ -d $O/$n/esc ] && $PY -u exe/escwhy_an.py $O/$n --top 8 > $O/$n/esc_report.txt 2>&1; [ -f $O/$n/esc_report.txt ] && rclone copy $O/$n $R/$n --include "esc_report.txt" -q; done
 rclone copy $O $R --include "an_*.log" --include "an140_*.log" --include "an142_*.log" --include "an148_*.log" --include "cm140_an.json" --include "convabl_an.json" -q
 say "끝 R2 대조 $(rclone check $O $R --one-way -q 2>&1 | grep -c ERROR) 개 차이"
