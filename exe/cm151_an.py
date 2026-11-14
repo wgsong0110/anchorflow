@@ -2,12 +2,14 @@
 (1) 층별 (바닥 위 높이) ln J 분포 분위수·히스토그램, 눌린 점 (ln J0 < -3e-3) 의 위치·칸 입자 수·바닥 거리,
 (2) 눌린 점의 한 걸음 변화 ln(JX/J0) (노드 변위장이 칸을 늘린 몫), 평형 무게 압력 (rho g 깊이) 대 시작 압력 -K ln J0.
 사용: python exe/cm151_an.py <판 디렉토리> <h5 디렉토리> <출력 디렉토리>"""
-import sys, os
+import sys, os, io, subprocess
 import numpy as np, h5py
-run, h5d, od = sys.argv[1:4]; os.makedirs(od, exist_ok=True)
+run, h5d, od = sys.argv[1:4]; os.makedirs(od, exist_ok=True)   # run·h5d 는 r2:... 경로도 가능
 E, NU, RHO, G = 5e7, 0.3, 2000.0, 9.8; K = E / (3 * (1 - 2 * NU))
+def rd(path):                                              # r2: 로 시작하면 디스크 안 쓰고 메모리로 (로컬 RAM 만 일시 사용)
+    return io.BytesIO(subprocess.run(["rclone", "cat", path], capture_output=True, check=True).stdout) if path.startswith("r2:") else path
 def gt(f):
-    with h5py.File(os.path.join(h5d, f"sim_{f:010d}.h5"), "r") as h: return np.array(h["x"]).T, np.array(h["f_tensor"]).T.reshape(-1, 3, 3).astype(np.float64)
+    with h5py.File(rd(h5d + f"/sim_{f:010d}.h5"), "r") as h: return np.array(h["x"]).T, np.array(h["f_tensor"]).T.reshape(-1, 3, 3).astype(np.float64)
 def depth(x, ref):                                        # 같은 (x,y) 0.04 칸의 최고 z 와의 차 (ref 점들 기준)
     b = lambda p: (np.floor(p[:, 0] / 0.04).astype(int) * 1000 + np.floor(p[:, 1] / 0.04).astype(int))
     kr = b(ref); top = {}
@@ -15,17 +17,17 @@ def depth(x, ref):                                        # 같은 (x,y) 0.04 �
     return np.array([top.get(k, z) - z for k, z in zip(b(x), x[:, 2])])
 Q = (1, 10, 50, 90, 99)
 def fmt(a): return " ".join(f"{v:+.4f}" for v in np.percentile(a, Q))
-import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
+import warnings; warnings.filterwarnings("ignore"); import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
 fig, ax = plt.subplots(2, 3, figsize=(15, 8))
 for i, f in enumerate((10, 20, 30)):
-    d = np.load(os.path.join(run, f"cm151_f{f}.npz")); xq = d["xq"]; ok = (d["mq"] > 0) & (d["J0"] > 0) & (d["JX"] > 0) & (d["JE"] > 0)
+    d = np.load(rd(run + f"/cm151_f{f}.npz")); xq = d["xq"]; ok = (d["mq"] > 0) & (d["J0"] > 0) & (d["JX"] > 0) & (d["JE"] > 0)
     xq = xq[ok]; l0 = np.log(d["J0"][ok]); lX = np.log(d["JX"][ok]); lE = np.log(d["JE"][ok]); pc = d["pc"][ok]; m = d["mq"][ok]
     xg, Fg = gt(f); Jg = np.linalg.det(Fg); lg = np.log(np.abs(Jg) + 1e-12)
     zf = min(xg[:, 2].min(), xq[:, 2].min()); hq = xq[:, 2] - zf; hg = xg[:, 2] - zf
     print(f"==== f{f}: 우리 가우스 점 {ok.sum()}, 정답 입자 {len(xg)}, 바닥 z {zf:.3f}")
     print(f"질량 가중 평균 ln J: 우리 시작 {np.average(l0, weights=m):+.5f} 물리 뒤 {np.average(lX, weights=m):+.5f} 반환 뒤 {np.average(lE, weights=m):+.5f} | 정답 {lg.mean():+.5f}")
     print(f"분위수 {Q}: 우리 시작 {fmt(l0)} | 정답 {fmt(lg)}")
-    ed = np.quantile(np.concatenate([hq, hg]), [0, .25, .5, .75, 1.0001])
+    ed = np.quantile(np.concatenate([hq, hg]), [0, .25, .5, .75, 1]); ed[-1] += 1e-6
     for a, b in zip(ed[:-1], ed[1:]):
         mq_, mg_ = (hq >= a) & (hq < b), (hg >= a) & (hg < b)
         print(f"  높이 {a:.2f}~{b:.2f} m: 우리 평균 {l0[mq_].mean():+.5f} 중앙 {np.median(l0[mq_]):+.5f} 점 {mq_.sum()} | 정답 평균 {lg[mg_].mean():+.5f} 중앙 {np.median(lg[mg_]):+.5f}")
