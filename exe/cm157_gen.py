@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """절 CM157: 레고(L)·ficus(F)·bread(B) 의 H9 판 (A) 과 H9 − 확장 − S_구속·C + --mlow 1e-20 판 (B) 명령 생성.
 사용: cm157_gen.py <H7 명령 파일 (R2 lbours/ext2/oA{L,F,B}_1/cmd.txt)> <L|F|B> <A|B> <출력 디렉토리>  -> 표준출력에 명령줄.
-기준 = 절 CM84 H7 회귀 명령 (ext2 oA*_1) 에서: 렌더 (--rr*, --tc 8) 를 빼고 (렌더 자료 없이 시뮬 GPU 시간만 잼), 감싸개를 절 CM139 H9 사슬로 바꿈
+기준 = 절 CM84 H7 회귀 명령 (ext2 oA*_1) 에서: 렌더 (--rr*, --tc 8, 결과 불변 속도 갱신 --s4*) 를 빼고 (렌더 자료 없이 시뮬 GPU 시간만 잼), 감싸개를 절 CM139 H9 사슬로 바꿈
 (startpt --sp 1 · nlwhy · wolfh12 --w12 0 --w12dg 1 · finterp --fi 0 --fidg 1 · wolfh11 · wolfh9 · speed12 --s12z 1 · ext2). 프레임 수는 그대로."""
 import re, sys
 src, scene, kind, out = sys.argv[1:5]
@@ -9,6 +9,9 @@ c = " ".join(open(src).read().split())
 fr = int(re.search(r"--frames (\d+)", c).group(1))
 c = re.sub(r" --rr pg --rr_shape \w+ --rr_traj \S+ --rr_cfg \S+ --rr_fast 1", "", c)
 c = c.replace(" --tc 8", "")
+for t in (" --s4w 1", " --s4y 1", " --s4x 2"):                                  # 결과 불변 렌더 속도 갱신 (--rr 없이는 감싸개가 거절)
+    assert t in c, t
+    c = c.replace(t, "")
 H9 = ("exe/startpt_wrap.py --sp 1 exe/nlwhy_wrap.py exe/wolfh12_wrap.py --w12 0 --w12dg 1 exe/finterp_wrap.py --fi 0 --fidg 1 "
       "exe/wolfh11_wrap.py exe/wolfh9_wrap.py exe/speed12_wrap.py --s12z 1 exe/ext2_wrap.py")
 assert c.count("exe/ext2_wrap.py") == 1
