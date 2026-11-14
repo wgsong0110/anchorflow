@@ -152,6 +152,8 @@ def install(out):
             win = ST["F0"] <= f_ <= ST["F1"]
             if getattr(s, "c170S", None) is not None:
                 s.c170S.zero_(); s.c170L.zero_()
+                if hasattr(s, "_rl_hist"):
+                    s._rl_hist.zero_()
             r = fn(s, *a)
             if win and getattr(s, "c170S", None) is not None and getattr(s, "cwS3", None) is not None:
                 try:
@@ -159,7 +161,7 @@ def install(out):
                     nt = int(s.nt)
                     S_ = s.c170S.cpu().numpy()
                     D = s.DG.cpu().numpy()
-                    L_ = s.c170L.cpu().numpy(); W_ = s.c170W.cpu().numpy()
+                    L_ = s.c170L.cpu().numpy(); W_ = s.c170W.cpu().numpy(); RH_ = s._rl_hist.cpu().numpy() if hasattr(s, "_rl_hist") else None
                     its = []
                     try:
                         G_ = s.cwG.cpu().numpy()
@@ -184,7 +186,7 @@ def install(out):
                         p_ = S_[it, NS - 2]
                         o = dict(it=it, M=M, n=float(g_[7]), itau2=it2, inert_def=float(g_[1] * it2 / M), inert_slv=float(g_[2] / M), inert_x=float(g_[5] * it2 / M),
                                  names=nm, fz=fz, fx=fx, resid=float(g_[1] * it2 / M + (fz[-1] if fz else 0.0)),
-                                 post_inert=float(p_[1] * it2 / M) if p_[0] > 0 else None, dl_slv=float(p_[6] / M) if p_[0] > 0 else None, cg=cgi(it), sc1=[float(v) for v in D[2 * it + 1][:64]], scL=[float(v) for v in L_[it][:64]], lsn=ST["lsn"].get(it, []), lsw=[[float(v) for v in W_[it, j]] for j in range(len(ST["lsn"].get(it, [])))], g2=float(D[2 * it, 1]), rz=float(D[2 * it, 0]))
+                                 post_inert=float(p_[1] * it2 / M) if p_[0] > 0 else None, dl_slv=float(p_[6] / M) if p_[0] > 0 else None, cg=cgi(it), sc1=[float(v) for v in D[2 * it + 1][:64]], scL=[float(v) for v in L_[it][:64]], lsn=ST["lsn"].get(it, []), lsw=[[float(v) for v in W_[it, j]] for j in range(len(ST["lsn"].get(it, [])))], rl=([float(v) for v in RH_[it]] if RH_ is not None else None), g2=float(D[2 * it, 1]), rz=float(D[2 * it, 0]))
                         its.append(o)
                     LOG[0].write(json.dumps(dict(f=f_, K=int(s.Kcur), its=its), ensure_ascii=False) + "\n"); LOG[0].flush()
                     ST["nwrite"] += 1
