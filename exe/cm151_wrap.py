@@ -37,7 +37,7 @@ def run_path(path, *a, **kw):
                     cn = lambda t: t.detach().cpu().numpy()
                     np.savez(os.path.join(out, f"cm151_f{fr}.npz"), xq=cn(s.xq0[:nq]), mq=cn(s.mq[:nq]), Vq=cn(s.Vq[:nq]), J0=cn(s.fiJ0[:nq]), JX=cn(s.fiJX[:nq]), JE=cn(JE), pc=cn(pc), cb=cn(s.cb[: nq // 8 + 1]),
                              px=cn(s.x[:N]) if hasattr(s, "x") else np.zeros(0),
-                             U=cn(s.U), mn=cn(s.mn), fixd=cn(s.fixd) if s.fixd is not None else np.zeros(0), pm=cn(s.pm), nbs=np.array([int(s.IP[7].item()), int(s.IP[8].item())]))   # 절 CM153: 노드 변위·질량·구속
+                             U=cn(s.U), mn=cn(s.mn), fixd=cn(s.fixd) if s.fixd is not None else np.zeros(0), pm=cn(s.pm), kb=cn(s.kb) if getattr(s, "kb", None) is not None else np.zeros(0), nbs=np.array([int(s.IP[7].item()), int(s.IP[8].item())]))   # 절 CM153: 노드 변위·질량·구속
             except Exception as e:
                 print("[cm151] 기록 실패", repr(e), flush=True)
             return r
