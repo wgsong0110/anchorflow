@@ -18,7 +18,9 @@ runone() { local n=$1 g=$2
   say "$n 카드 $g 시작 (계산 프로세스 $(nvidia-smi -i $g --query-compute-apps=pid --format=csv,noheader | grep -c .))"
   ( while [ ! -f $O/$n/DONE ]; do sleep 60; tail -c 3000 $O/$n/log.txt 2>/dev/null | rclone rcat $R/$n/log_tail.txt; rclone copy $O/$n $R/$n -q --transfers 8 --exclude DONE; done ) &
   env CUDA_VISIBLE_DEVICES=$g timeout 5400 bash -c "$(cat $O/$n/cmd.txt)" < /dev/null > $O/$n/log.txt 2>&1
-  local rc=$?; touch $O/$n/DONE
+  local rc=$?
+  [ -d $O/$n/esc ] && python -I exe/cm175_an.py $O/$n > $O/$n/cm175_an.txt 2>&1   # 절 CM175: 인스턴스 안 분석 (로컬 사본 안 만듦)
+  touch $O/$n/DONE
   say "$n rc=$rc $(grep -a 'rror' $O/$n/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ') $(grep -a '절 CM174' $O/$n/log.txt | head -1 | cut -c1-120)"
   rclone copy $O/$n $R/$n -q --transfers 8; say "$n R2 올림"; return 0; }
 line() { local g=$1; shift; for n in "$@"; do runone $n $g; done; }

@@ -377,7 +377,11 @@ __global__ void __launch_bounds__(128) ao_elem_s(const int* IP, const int* cb, c
 #if AF_CTAN_MODE >= 1
     if (st == 2) { for (int i=0;i<3;i++) { pe[i] = 0.f; for (int j=0;j<3;j++) Cc[i][j] = 0.f; } }
 #endif
-#if AF_CTAN_MODE >= 2
+#if AF_CTAN_MODE == 3
+    // 절 CM175 --ctan 3: 모드 1 + 꼭짓점 (st 2) 점의 접선을 체적 압축 방향 탄성 체적 강성만 (K3 1 1ᵀ, 편차·기하 항 0) -- 꼭짓점에서 압축으로 가면 탄성으로 돌아오므로 (반환 사상 접선의 압축 쪽 요소)
+    if (st == 2) { for (int i=0;i<3;i++) for (int j=0;j<3;j++) Cc[i][j] = K3; }
+#endif
+#if AF_CTAN_MODE == 2
     if (st == 1) {
         float nn_[3], beta = -2.f*mu*cdp;
         for (int i=0;i<3;i++) nn_[i] = e[i]/rho;
