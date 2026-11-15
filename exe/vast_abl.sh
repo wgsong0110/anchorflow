@@ -58,6 +58,9 @@ if has toast || has sand_castle; then source exe/abl_gf_fetch.sh; fi
 say "[자료] ficus $(stat -c %s $SD/F_pg_v0.pt 2>&1) bread $(stat -c %s $AG/bread.pt 2>&1) wolf $(stat -c %s $AG/wolf.pt 2>&1) newsc $(ls $W/newsc 2>&1 | tr '\n' ' ') gf $(ls /root/gfs/ag 2>&1 | tr '\n' ' ')"
 echo "[ok] $(date)" | rclone rcat $MK/$T.setup.done
 python -c "import torch;print(torch.cuda.is_available())" | grep -q True || { say "[CUDA 없음]"; exit 1; }
-bash exe/abl_worker.sh "$H" "${AB_JOBS:?}" >> $LOG 2>&1
+# CM183: 카드마다 일꾼 하나 (AB_JOBS = 카드 0, AB_JOBS2 = 카드 1; 판 하나는 한 카드에서만 돌아 장면 표는 같은 카드 종류·같은 기계)
+[ -n "${AB_JOBS2:-}" ] && { AB_GPU=1 bash exe/abl_worker.sh "$H" "$AB_JOBS2" >> $LOG 2>&1 & }
+AB_GPU=0 bash exe/abl_worker.sh "$H" "${AB_JOBS:?}" >> $LOG 2>&1
+wait
 say "[일꾼 끝]"
 echo "$(date)" | rclone rcat $MK/$T.END
