@@ -14,10 +14,12 @@ sys.setrecursionlimit(max(sys.getrecursionlimit(), 20000))
 
 argv = sys.argv[1:]
 out = argv[argv.index("--out") + 1] if "--out" in argv else "."
-ON, TAU, LM, KF = None, 0.0, 0, 1
-while argv and argv[0] in ("--hff", "--hff_tau", "--hff_lmix", "--hff_kfe"):
+ON, TAU, LM, KF, MT = None, 0.0, 0, 1, (7,)
+while argv and argv[0] in ("--hff", "--hff_tau", "--hff_lmix", "--hff_kfe", "--hff_mats"):
     if argv[0] == "--hff":
         ON = int(float(argv[1]))
+    elif argv[0] == "--hff_mats":            # 쉼표 재질 번호 (기본 7 = GF NACC), all = 모든 재질 (탄성 실행기 포함)
+        MT = None if argv[1] == "all" else tuple(int(q) for q in argv[1].split(","))
     elif argv[0] == "--hff_kfe":
         KF = int(float(argv[1]))
     elif argv[0] == "--hff_lmix":
@@ -28,7 +30,7 @@ while argv and argv[0] in ("--hff", "--hff_tau", "--hff_lmix", "--hff_kfe"):
 assert ON in (0, 1), "--hff 0|1 이 필요"
 if ON:
     from anchorflow import fem_hexff as HF
-    HF.install(TAU, LM, KF)
+    HF.install(TAU, LM, KF, MT)
 
     def _fin():
         o = dict(tau=HF.INFO["tau"], mods=HF.INFO["mods"], n_kfe=HF.INFO["n_kfe"], n_chk=HF.INFO["n_chk"], n_lmix=HF.INFO["n_lmix"], rel_err=HF.INFO.get("rel_err"), bad_args=sorted(map(list, HF.INFO.get("bad_args", set()))))

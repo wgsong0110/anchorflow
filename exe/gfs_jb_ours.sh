@@ -61,6 +61,18 @@ if n < L: P = torch.cat([P[:n], P[n - 1:n].expand(L - n, -1, -1)]); F = torch.ca
 torch.save({"pred": P.contiguous(), "F": F.contiguous()}, sys.argv[2]); print("유한 프레임", n, "/", L)
 PYX
 python -u exe/lb_roll_to_h5.py --dump $O/run/pred_v.pt --traj $W/ag/gt_$n --out $O/h5_c > $O/h5.log 2>&1
+python - $O/h5_c <<'PYX' >> $O/h5.log 2>&1
+# 절 CM184: GF 젤리 렌더러 (gs_jb_traj) 는 GF h5 배치 (x (3,N), f_tensor (9,N)) 를 읽음 -- 우리 h5 (x (N,3), F (N,9)) 에 같은 값의 GF 배치 키를 더함 (좌표는 정답 h5 와 같음 확인)
+import glob, sys, h5py, numpy as np
+n = 0
+for f in sorted(glob.glob(sys.argv[1] + "/sim_*.h5")):
+    with h5py.File(f, "r+") as h:
+        if "f_tensor" in h: continue
+        x = np.array(h["x"]); F = np.array(h["F"]); del h["x"]
+        h.create_dataset("x", data=np.ascontiguousarray(x.T)); h.create_dataset("f_tensor", data=np.ascontiguousarray(F.T))
+        h.create_dataset("v", data=np.zeros_like(x.T)); h.create_dataset("C", data=np.zeros_like(F.T)); h.create_dataset("time", data=np.zeros((1, 1))); n += 1
+print("GF 배치 키 더함", n)
+PYX
 python - $O/h5_c $O/h5_full $O/map.json <<'PYX'
 import json, os, sys
 src, dst, mp = sys.argv[1:4]; os.makedirs(dst, exist_ok=True); c = json.load(open(mp))["c"]
