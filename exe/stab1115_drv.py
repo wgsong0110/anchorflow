@@ -164,7 +164,11 @@ def run1(m, n, rep):
             return
         os.makedirs(d, exist_ok=True)
         with OSEM, SEM:                                  # [stabfinal] OSEM 먼저 (SEM 을 쥔 채 OSEM 을 기다리면 다른 방법이 굶음) -- 우리 판은 카드 메모리를 크게 써서 (플레인 17 GB) 한 번에 하나
-            if os.path.exists(f"{d}/FIN"):                # 기다리는 동안 다른 인스턴스가 끝낸 판 (R2 에서 받아 옴)
+            r2 = f"r2:storage/result/anchorflow/lbours/stabfinal/res/{S}/hex/{os.path.basename(d)}"
+            if subprocess.run(f"rclone lsf {r2}/FIN", shell=True, capture_output=True, text=True).stdout.strip():
+                subprocess.run(f"rclone copy {r2} {d} -q", shell=True)   # 기다리는 동안 다른 인스턴스가 끝낸 판 (R2 에서 받아 옴)
+            if os.path.exists(f"{d}/FIN"):
+                say("다른 인스턴스가 끝낸 판", S, m, n, rep)
                 return
             t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, direct=True)}", f"{d}/log.txt")
         open(f"{d}/FIN", "w").write(f"rc={rc} {time.time() - t0:.0f}s")
