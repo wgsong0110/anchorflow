@@ -23,7 +23,7 @@ a = ap.parse_args()
 S = a.scene; ST = L.ST; W = os.path.dirname(ST); PY = sys.executable
 PG = f"{W}/i-physgaussian"
 CAP = {kv.split(":")[0]: int(kv.split(":")[1]) for kv in a.cap.split(",")}
-SEM = threading.BoundedSemaphore(a.par); GSEM = threading.BoundedSemaphore(2)
+SEM = threading.BoundedSemaphore(a.par); GSEM = threading.BoundedSemaphore(2); OSEM = threading.BoundedSemaphore(1)
 os.makedirs(f"{ST}/{S}", exist_ok=True)
 LOGF = open(f"{ST}/{S}/drv.log", "a"); LK = threading.Lock()
 FR = 60
@@ -101,8 +101,8 @@ def run1(m, n, rep):
         if os.path.exists(f"{d}/FIN"):
             return
         os.makedirs(d, exist_ok=True)
-        with SEM:
-            t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d)}", f"{d}/log.txt")
+        with SEM, OSEM:                                  # 우리 판은 카드 메모리를 크게 써서 (플레인 17 GB) 한 번에 하나
+            t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, direct=True)}", f"{d}/log.txt")
         open(f"{d}/FIN", "w").write(f"rc={rc} {time.time() - t0:.0f}s")
         shutil.rmtree(f"{d}/pred.pt", ignore_errors=True)
         if os.path.exists(f"{d}/pred.pt"):
@@ -188,7 +188,7 @@ def vis_one(name, m, n):
     with SEM:
         if m == "ours":
             d = f"{V}/hexdump_{name}"; os.makedirs(d, exist_ok=True)
-            sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, dump=True, stats=1)}", f"{d}/log.txt")
+            sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, dump=True, stats=1, direct=True)}", f"{d}/log.txt")
             sh(f"""cd {WT} && {PY} - <<'PYEOF'
 import torch, numpy as np
 q = torch.load('{d}/pred.pt', map_location='cpu', weights_only=False)
