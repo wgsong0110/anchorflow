@@ -39,7 +39,14 @@ else:
     c = T[scene]["cmd"]
 c = " ".join(c.split())
 c = c.replace(" --dump_part", "").replace(" --dump_F", "").replace(" --dump ", " ")
-# ---- 새 기본 판
+# ---- 새 기본 판 (진단 판 old = 옛 기본 판 그대로, cgonly = 옛 기본 판 + --cg 4 만: 새 기본 판과 옛 판 차이 가르기)
+OLDCMD = var in ("old", "cgonly")
+if OLDCMD:
+    if var == "cgonly":
+        c = re.sub(r" --cg \d+", "", c); c = c.replace(" --newton ", " --cg 4 --newton ", 1)
+    if rep == 1:
+        c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1)
+    print(re.sub(r"--out \S+$", f"--out {out}", c)); sys.exit(0)
 assert len(re.findall(r" --cg \d+", c)) >= 1
 c = re.sub(r" --cg \d+", "", c)
 c = c.replace(" --newton ", " --cg 4 --newton ", 1) if " --newton " in c else c
