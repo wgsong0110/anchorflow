@@ -69,6 +69,11 @@ rclone cat $R/lbours/wolfcv/cm157/BA_1/cmd.txt > $W/BA_1.txt
 # ---- (3) 우리 판 K=1, (4) 단독 시간 판
 run1() { local sfx=$1 drop=$2 nodump=$3; local D=$W/ours/${SC}_K1${sfx}; mkdir -p $D
   local CMD=$(NS_DROP="$drop" NS_NODUMP=$nodump python exe/nshape_cmd.py $W/BA_1.txt $AG/$SC.pt $NF $SC $D $AG/gt_$SC $AG/gt_$SC/config.json 1)
+  if [ "${NS_SSFIX:-1}" = 1 ]; then      # substep_fix 공통 수정 판 (lbours/substep_fix/cmds.md, 조정자 11-15): ssfix_wrap 바깥 감싸개 + --ue_loc 51 + --wrx_col 0 (--mlow 1e-3 은 BA_1 에 이미 있음)
+    case "$CMD" in *"--mlow 1e-3"*) ;; *) say "[명령] --mlow 1e-3 없음"; return 9;; esac
+    [ $(grep -o "python -u exe/" <<< "$CMD" | wc -l) = 1 ] || { say "[명령] python -u exe/ 가 하나가 아님"; return 9; }
+    CMD=$(sed -e 's#python -u exe/#python -u exe/ssfix_wrap.py --ssf_bec 1 --ssf_split 3 --ssf_bigT 0.5 --ssf_tsum 1 exe/#' -e 's/--ue_loc 50 /--ue_loc 51 /' -e 's/--wrx_col 1 /--wrx_col 0 /' <<< "$CMD")
+  fi
   echo "$CMD" > $D/cmd.txt; local t0=$(date +%s)
   CUDA_VISIBLE_DEVICES=0 timeout 7200 bash -c "$CMD" < /dev/null > $D/run.log 2>&1; local rc=$?
   say "  [$SC K=1$sfx] rc=$rc $(( $(date +%s) - t0 )) 초 $(grep -ah '롤아웃\]' $D/run.log | tail -1 | cut -c1-200) $(grep -a 'rror' $D/run.log | tail -1 | cut -c1-160)"
