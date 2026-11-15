@@ -1,6 +1,6 @@
 #!/bin/bash
 # rep4 (11-15): 표현력 실험 장면 4 개 (wolf·bread = PG, kiwi·lollipop = GF) 의 우리 판 (hex) 다시 돌리기 + 진단. 사용: bash exe/go_rep4.sh <커밋> '<장면:판 ...>'
-#   판 base = 기존 hex (진단만 추가 --hex_diag, 결과 불변), feas = + 되돌림 정의역 (--feas), fix = + 입자 위치 장벽 (--hex_pbar --feas; 새 공통 규칙)
+#   판 ext_<방법> = GF 장면 기존 결과 npz (repflow1115/gf) 의 지표·렌더만 다시.  판 base = 기존 hex (진단만 추가 --hex_diag, 결과 불변), feas = + 되돌림 정의역 (--feas), fix = + 입자 위치 장벽 (--hex_pbar --feas; 새 공통 규칙)
 #   ε·η·dx = 기존 그대로 (hex 1e-3/0.5; PG dx 0.02 = 기존 wolf·bread, GF dx = grid_lim/n_grid). 판 하나 = 카드 하나 (나열 순서대로 카드 0,1,2,...).
 #   PG: rep_track_sg --video (r10 과 같은 렌더) + rep_metrics (목표 영상 = archive_20261009/r10). GF: go_repflow_gf.sh 와 같은 지표 (rep_metrics_gf · rep_topo_gf · rep_render_gf + gfs_post).
 #   결과 R2 lbours/rep4/<장면>/<판>/
@@ -45,6 +45,8 @@ one() { local s=$1 v=$2 g=$3 D=$O/$1/$2 n=hex_$1 IN=$O/in_$1 c R=$R4/$1/$2
     local DX=$($PY -c "import json; c=json.load(open('$IN/config.json')); print(c.get('grid_lim',2.0)/c.get('n_grid',50))")
     local KF=$(cd $GF && $PY $AFX/exe/rep_render_gf.py --gf $GF --model_path $GF/model_$s --config $IN/config.json --count 1 2>&1 | grep -a GS_NUM | tail -1 | awk '{print $2}')
     c="exe/rep_track_sg.py --opt riem --tb none --flow $IN/gflow_$s.npz --aux $IN/aux_$s.npz --method hex --riem_energy logbarrier --riem_eps 1e-3 --riem_lr 0.5 --hex_dx $DX $(flags_of $v)"
+    if [ ${v#ext_} != $v ]; then   # ext_<방법>: repflow1115/gf 의 기존 결과 (궤적) 를 받아 지표·렌더만 (인스턴스가 끝나 빠진 것)
+      n=${v#ext_}_$s; [ -f $D/$n.npz ] || rclone copyto $RA/lbours/repflow1115/gf/$s/main/$n.npz $D/$n.npz -q; fi
     [ -f $D/$n.npz ] || { echo "CUDA_VISIBLE_DEVICES=$g $PY -u $c --out $D/$n.npz --resume --save_traj --traj32 --save_F ${KF:-0}" > $D/$n.cmd.txt; say "$s/$v 카드 $g 시작 (가우시안 $KF): $c"
       CUDA_VISIBLE_DEVICES=$g $PY -u $c --out $D/$n.npz --resume --save_traj --traj32 --save_F ${KF:-0} < /dev/null >> $D/$n.log 2>&1; say "$s/$v rc=$? $(grep -a '요약\|rror' $D/$n.log | tail -2 | cut -c1-260 | tr '\n' ' ')"; }
     rclone copy $D $R -q
