@@ -12,12 +12,12 @@
   - 한 프레임 안에서 구간이 바뀌면 (vasedeck: 0.3·0.6·0.9 s 는 프레임 0.04 s 의 정수배가 아님) 프레임 시각 [t, t+h) 와 겹친 몫 f 만큼 속도를 곱해 더함
     (같은 영역의 구간 여러 개는 합쳐 한 구속으로: 속도 = Σ 구간 속도 · f, 어느 구간이든 겹치면 영역은 고정).
   - 탄성 판 (재질 판이 아님) 에서는 enforce_particle_translation 도 노드 속도 구속으로 -- 기존 --cfg_bc 는 cuboid 만 읽어 이를 놓쳤다.
-    재질 판 (--pbc) 의 translation 은 기존 TREL/PVB 경로가 처리하므로 건드리지 않음.
+    재질 판 (fem_mat_rt.MatRT, plane 의 metal) 은 mat·trel 인자를 떼고 RTSolver.__init__ 을 부르므로 여기서도 translation 을 건다 (TREL 입자 구속과 함께; 11-15 이전부터 그랬음).
     정의 (11-15 고침, PG mpm_solver_warp.enforce_particle_velocity_translation / mpm_utils.selection_enforce_particle_velocity_translation 그대로):
       입자 선택은 처음 한 번 (처음 입자 위치가 상자 안인 입자), 시각 start <= t < end 에 그 입자들의 속도 = velocity (P2G 앞).
       상자는 입자를 고르는 데만 쓴다 -- 공간 영역이 아니다 (나중에 그 상자로 들어온 다른 입자는 구속되지 않는다).
     우리 구현 = 입자 구속을 노드로 옮기는 공통 규칙 (lib/anchorflow/fem_rt.cfg_bc_nodes = train_deform --cfg_bc 와 같음):
-      구속 입자의 질량 가중 B-스플라인 몫 (프레임 시작 위치) 이 노드 질량의 절반을 넘는 노드 -> fixd = 1, vbc = 구속 입자 질량 가중 평균 속도.
+      구속 입자의 질량 가중 B-스플라인 몫 (프레임 시작 위치) 이 노드 질량 (P2G 의 mn) 의 절반을 넘는 노드 -> fixd = 1, vbc = 구속 입자 질량 가중 평균 속도.
     (11-15 이전 판은 이 상자를 격자 노드 기준 위치로 골라 (rt_bc_box) 상자 공간 전체를 얼렸다 -- pillow2sofa 에서 상자 z < 0.9 로
      떨어져 들어가야 할 방석이 상자 윗면 (바구니 테두리 높이) 에 걸렸다.)
 """
@@ -53,19 +53,21 @@ __global__ void rt_bc_rot(const int* IP, const float* Am, const float* U, const 
     float v2 = b[8]*(q0*b[4] - q1*b[3]) + b[9]*b[5];
     fixd[n] = 1; vbc[n*3] = v0; vbc[n*3+1] = v1; vbc[n*3+2] = v2;
 }
-// [rotbc_wrap 11-15] PG enforce_particle_translation (입자 선택 구속) -> 노드: 구속 입자 질량 몫 > 노드 질량 절반 -> fixd, vbc = 구속 입자 질량 가중 속도
+// [rotbc_wrap 11-15] PG enforce_particle_translation (입자 선택 구속) -> 노드: 구속 입자 질량 몫 > 노드 질량 (mn, P2G) 절반 -> fixd, vbc = 구속 입자 질량 가중 속도
 // TP 한 구속 4 칸: 속도 3, 켜짐. pid[원래 입자 번호] = 구속 번호 (-1 = 없음, 겹치면 config 뒤쪽). perm[p] = 정렬 입자 p 의 원래 번호.
-// PA 노드 5 칸: 전체 질량, 구속 질량, 구속 질량 x 속도 3. 프레임 시작 위치 x 에서 이차 B-스플라인 (rt_p2g 와 같은 base·가중).
+// PA 노드 4 칸: 구속 질량, 구속 질량 x 속도 3 (속도 합은 0 아닌 구속 속도가 있을 때만, VN). 프레임 시작 위치 x 에서 이차 B-스플라인 (rt_p2g 와 같은 base·가중).
+// 빠르게: 구속 입자만, 같은 base 칸 입자끼리 워프 안에서 고정 소수점 합 (__reduce_add_sync) 뒤 원자 합 하나.
 __global__ void rt_trp_zero(const int* IP, float* PA) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= IP[9]) return;
-    for (int a=0;a<5;a++) PA[n*5+a] = 0.f;
+    for (int a=0;a<4;a++) PA[n*4+a] = 0.f;
 }
-__global__ void rt_trp_acc(int N, const int* IP, const float* Ai, const float* x, const float* m, const long long* perm, const int* pid, const float* TP, float* PA) {
+__global__ void rt_trp_acc(int N, const int* IP, const float* Ai, const float* x, const float* m, const long long* perm, const int* pid, const float* TP, float mref, int VN, float* PA) {
     int p = blockIdx.x*blockDim.x + threadIdx.x;
-    if (p >= N || IP[13]) return;
-    int ib = pid[perm[p]];
+    int ib = (p < N && !IP[13]) ? pid[perm[p]] : -1;
     bool on = ib >= 0 && TP[ib*4+3] != 0.f;
+    unsigned act = __ballot_sync(0xffffffffu, on);
+    if (!on) return;
     int bs[3]; float wx[3][3], dw[3][3];
     for (int a=0;a<3;a++) {
         float y = Ai[a*3]*x[p*3] + Ai[a*3+1]*x[p*3+1] + Ai[a*3+2]*x[p*3+2];
@@ -74,20 +76,24 @@ __global__ void rt_trp_acc(int N, const int* IP, const float* Ai, const float* x
         bwf(y - fb, wx[a], dw[a]);
     }
     int nb1 = IP[7], nb2 = IP[8];
-    float mp = m[p];
+    int key = (bs[0]*nb1 + bs[1])*nb2 + bs[2];
+    unsigned grp = __match_any_sync(act, key);
+    bool lead = (__ffs(grp) - 1) == (threadIdx.x & 31);
+    float mp = m[p], sc = 1048576.f / mref, isc = mref / 1048576.f;
     for (int o=0;o<27;o++) {
         int i = o/9, j = (o/3)%3, k = o%3;
-        int nid = ((bs[0]+i)*nb1 + (bs[1]+j))*nb2 + (bs[2]+k);
+        int nid = key + (i*nb1 + j)*nb2 + k;
         float ww = wx[0][i]*wx[1][j]*wx[2][k]*mp;
-        atomicAdd(&PA[nid*5], ww);
-        if (on) { atomicAdd(&PA[nid*5+1], ww); for (int a=0;a<3;a++) atomicAdd(&PA[nid*5+2+a], ww*TP[ib*4+a]); }
+        unsigned q = __reduce_add_sync(grp, (unsigned)__float2uint_rn(ww*sc));
+        if (lead) atomicAdd(&PA[nid*4], (float)q*isc);
+        if (VN) for (int a=0;a<3;a++) atomicAdd(&PA[nid*4+1+a], ww*TP[ib*4+a]);
     }
 }
-__global__ void rt_trp_fix(const int* IP, const float* PA, unsigned char* fixd, float* vbc) {
+__global__ void rt_trp_fix(const int* IP, const float* mn, const float* PA, unsigned char* fixd, float* vbc) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= IP[9]) return;
-    float mt = PA[n*5], mc = PA[n*5+1];
-    if (mc > 0.f && mc > 0.5f*mt) { fixd[n] = 1; for (int a=0;a<3;a++) vbc[n*3+a] = PA[n*5+2+a]/mc; }
+    float mc = PA[n*4];
+    if (mc > 0.f && mc > 0.5f*mn[n]) { fixd[n] = 1; for (int a=0;a<3;a++) vbc[n*3+a] = PA[n*4+1+a]/mc; }
 }
 '''
 
@@ -138,6 +144,9 @@ def install():
             s.TP = torch.zeros(len(tr) * 4, device="cuda", dtype=torch.float32)
             print(f"[rotbc] translation 입자 선택 (PG 정의): 구속 {[int((pid == ib).sum()) for ib in range(len(tr))]} / {x0.shape[0]} 입자 -> 노드 (구속 질량 > 절반)", flush=True)
             del x0
+        if tr:
+            s._trmref = float((a[3] if len(a) > 3 else kw["m"]).max())               # 고정 소수점 단위 (입자 질량 최대 / 2^20); 인자 순서 RTSolver(x, v, F, m, ...)
+            s._trvn = int(any(any(q != 0.0 for q in v_) for (v_, _, _) in s._trb))   # 0 아닌 구속 속도가 있을 때만 속도 합
         orig_init(s, *a, **kw)
         s._rbc = list(groups.items())
         s.RP = torch.zeros(max(1, len(s._rbc)) * 12, device="cuda", dtype=torch.float32)
@@ -145,10 +154,11 @@ def install():
 
     def k(s, name, n, args, b=128):
         if name == "rt_bc_box" and getattr(s, "_trb", None) and int(args[3]) == 0:   # fixd 비운 뒤 첫 상자 앞 (PG: 입자 수정자 -> P2G -> 격자 cuboid 순서라 cuboid 가 이김)
-            assert s.PA.numel() >= s.capN * 5, "[rotbc] PA 용량"
+            assert s.PA.numel() >= s.capN * 4, "[rotbc] PA 용량"
             orig_k(s, "rt_trp_zero", n, (args[0], ART.P(s.PA)), b=256)
-            orig_k(s, "rt_trp_acc", s.N, (np.int32(s.N), args[0], ART.P(s.Ai), ART.P(s.x), ART.P(s.m), ART.P(s.perm), ART.P(s.trpid), ART.P(s.TP), ART.P(s.PA)), b=128)
-            orig_k(s, "rt_trp_fix", n, (args[0], ART.P(s.PA), args[4], args[5]), b=256)
+            orig_k(s, "rt_trp_acc", s.N, (np.int32(s.N), args[0], ART.P(s.Ai), ART.P(s.x), ART.P(s.m), ART.P(s.perm), ART.P(s.trpid), ART.P(s.TP),
+                                         np.float32(s._trmref), np.int32(s._trvn), ART.P(s.PA)), b=128)
+            orig_k(s, "rt_trp_fix", n, (args[0], ART.P(s.mn), ART.P(s.PA), args[4], args[5]), b=256)
         if name == "rt_bc_box" and getattr(s, "_rbc", None) and int(args[3]) == len(s.bc) - 1:
             for jj in range(len(s._rbc)):
                 orig_k(s, "rt_bc_rot", n, (args[0], args[1], ART.P(s.U), ART.P(s.RP), np.int32(jj), args[4], args[5]), b=256)
@@ -174,7 +184,7 @@ def install():
     def alloc(s, need):
         orig_alloc(s, need)
         if getattr(s, "_trb", None):                                               # 노드 용량이 바뀌면 (넘침 다시 할당) 같이 -- 그래프 밖
-            s.PA = torch.zeros(s.capN * 5, device="cuda", dtype=torch.float32)
+            s.PA = torch.zeros(s.capN * 4, device="cuda", dtype=torch.float32)
 
     ART.RTSolver.__init__, ART.RTSolver.k, ART.RTSolver.set_bc, ART.RTSolver.alloc = init, k, set_bc, alloc
 
