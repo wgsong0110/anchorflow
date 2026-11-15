@@ -33,7 +33,12 @@ _orig = runpy.run_path
 _done = [False]
 
 
+print("[절 CM179 q27_wrap] 단계 %s 실행 (SEEN %s)" % (O["q27ph"], SEEN), flush=True)
+
+
 def run_path(path, *a, **kw):
+    if os.path.basename(path) in ("fem_an_rt_sim.py", "fem_ao_rt_sim.py"):
+        print("[절 CM179 q27_wrap] 단계 %s 훅이 실행기 경로를 봄 (done %s)" % (O["q27ph"], _done[0]), flush=True)
     if SEEN and not _done[0] and os.path.basename(path) in ("fem_an_rt_sim.py", "fem_ao_rt_sim.py"):
         _done[0] = True
         from anchorflow import fem_q27 as Q27
