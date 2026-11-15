@@ -42,7 +42,12 @@ else
 fi
 CFG=$W/cfg_$SC.json; cp $AF/exe/nshape_cfg/$SC.json $CFG; NF=$(python -c "import json;print(json.load(open('$CFG'))['frame_num'])")
 say "$(python $AF/exe/elastic_new_floor.py $MD $CFG 0.3)"
-# ---- (2) 정답: 원본과 사본을 같이
+# ---- (2) 정답: R2 에 다 있으면 받음 (RUNNER 로 원본/사본 구분), 없으면 원본과 사본을 같이
+HAVE=$(rclone lsf $DS/gt_pg/$SC/simulation_ply 2>/dev/null | grep -c "h5$")
+if [ "$HAVE" -ge $((NF + 1)) ]; then
+  O=$W/gt/${SC}_r2; mkdir -p $O; rclone copy $DS/gt_pg/$SC $O --transfers 16 -q; cp $O/config.json $CFG
+  if grep -q "i-physgaussian" $O/RUNNER; then GTL="정답 (PG 사본)"; else GTL="정답 (PhysGaussian)"; fi; say "[정답] R2 에 있음 ($HAVE) -> 받음, $GTL"
+else
 O=$W/gt/$SC; OC=$W/gt/${SC}_ipg; mkdir -p $O $OC; t0=$(date +%s)
 (cd $PGU && WARP_CACHE_PATH=$W/wpc timeout 1200 python -u gs_simulation.py --model_path $MD --config $CFG --output_path $O --output_h5 < /dev/null > $O/run.log 2>&1) & PU=$!
 (cd $IPG && WARP_CACHE_PATH=$W/wpc2 timeout 3600 python -u gs_simulation.py --model_path $MD --config $CFG --output_path $OC --output_h5 < /dev/null > $OC/run.log 2>&1) & PC=$!
@@ -57,6 +62,7 @@ else
   O=$OC; GTL="정답 (PG 사본)"
 fi
 cp $CFG $O/config.json; rclone copy $O $DS/gt_pg/$SC --transfers 16 -q; say "[정답] $GTL R2 올림 $DS/gt_pg/$SC"
+fi
 cd $AF
 python -u exe/pg_h5_to_pt.py --h5_dir $O/simulation_ply --config $CFG --out_pt $AG/$SC.pt --out_dir $AG/gt_$SC --v0_from_bc > $W/cv_$SC.log 2>&1 || { say "[변환 실패] $(tail -1 $W/cv_$SC.log)"; echo "변환 실패" | rclone rcat $RX/$TAG.END; exit 1; }
 rclone cat $R/lbours/wolfcv/cm157/BA_1/cmd.txt > $W/BA_1.txt
