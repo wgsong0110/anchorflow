@@ -3,7 +3,7 @@
 #  사용: bash exe/fpabl_launch.sh <offer> <라벨 final_pa_blN> <커밋> <태그> <작업 json> <prep|grid> [FB_PREP_FROM] [hold]
 set -e
 OFFER=$1; LBL=$2; H=$3; TAG=$4; JOBS=$5; MODE=$6; PF=${7:-}; HOLD=${8:-}
-case $LBL in final_pa_bl*) ;; *) echo "라벨은 final_pa_bl 로 시작"; exit 1;; esac
+case $LBL in final_pa_bl*|final_fix_vrgs*) ;; *) echo "라벨은 final_pa_bl 또는 final_fix_vrgs 로 시작"; exit 1;; esac
 OX=r2:storage/result/anchorflow/lbours/final_pa/bl
 AK=$(rclone config dump | python3 -c "import sys,json;print(json.load(sys.stdin)['r2']['access_key_id'])")
 SK=$(rclone config dump | python3 -c "import sys,json;print(json.load(sys.stdin)['r2']['secret_access_key'])")
