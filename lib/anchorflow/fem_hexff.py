@@ -16,6 +16,8 @@
 import numpy as np
 import torch
 
+import os
+_BLOC2 = int(os.environ.get("AF_BLOC", "0")) >= 3                         # 절 CM189 --bloc 3 (exe/bloc_wrap.py): 뒤집힘 보폭도 노드별 (끄면 기존 그대로; chair_paste 12 프레임 발산 J 3e-4 -> 기본 아님)
 INFO = dict(tau=0.0, mods=[], n_kfe=0, n_chk=0, n_lmix=0, lmix=0, kfe=1, skip=(2,))
 
 HF_SRC = r"""
@@ -72,6 +74,29 @@ __global__ void __launch_bounds__(128) hf_kfe(const int* IP, const int* cb, cons
         c *= 0.5f; k++; if (c == 0.f || k >= 60) break;
     }
     if (k > 0) atomicMax(kk, k);
+}
+// 절 CM189 --bloc 2: hf_kfe 와 같은 판정을 노드별로 -- 그 점의 k 를 27 노드 kn 에 원자 최대 (몸 전체 kk 대신)
+__global__ void __launch_bounds__(128) hf_kfe_n(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* y0, const float* y1, const float* U, float thinv, float tau, int* kn) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= IP[12]) return;
+    if (!(Vq[q] > 0.f)) return;
+    int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
+    const float* BGo = BG + oc*27*3;
+    float F[9]; for (int k=0;k<9;k++) F[k] = Fq[(size_t)q*9+k];
+    float X0[9], X1[9], E0[9], E1[9];
+    hf_X(ids, BGo, F, y0, U, thinv, 0, X0); hf_X(ids, BGo, F, y1, U, thinv, 0, X1);
+    hf_X(ids, BGo, F, y0, U, thinv, 1, E0); hf_X(ids, BGo, F, y1, U, thinv, 1, E1);
+    float d0 = hf_det(X0), e0 = hf_det(E0);
+    if (!(d0 > 0.f) || !(e0 > 0.f)) return;
+    float t0 = tau*d0, te = tau*e0;
+    int k = 0; float c = 1.f;
+    while (true) {
+        float Xc[9], Ec[9];
+        for (int i=0;i<9;i++) { Xc[i] = X0[i] + c*(X1[i] - X0[i]); Ec[i] = E0[i] + c*(E1[i] - E0[i]); }
+        if (hf_det(Xc) > t0 && hf_det(Ec) > te) break;
+        c *= 0.5f; k++; if (c == 0.f || k >= 60) break;
+    }
+    if (k > 0) for (int o=0;o<27;o++) atomicMax(&kn[ids[o]], k);
 }
 __global__ void __launch_bounds__(128) hf_cnt(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* y, int seq, int* out) {
     int q = blockIdx.x*blockDim.x + threadIdx.x;                               // 진단 (절 CM184 nanprobe, 결과 불변): det F_q ≤ 0 · det X(y) ≤ 0 인 점이 처음 생긴 띄움 순번
@@ -143,6 +168,12 @@ def _wrap_k(k0):
                 kn_, kk_, yh_, y_ = np.uint64(0), args[1], args[7], args[10]
             k0(s, "hf_lmix", n, (args[0], kn_, kk_, args[3], P(s.sk), P(s.eta), P(s.mn), np.float32(s.mthr), P(getattr(s, "fixd", None)), P(s.U), P(s.Ut), yh_, y_, np.int32(INFO["lmix"])), 256)
             INFO["n_lmix"] += 1
+        if getattr(s, "_hff", False) and getattr(s, "_pkc", None) is None and _BLOC2 and name == "yl_kq" \
+                and getattr(s, "_mat", None) not in INFO["skip"] and INFO["kfe"]:      # 절 CM189 --bloc 2: 시작점 뒤집힘도 노드별 (IP, cb, BW, Vq, ylU, ySv, U, thinv, ..., kn)
+            P = lambda t: np.uint64(t.data_ptr())
+            k0(s, "hf_kfe_n", n, (args[0], args[1], P(s.BG), P(s.Fq), P(s.Vq), args[4], args[5], args[6], args[7], np.float32(INFO["tau"]), args[-1]), b)
+            INFO["n_kfe_n"] = INFO.get("n_kfe_n", 0) + 1
+            return r
         if getattr(s, "_hff", False) and getattr(s, "_pkc", None) is None and name in ("rt_bar_kfe", "yl_chk") \
                 and getattr(s, "_mat", None) not in INFO["skip"]:      # 기본: 모래 (재질 2, Drucker-Prager 반환 사상이 주값 크기 |σ| 로 정의돼 뒤집힘을 스스로 다룸) 빼고 전부 (탄성 실행기 포함)
             P = lambda t: np.uint64(t.data_ptr())
@@ -151,7 +182,10 @@ def _wrap_k(k0):
                 return r
             if name == "rt_bar_kfe" and not INFO["kfe"]:
                 return r
-            if name == "rt_bar_kfe":       # (IP, cb, BW, y0, y1, U, thinv, n0, n1, n2, pn, kk)
+            if name == "rt_bar_kfe" and _BLOC2 and float(args[10]) < -1e29 and getattr(s, "bkn", None) is not None:   # 절 CM189 --bloc 2: 뉴턴 반복 보폭 (평면 −∞ 호출) 의 뒤집힘 몫을 노드별 bkn 에
+                k0(s, "hf_kfe_n", n, (args[0], args[1], P(s.BG), P(s.Fq), P(s.Vq), args[3], args[4], args[5], args[6], np.float32(INFO["tau"]), P(s.bkn)), b)
+                INFO["n_kfe_n"] = INFO.get("n_kfe_n", 0) + 1
+            elif name == "rt_bar_kfe":       # (IP, cb, BW, y0, y1, U, thinv, n0, n1, n2, pn, kk)
                 k0(s, "hf_kfe", n, (args[0], args[1], P(s.BG), P(s.Fq), P(s.Vq), args[3], args[4], args[5], args[6], np.float32(INFO["tau"]), args[11]), b)
                 INFO["n_kfe"] += 1
             else:                           # yl_chk (IP, cb, BW, y, U, thinv, n0, n1, n2, pn, kn, kn2, fl)
