@@ -34,6 +34,10 @@ _done = [False]
 
 
 print("[절 CM179 q27_wrap] 단계 %s 실행 (SEEN %s)" % (O["q27ph"], SEEN), flush=True)
+if SEEN and O["q27ph"] == "src":                                                     # 글자 고침만: 실행기 순간을 기다리지 않고 지금 (다른 감싸개들의 훅보다 먼저 = 가장 안쪽 RawModule 감싸개)
+    from anchorflow import fem_q27 as Q27S
+    Q27S.install(out, MODE, CAP, DG, "fem_an_rt_sim.py", int(float(O["q27jit"])), "src")
+    _done = [True]
 
 
 def run_path(path, *a, **kw):
