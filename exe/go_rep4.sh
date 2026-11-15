@@ -24,6 +24,7 @@ prep_pg() { local s=$1 IN=$O/in_$s m
   m=$(basename $($PY -c "import numpy as np; print(np.load('$IN/aux_$s.npz', allow_pickle=True)['model'])"))
   [ -d $W/pgmodel/$m/point_cloud/iteration_30000 ] || rclone copy $RA/pgmodel/$m $W/pgmodel/$m -q --exclude "chkpnt*" --exclude "point_cloud/iteration_7000/**" --exclude "point_cloud/iteration_60000/**"; }
 prep_ns() { local s=$1 IN=$O/in_$1 GT=r2:storage/datasets/anchorflow/nshape/gt/$1 MD=r2:storage/datasets/anchorflow/nshape/model/${1%%_*}
+  rclone lsf r2:storage/datasets/anchorflow/nshape/gt_pg/$s/simulation_ply 2>/dev/null | grep -q . && GT=r2:storage/datasets/anchorflow/nshape/gt_pg/$s   # 원본 PhysGaussian 정답 (CM186 PG 경로)
   mkdir -p $IN
   [ -d $O/h5_$s ] || rclone copy $GT/simulation_ply $O/h5_$s -q --transfers 16 --include "sim_*.h5"
   [ -s $IN/config.json ] || rclone copyto $GT/config.json $IN/config.json -q
