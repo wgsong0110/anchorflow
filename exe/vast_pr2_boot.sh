@@ -77,6 +77,7 @@ export ST_P3D_WHL=/root/pr/pytorch3d-0.7.8-cp311-cp311-linux_x86_64.whl ST_NO_BU
 bash exe/stab_bl_setup.sh /root/pr/bl_env.sh > /root/pr/bl_setup.log 2>&1; say "[bl_setup] $(tail -1 /root/pr/bl_setup.log)"; rclone copyto /root/pr/bl_setup.log $MK/bl_setup.log -q
 [ -f /root/pr/bl_env.sh ] && source /root/pr/bl_env.sh
 [ -n "${PR_SC:-}" ] && source exe/pr2_scene_fetch.sh
+if [ "${PR_MODE:-}" = prof ]; then source exe/pr2_prof_run.sh; sleep 30; exit; fi
 echo "[ok] $(date)" | rclone rcat $MK/boot.done
 say "[준비 끝] 격자 측정 시작"
 O=/dev/shm/dkta/lbours/paper_remeasure2/stab; mkdir -p $O
