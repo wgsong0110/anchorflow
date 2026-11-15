@@ -3,6 +3,7 @@
 사용: python exe/q27_wrap.py [--q27 0|1] [--q27cap 1] [--q27dg 1] <다음 감싸개.py> <그 인자...> <실행기.py> <실행기 인자...>
   --q27 1 = 27 점 적분 (정의 변경), 0 이나 없음 = 2x2x2 그대로. --q27cap 1 = 컴파일되는 CUDA 소스를 모두 <out>/q27src 에 갈무리 (결과 불변).
   --q1pt 1 = 절 CM179 칸마다 가우스 1x1x1 (칸 가운데 1 점, 무게 = 칸 부피; 모래시계 대조군; 기본 0, 정의 변경).
+  --q27ph all|src|cls = 절 CM179: src = CUDA 글자 고침만 (가장 안쪽), cls = 풀이기 클래스 고침만 (가장 바깥); 기본 all = 예전 그대로.
   --q27jit 1 = 수박 꿈틀거림 (강체 뺀 프레임 사이 속도 RMS, exe/q27_jit.py 와 같은 정의) 을 실행 중에 jit.json 으로 (덤프 없이, 결과 불변).
   --q27dg 1 = 진단 기록 (q27.jsonl). 셋 다 없으면 모듈을 안 부름 (예전 그대로); '--q27 0' 은 모듈을 불러 풀이기 정보 (q27solver.pt) 만 저장 (결과 불변, 대조 판).
 설치: 실행기 fem_an_rt_sim.py · fem_ao_rt_sim.py (exe/s6/ 사본 포함) 를 runpy 로 띄우는 순간 (안쪽 감싸개들 설치 뒤, 가장 바깥 = cp.RawModule 를 마지막에 감쌈).
@@ -18,9 +19,9 @@ sys.setrecursionlimit(max(sys.getrecursionlimit(), 18000))                      
 argv = sys.argv[1:]
 out = argv[argv.index("--out") + 1] if "--out" in argv else "."
 os.makedirs(out, exist_ok=True)
-O = dict(q27="0", q27cap="0", q27dg="0", q27jit="0", q1pt="0")
+O = dict(q27="0", q27cap="0", q27dg="0", q27jit="0", q1pt="0", q27ph="all")
 SEEN = False
-while argv and argv[0] in ("--q27", "--q27cap", "--q27dg", "--q27jit", "--q1pt"):
+while argv and argv[0] in ("--q27", "--q27cap", "--q27dg", "--q27jit", "--q1pt", "--q27ph"):
     O[argv[0][2:]] = argv[1]
     del argv[:2]
     SEEN = True
@@ -36,7 +37,7 @@ def run_path(path, *a, **kw):
     if SEEN and not _done[0] and os.path.basename(path) in ("fem_an_rt_sim.py", "fem_ao_rt_sim.py"):
         _done[0] = True
         from anchorflow import fem_q27 as Q27
-        Q27.install(out, MODE, CAP, DG, os.path.basename(path), int(float(O["q27jit"])))
+        Q27.install(out, MODE, CAP, DG, os.path.basename(path), int(float(O["q27jit"])), O["q27ph"])
     return _orig(path, *a, **kw)
 
 

@@ -128,16 +128,20 @@ def _hook_solvers():
         C.__init__ = init
 
 
-def install(out, mode, cap, dg, exe, jit=0):
+def install(out, mode, cap, dg, exe, jit=0, phase="all"):
+    """phase: all = 둘 다 (예전 그대로) / src = CUDA 글자 고침만 (가장 안쪽 감싸개 자리 -- 다른 묶음의 글자 고침 뒤 최종 글자에서) /
+    cls = 풀이기 클래스 고침·점검만 (가장 바깥 자리 -- 다른 묶음이 클래스를 바꾼 뒤). 절 CM179: 1x1x1 판이 두 자리에 한 번씩 부름."""
     ST.update(mode=int(mode), cap=int(cap), dg=int(dg), exe=exe, out=out, jit=int(jit))
-    print("[절 CM101] q27 켬 mode %d cap %d dg %d 실행기 %s" % (ST["mode"], ST["cap"], ST["dg"], exe), flush=True)
+    print("[절 CM101] q27 켬 mode %d cap %d dg %d 실행기 %s 단계 %s" % (ST["mode"], ST["cap"], ST["dg"], exe, phase), flush=True)
     try:
-        _hook_rawmodule()
-        _hook_solvers()
-        if ST["mode"]:
-            _install_q27()
-        if ST["jit"]:
-            _install_jit()
+        if phase in ("all", "src"):
+            _hook_rawmodule()
+        if phase in ("all", "cls"):
+            _hook_solvers()
+            if ST["mode"]:
+                _install_q27()
+            if ST["jit"]:
+                _install_jit()
     except Exception as e:
         ST["err"] = repr(e) + " " + traceback.format_exc()[-1500:]
         _info()
