@@ -7,6 +7,7 @@
 
 플래그 (모두 감싸개 앞쪽에, 숫자 하나; 0 = 끔):
   --ssf_tol 1     뉴턴 허용치 tolN 에 1/N 을 곱함 (실행기 RTSolver 생성 직후, N = K)
+  --ssf_split D   프레임에서 무너진 걸음 (덜 풀림 ∧ ‖g‖²/F² > --ssf_bigT 1e6 이거나 비유한) 이 있으면 입자 상태를 되돌려 걸음 수 K 를 두 배로 다시 풂 (최대 2^D 배; 실행기 --ksplit 을 K>1 기준으로 일반화)
   --ssf_tolp 1    PCG 허용치 tolP 에도 1/N 곱함 (선택)
 사용: python exe/ssfix_wrap.py --ssf_tol 1 exe/stabhex_wrap.py ... exe/fem_an_rt_sim.py ... (바깥 첫 감싸개로)
 """
@@ -17,7 +18,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 argv = sys.argv[1:]
-C = dict(tol="0", tolp="0")
+C = dict(tol="0", tolp="0", kex="0", split="0", bigT="1e6", wrx="1")
 while argv and argv[0].startswith("--ssf_"):
     C[argv[0][6:]] = argv[1]; del argv[:2]
 _orig = runpy.run_path; _done = [False]
@@ -34,14 +35,74 @@ def _install():
             s.tolN = s.tolN / K ** float(C["tol"])
         if float(C["tolp"]) != 0 and s.tolP >= 0:
             s.tolP = s.tolP / K ** float(C["tolp"])
-        print(f"[substep_fix] tolN {s.tolN:.4g} tolP {s.tolP:.4g} (K {K}, ssf_tol {C['tol']}, ssf_tolp {C['tolp']})", flush=True)
+        if float(C["kex"]) != 0 and getattr(s, "floor", None):
+            s.floor["KEX"] = s.floor["KEX"] * float(C["kex"])
+        print(f"[substep_fix] KEX {getattr(s, 'floor', None) and s.floor['KEX']} tolN {s.tolN:.4g} tolP {s.tolP:.4g} (K {K}, ssf_tol {C['tol']}, ssf_tolp {C['tolp']})", flush=True)
     ART.RTSolver.__init__ = init
+    D = int(float(C["split"]))
+    if D > 0:                                                                          # --ssf_split D: 프레임 단위 걸음 수 두 배 다시 풀기 (최대 2^D 배), 기준 K = 실행기 --K
+        import torch
+        ostep = ART.RTSolver.step
+        oinit2 = ART.RTSolver.__init__
+
+        def init2(s, *a, **kw):
+            oinit2(s, *a, **kw)
+            s.kcap = max(int(getattr(s, "kcap", 0) or 0), int(s.K) << D)               # 진단·상태 버퍼는 걸음 수 상한으로 (실행기 --ksplit 의 S.kcap 과 같은 자리)
+            s.alloc(None)
+        ART.RTSolver.__init__ = init2
+        T = float(C["bigT"]); ST = dict(retry=0, frames=0, hist={})
+
+        def collapsed(s, K):
+            if not bool(torch.isfinite(s.x).all()):
+                return True
+            fl = s.cjl[:K] > 0
+            big = ~(s.cjg[:K] <= T)
+            return bool((fl & big).any())
+
+        def step(s, t):
+            ST["frames"] += 1
+            bk = s._bk(); K0 = int(s.K); h = float(s.h); cm0 = s.cap_mul
+            oom = False
+            try:
+                redo = ostep(s, t)
+            except torch.OutOfMemoryError:                                              # 발산한 입자가 노드 상자를 키워 용량 다시 할당이 메모리 초과 -> 무너진 프레임으로 취급
+                oom = True; redo = False
+            dp = 0
+            while dp < D and (oom or collapsed(s, int(s.K))):
+                dp += 1; ST["retry"] += 1
+                if oom:
+                    torch.cuda.empty_cache()
+                s._rs(bk)
+                if oom or s.cap_mul != cm0:                                             # 용량이 늘었을 수 있음 -> 처음 배수로 다시 할당, 캐시된 그래프 (옛 용량) 버림
+                    s.cap_mul = cm0; s.alloc(None); s.graphs.clear(); s.graph = None
+                oom = False
+                if hasattr(s, "wrx") and float(C["wrx"]) != 0:                          # 다시 풀 때는 절 CM38 X3 (고착 상한 + 속도 수준 접촉) 를 켬 (실행기 --wrx_col 1 의 다시 풀기와 같음)
+                    from anchorflow import fem_wmrx as WRX
+                    WRX.on(s, 1)
+                ART.set_K_an(s, K0 << dp, h)
+                try:
+                    redo = ostep(s, t) or redo
+                except torch.OutOfMemoryError:
+                    oom = True
+            ST["hist"][dp] = ST["hist"].get(dp, 0) + 1
+            if dp:
+                print(f"[substep_fix] 프레임 t={t:.4f} 무너짐 -> K {K0} 에서 {K0 << dp} 로 다시 풂 (깊이 {dp}; 끝 판정 무너짐 {oom or collapsed(s, int(s.K))})", flush=True)
+                ART.set_K_an(s, K0, h)
+                if hasattr(s, "wrx") and float(C["wrx"]) != 0:
+                    from anchorflow import fem_wmrx as WRX
+                    WRX.on(s, 0)
+                if oom:
+                    s.x.fill_(float("nan"))
+            return redo
+        ART.RTSolver.step = step
+        import atexit
+        atexit.register(lambda: print(f"[substep_fix] 프레임 {ST['frames']} 다시 풂 {ST['retry']} 깊이별 {ST['hist']}", flush=True))
 
 
 def run_path(path, *a, **kw):
     if not _done[0] and os.path.basename(path) == "fem_an_rt_sim.py":
         _done[0] = True
-        if float(C["tol"]) != 0 or float(C["tolp"]) != 0:
+        if float(C["tol"]) != 0 or float(C["tolp"]) != 0 or float(C["kex"]) != 0 or float(C["split"]) != 0:
             _install()
     return _orig(path, *a, **kw)
 
