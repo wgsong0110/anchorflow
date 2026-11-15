@@ -42,7 +42,7 @@ fi
 mkdir -p /home/dkta/.conda/envs/af/bin; ln -sf $(command -v python) /home/dkta/.conda/envs/af/bin/python
 rclone cat $R/lbours/wolfcv/cm157/BA_1/cmd.txt > $O/BA_1.txt
 PRE=""; FLR=1; XE=""
-for w in $XEXTRA; do case $w in CUT) ;; HFF) PRE="exe/hexff_wrap.py --hff 1 $PRE";; IMPULSE) PRE="$PRE exe/impulse_wrap.py --impulse_bc 1";; NOFLOOR) FLR=0;; ABL0|ABLA|ABLB|ABLC) ;; OLD) XE="$XE";; *) XE="$XE $w";; esac; done
+for w in $XEXTRA; do case $w in CUT) ;; HFF) ;; IMPULSE) PRE="$PRE exe/impulse_wrap.py --impulse_bc 1";; NOFLOOR) FLR=0;; ABL0|ABLA|ABLB|ABLC) ;; OLD) XE="$XE";; *) XE="$XE $w";; esac; done
 CMD=$(GFS_PREFIX="$PRE" python exe/gfs_cmd.py $O/BA_1.txt $W/ag/$n.pt $NF $n $O/run $FLR $W/ag/gt_$n $CFG $MODEL $GF $XE)
 if [[ " $XEXTRA " == *" OLD "* ]]; then      # 후보 2 시험 (사용자 11-15): 뒤집힘 막는 선탐색 (--ls_inv ...) 이 있는 옛 재질 실행기 (수박 M 판, stab_k1new.sh) 의 명령. 바닥 평면 = 3 dx
   FP="--floor_plane 1,1,$(python -c "import json;d=json.load(open('$CFG'));print(3*d.get('grid_lim',2.0)/d['n_grid'])"),0,0,1"
