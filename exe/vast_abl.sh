@@ -52,6 +52,8 @@ has bread && { [ -s $AG/gt_bread/config.json ] || CUDA_VISIBLE_DEVICES=0 python 
 has wolf && { [ -s $AG/gt_wolf/config.json ] || CUDA_VISIBLE_DEVICES=0 python -u exe/pg_h5_to_pt.py --h5_dir $W/topo/pg_wolf_sand --config $W/PhysGaussian/config/wolf_config.json --out_pt /root/pr/gtwolf_unused.pt --out_dir $AG/gt_wolf > /root/pr/gt_wolf.log 2>&1; }
 PRSC=$(for k in vasedeck plane pillow2sofa; do has $k && echo -n "$k,"; done | sed 's/,$//')
 if [ -n "$PRSC" ]; then export PR_SC=$PRSC RX; source exe/pr2_scene_fetch.sh; fi
+# CM183 고침: 새 PG 장면 정답 meta.json 이 가리키는 /home/dkta/work/gtnew/<장면>/simulation_ply 를 newsc 의 h5 로 이어 줌 (렌더 훅 rtrender1 이 읽음; 안 하면 FileNotFoundError)
+mkdir -p $W/gtnew; for k in vasedeck plane pillow2sofa; do [ -d $W/newsc/${k}_h5 ] && [ ! -e $W/gtnew/$k ] && ln -s $W/newsc/${k}_h5 $W/gtnew/$k; [ -d $W/newsc/gt_$k ] && [ ! -e $W/gtnew/gt_$k ] && ln -s $W/newsc/gt_$k $W/gtnew/gt_$k; done
 if has toast || has sand_castle; then source exe/abl_gf_fetch.sh; fi
 say "[자료] ficus $(stat -c %s $SD/F_pg_v0.pt 2>&1) bread $(stat -c %s $AG/bread.pt 2>&1) wolf $(stat -c %s $AG/wolf.pt 2>&1) newsc $(ls $W/newsc 2>&1 | tr '\n' ' ') gf $(ls /root/gfs/ag 2>&1 | tr '\n' ' ')"
 echo "[ok] $(date)" | rclone rcat $MK/$T.setup.done

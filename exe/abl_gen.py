@@ -22,12 +22,22 @@ if scene in NS:
     c = re.sub(r"--tag \S+", f"--tag {scene}", c)
     for f in s["drop"]:
         c = c.replace(" " + f, "")
+elif scene in ("toast", "sand_castle"):                 # GF 장면: BA_1 명령 + exe/gfs_cmd.py 규칙 (exe/abl_tmpl_gf.json), 경로 = /root/gfs (exe/abl_gf_fetch.sh)
+    import subprocess, tempfile
+    G = json.load(open(f"{HERE}/abl_tmpl_gf.json")); S = G["scenes"][scene]; GW = "/root/gfs"
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f_:
+        f_.write(G["BA_1"])
+    env = dict(os.environ, GFS_PREFIX=S["prefix"])
+    c = subprocess.run([sys.executable, f"{HERE}/gfs_cmd.py", f_.name, f"{GW}/ag/{scene}.pt", str(S["frames"]), scene, out, str(S["floor"]), f"{GW}/ag/gt_{scene}",
+                        f"{GW}/hf/config/{S['cfg']}", f"{GW}/hf/model/{scene}", f"{GW}/GaussianFluent"], capture_output=True, text=True, env=env, check=True).stdout
+    os.unlink(f_.name)
 else:
     c = T[scene]["cmd"]
 c = " ".join(c.split())
 c = c.replace(" --dump_part", "").replace(" --dump_F", "").replace(" --dump ", " ")
-SP = "exe/startpt_wrap.py --sp 1 "
-assert c.count(SP) == 1 and c.count(" exe/fem_an_rt_sim.py ") == 1 and c.count(" --K 1 ") == 1
+GF = scene in ("toast", "sand_castle")
+SP = "python -u " if GF else "exe/startpt_wrap.py --sp 1 "           # GF 명령에는 startpt 감싸개가 없음 -> 사슬 맨 앞 (python -u 바로 뒤)
+assert (GF or c.count(SP) == 1) and c.count(" exe/fem_an_rt_sim.py ") == 1 and c.count(" --K 1 ") == 1
 def wrap(c, n, src_cls):   # 가장 안쪽 (실행기 앞, 글자) + 가장 바깥 (startpt 뒤, 클래스) 감싸개 쌍
     return (c.replace(" exe/fem_an_rt_sim.py ", f" {src_cls[0]} exe/fem_an_rt_sim.py ").replace(SP, SP + src_cls[1]))
 if var == "q1":
@@ -38,8 +48,12 @@ elif var in ("q27", "q64"):
 elif rep == 1:   # 기본 판 계열: 풀이기 정보 저장만 (결과 불변), 모래시계 분석용
     c = c.replace(SP, SP + "exe/q27_wrap.py --q27 0 --q27dg 1 ")
 if var in ("rho0", "rho1"):
-    assert c.count(" --rho 0.8 ") == 1
+    # CM183 고침: HHT-α 꼴은 ρ∞=0 이 α=1 (분모 (1-α_f)=0 → ZeroDivisionError, 확인: R2 ablation/runs/ficus_rho0_r1/log.txt) 이라 ρ∞=0 은 Chung-Hulbert 일반화-α (--ga ga, 같은 실행기·증분 포텐셜 경로) 로.
+    # ρ∞=1 은 HHT 그대로 (α=0, 뉴마크 평균 가속도 = 중점/사다리꼴).
+    assert c.count(" --rho 0.8 ") == 1 and c.count(" --ga hht ") == 1
     c = c.replace(" --rho 0.8 ", f" --rho {var[-1]} ")
+    if var == "rho0":
+        c = c.replace(" --ga hht ", " --ga ga ")
 m = re.match(r"c(\d+)$", var)
 if m:
     mult = {"075": 0.75, "15": 1.5, "20": 2.0}[m.group(1)]

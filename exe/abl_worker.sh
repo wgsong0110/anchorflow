@@ -1,6 +1,7 @@
 #!/bin/bash
 # 절 CM183 일꾼: 작업 (장면:판:반복) 을 차례로 -- 카드 0 단독. 결과 R2 lbours/ablation/runs/<장면>_<판>_r<반복>.
 export PATH=/home/dkta/bin:$PATH
+export PYTHONPATH=/root/gfs/GaussianFluent:/root/gfs/GaussianFluent/gaussian-splatting:${PYTHONPATH:-}
 H=$1; JOBS=$2
 RA=r2:storage/result/anchorflow/lbours/ablation; O=/dev/shm/dkta/abl; mkdir -p $O /dev/shm/dkta/tmp
 export TMPDIR=/dev/shm/dkta/tmp PYTHONUTF8=1 OMP_NUM_THREADS=8
@@ -8,7 +9,8 @@ PY=/home/dkta/.conda/envs/af/bin/python
 say() { echo "[w $(date '+%F %T')] $*"; }
 for j in ${JOBS//,/ }; do IFS=: read s v r <<< "$j"
   n=${s}_${v}_r$r; D=$O/$n
-  if rclone lsf $RA/runs/$n/metrics.json >/dev/null 2>&1 && [ -n "$(rclone lsf $RA/runs/$n/metrics.json 2>/dev/null)" ]; then say "$n 이미 있음"; continue; fi
+  # 이미 성공 결과 (metrics.json 에 frames_done 숫자) 가 있으면 건너뜀; 실패 기록은 다시 돌림 (CM183 고침)
+  if rclone cat $RA/runs/$n/metrics.json 2>/dev/null | grep -aq '"frames_done": [0-9]'; then say "$n 이미 있음"; continue; fi
   rm -rf $D; mkdir -p $D
   $PY exe/abl_gen.py $s $v $r $D > $D/cmd.txt || { say "$n 명령 생성 실패"; continue; }
   say "$n 시작 (다른 계산 프로세스 $(nvidia-smi --query-compute-apps=pid --format=csv,noheader | grep -c .))"
