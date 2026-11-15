@@ -876,6 +876,8 @@ def map_and_F(Pref, sel, Fprev=None, need_graph=True):
 
 # ============================================================== 측정·렌더 준비
 def chamfer(A, B, ch=4096):
+    ch = max(64, min(ch, int(2e8 // max(A.shape[0], B.shape[0], 1))))    # 점이 100 만 개를 넘으면 청크를 줄인다 (같은 값, 메모리만)
+
     def one(P, Q):
         return sum(torch.cdist(P[i:i + ch], Q).min(1).values.sum()
                    for i in range(0, P.shape[0], ch)) / P.shape[0]
