@@ -14,6 +14,8 @@ ap.add_argument("--dump", default=""); ap.add_argument("--ckpt_every", type=int,
 a = ap.parse_args()
 sys.path.insert(0, a.repo); os.chdir(a.repo)
 import h5py, numpy as np, torch
+import warp as wp
+wp.init()
 from tqdm import tqdm
 from anchorflow import stabstat as ss
 from src.mpm_core import MPMModel, set_boundary_conditions
