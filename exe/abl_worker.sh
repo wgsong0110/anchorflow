@@ -20,7 +20,9 @@ for j in ${JOBS//,/ }; do IFS=: read s v r <<< "$j"
   CUDA_VISIBLE_DEVICES=$GPU $PY exe/abl_an.py $D $s $v $r > $D/an.log 2>&1; say "$n 분석 rc=$? $(tail -1 $D/an.log | cut -c1-200)"
   [ -f $D/metrics.json ] || echo "{\"rc\": $rc, \"no_summary\": true}" > $D/metrics.json
   rclone copy $D $RA/runs/$n -q --transfers 8 --exclude "q27src/**" --exclude "pred.pt" --exclude "roll_fem.pt" $([ "$r" = 1 ] && echo "" || echo "")
-  [ "$r" = 1 ] && [ -f $D/pred.pt ] && rclone copyto $D/pred.pt $RA/runs/$n/pred.pt -q
+  # CM183 고침: pred.pt (반복 1 덤프) 가 크면 (pillow2sofa 9.7 GB) 기본 청크로는 20 분 넘게 일꾼을 막음 -> 하드링크로 남기고 빠른 청크·동시 전송으로 백그라운드 업로드 (끝나면 링크 삭제)
+  if [ "$r" = 1 ] && [ -f $D/pred.pt ]; then mkdir -p /dev/shm/dkta/predkeep; ln $D/pred.pt /dev/shm/dkta/predkeep/$n.pt && ( rclone copyto /dev/shm/dkta/predkeep/$n.pt $RA/runs/$n/pred.pt -q --s3-chunk-size 64M --s3-upload-concurrency 16 && rm -f /dev/shm/dkta/predkeep/$n.pt ) > /dev/null 2>&1 &
+  fi
   # CM183 A1: fem_ex_sim 덤프 roll_fem.pt 는 ficus 만 올림 (bread 는 F float32 로 수 GB -> 지표만 metrics.json 에)
   [ "$r" = 1 ] && [ "$s" = ficus ] && [ -f $D/roll_fem.pt ] && rclone copyto $D/roll_fem.pt $RA/runs/$n/roll_fem.pt -q
   rm -rf $D
