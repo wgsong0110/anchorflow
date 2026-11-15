@@ -30,7 +30,7 @@ ln -sf /usr/local/bin/rclone /home/dkta/bin/rclone
 export HOME=/root PATH=/home/dkta/.conda/envs/af/bin:$PATH
 if [ ! -f /root/sv/pip.done ]; then
   pip install -q "numpy<2" h5py scikit-image lpips torchmetrics torch-fidelity cupy-cuda12x tqdm plyfile scipy imageio imageio-ffmpeg av opencv-python-headless matplotlib 2>&1 | tail -2 | tee -a $LOG
-  pip install -q kaolin==0.17.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.5.1_cu121.html 2>&1 | tail -2 | tee -a $LOG
+  pip install -q kaolin==0.18.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.5.1_cu121.html 2>&1 | tail -2 | tee -a $LOG
   pip install -q warp-lang==1.6.2 2>&1 | tail -1 | tee -a $LOG   # PG 유틸이 warp.torch 를 쓰고 (1.6 까지 있음) kaolin 0.17 도 이 버전에서 동작
   cd /tmp && for f in diff_gaussian_rasterization-0.0.0-cp311-cp311-linux_x86_64.whl simple_knn-0.0.0-cp311-cp311-linux_x86_64.whl; do
     curl -sL -o $f "https://github.com/wgsong0110/anchorflow/releases/download/cuda-3dgs-torch251/$f"; done
