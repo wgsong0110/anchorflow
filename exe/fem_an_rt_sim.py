@@ -64,7 +64,7 @@ ap.add_argument("--gfin", action="store_true", help="걸음 끝 |g|/|g0| 를 fem
 ap.add_argument("--e_scale", type=float, default=1.0, help="절 CM134 진단 (기본 1 = 안 바뀜): 영률 E 에 곱함. 수렴 판 낙하 가속이 정답의 0.55 배인 까닭이 탄성 결합인지 가르는 용도")
 ap.add_argument("--cap_mul", type=float, default=2.0, help="절 BD: 고정 용량 버퍼 = 첫 프레임 상자 x 이 배수 (기본 2.0 그대로). 결정적 판에서 결과 불변 (넘침 다시 할당만 덜 일어남)")
 ap.add_argument("--det", action="store_true", help="결정적 합산 (같은 명령 두 번이 비트 단위로 같게; lib/anchorflow/fem_an_det.py, MG 와 함께 못 씀) -- 판정용, 속도는 비결정 판으로")
-ap.add_argument("--ga", choices=["ga", "hht"], default=None, help="generalized-α (Chung-Hulbert) 또는 HHT-α (implicit-err 절 AN.err3 증분 포텐셜 꼴, 시작점 = 걸음 시작 위치, 끝 = Newmark 위치 식)")
+ap.add_argument("--ga", choices=["ga", "hht", "be"], default=None, help="be = 후퇴 오일러 (절 CM190 ablation, --ue beall 필요; --rho 무시). generalized-α (Chung-Hulbert) 또는 HHT-α (implicit-err 절 AN.err3 증분 포텐셜 꼴, 시작점 = 걸음 시작 위치, 끝 = Newmark 위치 식)")
 ap.add_argument("--rho", type=float, default=0.7)
 ap.add_argument("--fric_mul", type=float, default=1.0, help="절 CM152 진단 전용: 재질 판 마찰각 (cfg friction_angle, 없으면 PG 기본 25도) 에 곱함. 1 = 끔 (그대로). 고침 아님, 원인 가르기")
 ap.add_argument("--no_areset", action="store_true", help="고착 노드 걸음 끝 가속도 0 처치 끔")
