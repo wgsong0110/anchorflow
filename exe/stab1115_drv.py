@@ -2,7 +2,7 @@
 시각 지표용 덤프·렌더, 우리 단독 시간. 이어 돌리기: 결과 파일이 있으면 건너뜀 (R2 에서 받아 온 뒤 다시 띄우면 이어 감).
   python exe/stab1115_drv.py --scene ficus --par 4 --stages main,vis,speed
 """
-import argparse, glob, json, os, shutil, subprocess, sys, threading, time
+import argparse, glob, json, os, re, shutil, subprocess, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__)); WT = os.path.dirname(HERE)
@@ -72,7 +72,29 @@ def hex_cmd(n, d, dump=False, stats=1, direct=None, frames=FR):
     return f"cd {WT} && {base} {a.hexfix}"
 
 
+def oom_artifact(log):
+    """다른 프로세스와 카드 메모리를 나눠 쓰다 난 메모리 부족 (발산 아님) -> 다시. 우리 판의 20 GiB 넘는 할당 시도는 발산 (실행기 관례)."""
+    try:
+        t = open(log, errors="ignore").read()
+    except Exception:
+        return False
+    if not re.search(r"out of memory|OutOfMemory|MemoryError", t, re.I):
+        return False
+    big = [float(x) for x in re.findall(r"Tried to allocate ([0-9.]+) GiB", t)]
+    return not (big and max(big) >= 20)
+
+
 def run(m, n, rep):
+    for k in range(4):
+        run1(m, n, rep)
+        lg = (L.hex_dir(S, n, rep) + a.hextag + "/log.txt") if m == "ours" else f"{L.res_dir(S, rep)}/{m}_N{n}.log"
+        fin = (L.hex_dir(S, n, rep) + a.hextag + "/FIN") if m == "ours" else f"{L.res_dir(S, rep)}/{m}_N{n}.fin"
+        if os.path.exists(fin) and oom_artifact(lg) and "rc=0" not in open(fin).read():
+            say("메모리 부족 (다른 프로세스와 카드 공유) 다시", S, m, n, rep, k); os.remove(fin); time.sleep(40); continue
+        break
+
+
+def run1(m, n, rep):
     """한 실행 (있으면 건너뜀). 결과는 L.load(S, m, n, rep)."""
     if m == "ours":
         d = L.hex_dir(S, n, rep) + a.hextag
