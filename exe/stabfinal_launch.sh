@@ -18,6 +18,8 @@ else
 import sys,json
 d=json.load(sys.stdin); L=d if isinstance(d,list) else d.get('instances',d)
 for i in L:
-    if str(i['id'])=='$ID': print(i['ssh_host'], i['ssh_port'])")
-  ssh -o StrictHostKeyChecking=no -o ConnectTimeout=20 -p $PORT root@$HOST "mkdir -p /root/.config/rclone; [ -s /root/.config/rclone/rclone.conf ] || printf '[r2]\ntype = s3\nprovider = Cloudflare\naccess_key_id = %s\nsecret_access_key = %s\nendpoint = %s\nacl = private\nno_check_bucket = true\n' '$AK' '$SK' '$EP' > /root/.config/rclone/rclone.conf; rclone copyto r2:storage/result/anchorflow/lbours/stabfinal/code/boot_$C.sh /root/boot_sf.sh && (tr '\0' '\n' < /proc/1/environ | grep -E '^CONTAINER_(ID|API_KEY)=' | sed 's/^/export /'; echo 'export SF_COMMIT=$C SF_JOBS=\"$JOBS\" SF_TAG=$TAG SF_PAR=$PAR') > /root/sfenv.sh && (tmux has-session -t sf 2>/dev/null || tmux new-session -d -s sf 'source /root/sfenv.sh; bash /root/boot_sf.sh > /root/boot_sf.out 2>&1') && echo launched"
+    if str(i['id'])=='$ID':
+        pp=(i.get('ports') or {}).get('22/tcp')
+        print((i['public_ipaddr'], pp[0]['HostPort']) if pp else (i['ssh_host'], i['ssh_port']))" | tr -d "(),'")
+  ssh -i ~/.ssh/id_ed25519_vast -o StrictHostKeyChecking=no -o ConnectTimeout=20 -p $PORT root@$HOST "mkdir -p /root/.config/rclone; [ -s /root/.config/rclone/rclone.conf ] || printf '[r2]\ntype = s3\nprovider = Cloudflare\naccess_key_id = %s\nsecret_access_key = %s\nendpoint = %s\nacl = private\nno_check_bucket = true\n' '$AK' '$SK' '$EP' > /root/.config/rclone/rclone.conf; rclone copyto r2:storage/result/anchorflow/lbours/stabfinal/code/boot_$C.sh /root/boot_sf.sh && (tr '\0' '\n' < /proc/1/environ | grep -E '^CONTAINER_(ID|API_KEY)=' | sed 's/^/export /'; echo 'export SF_COMMIT=$C SF_JOBS=\"$JOBS\" SF_TAG=$TAG SF_PAR=$PAR') > /root/sfenv.sh && (tmux has-session -t sf 2>/dev/null || tmux new-session -d -s sf 'source /root/sfenv.sh; bash /root/boot_sf.sh > /root/boot_sf.out 2>&1') && echo launched"
 fi
