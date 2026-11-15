@@ -4,7 +4,7 @@
 # 판 이름:
 #   FA_n · BA_n = 절 CM157 A 판 그대로 (exe/cm157_gen.py, 같은 기계 대조) · FH_n · BH_n = 같은 명령 + hexff (CM157_HFF=1)
 #   W<접미>_n = wolf 기본 판 (R2 lbours/wolfcv/cm139/Kacdhnz/cmd.txt = exe/pr_ours_tmpl.json 의 wolf 원본) 에서 --out 만 바꿈, 접미 글자:
-#     T = 시간 예산 끔 (--tb 1000, 절 CM140 T 와 같음) · H = hexff · M = --mlow 1e-3 -> 0 (절 CM184 장벽 바닥 장면 규칙)   예 WB_1 (그대로) WH_1 WHM_1 WTB_1 WTH_1 WTHM_1
+#     T = 시간 예산 끔 (--tb 1000, 절 CM140 T 와 같음) · H = hexff · H0 = hexff 보폭 조건 끔 (--hff_kfe 0, 시작점 섞기 확인만) · M = --mlow 1e-3 -> 0 (절 CM184 장벽 바닥 장면 규칙)   예 WB_1 (그대로) WH_1 WHM_1 WTB_1 WTH_1 WTHM_1
 export PATH=/home/dkta/bin:$PATH
 H=$1; G=$2; RUNS=$3
 R=r2:storage/result/anchorflow/lbours/wolfcv/cm184pg
@@ -19,6 +19,7 @@ wcmd() { local n=${1%%_*} out=$2 C; C=$(cat $O/srcW.txt | tr -s ' \n' ' ' | sed 
   C=$(echo "$C" | sed -e "s#--out [^ ]*\$#--out $out#")
   [[ ${n:1} == *T* ]] && C=$(echo "$C" | sed -e "s#--tb_w 2 exe/#--tb_w 2 --tb 1000 exe/#")
   [[ ${n:1} == *H* ]] && C=$(echo "$C" | sed -e "s#exe/nlwhy_wrap.py#exe/hexff_wrap.py --hff 1 exe/nlwhy_wrap.py#")
+  [[ ${n:1} == *H0* ]] && C=$(echo "$C" | sed -e "s#exe/hexff_wrap.py --hff 1 #exe/hexff_wrap.py --hff 1 --hff_kfe 0 #")
   [[ ${n:1} == *M* ]] && C=$(echo "$C" | sed -e "s#--mlow 1e-3 #--mlow 0 #")
   echo "$C"; }
 mk() { local n=$1 s=${1:0:1} k=${1:1:1}
@@ -28,8 +29,9 @@ mk() { local n=$1 s=${1:0:1} k=${1:1:1}
     W) wcmd $n $O/$n > $O/$n/cmd.txt;;
     *) return 1;; esac
   grep -q -- "--out $O/$n\$" $O/$n/cmd.txt || return 1
-  local nh=$(grep -c 'exe/hexff_wrap.py --hff 1 exe/nlwhy_wrap.py' $O/$n/cmd.txt) want=0
+  local nh=$(grep -c 'exe/hexff_wrap.py --hff 1 \(--hff_kfe 0 \)\?exe/nlwhy_wrap.py' $O/$n/cmd.txt) want=0
   [[ ${n%%_*} == *H* ]] && want=1; [ "$nh" = "$want" ] || return 1
+  [[ $s == W && ${n%%_*} == *H0* ]] && { grep -q -- "--hff_kfe 0 exe/nlwhy" $O/$n/cmd.txt || return 1; }
   [[ $s == W && ${n%%_*} == *M* ]] && { grep -q -- "--mlow 0 " $O/$n/cmd.txt || return 1; }
   [[ $s == W && ${n%%_*} == *T* ]] && { grep -q -- "--tb 1000 " $O/$n/cmd.txt || return 1; }
   return 0; }
