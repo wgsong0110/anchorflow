@@ -11677,3 +11677,39 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 - 기본 판 불변: 실시간·오차 기준을 지키며 두 문제를 함께 없애는 판은 못 찾음. 마지막 무너짐만은 RS1 (R + 무너진 프레임 K 2 다시) 이 없애지만 프레임 시간 +2.1 ms (16.3~18.4 ms) 로 60 fps 를 판에 따라 넘음. 새 플래그는 모두 기본 0 (`AF_AO_RMPOS`, `--ssf_tsum`).
 - 모름: 덩어리를 정답처럼 g 로 떨어뜨리는 (기둥을 무너뜨리는) 실시간 안 원리적 방법. 추정 (확인 안 함): 몸 전체 스칼라인 장벽 실현 가능 보폭을 노드별 (시작점 --y0loc 와 같은 꼴) 로 바꾸면 착지 프레임의 몸 전체 정체는 줄 수 있으나 구조 변경이라 이 절에서 안 함.
 - 영상 (3DGS, 정답 | 기준 실행 1 (왼쪽 튐) | 기준 실행 2 (뒤집힌 덩어리) | S2T 다시 풀기): R2 lbours/wolffix1115/vid/fem_wolf_wolffix_cmp.mp4 = ~/vidcache/wolffix/fem_wolf_wolffix_cmp.mp4 (2400x660, yuv420p, faststart, 51 프레임, 전체 디코드 확인; exe/wfx_compose.py).
+
+## CM189. 점소성 장면 (chair 페이스트·drums 꿀·bread foam) 늦은 낙하·출렁임 원인과 수정 (조정자 11-15 위임) -- **원인 = 뉴턴 덜 풀림 (확인). 옛 0.3 m 낙하 장면은 몸 전체 스칼라 장벽 보폭·시작점 되돌림이 착지 속도를 지움, 레고 L000 세팅은 걸음마다 PCG 2 회가 모자라 거의 모든 프레임이 다시 풀림. 공통 수정 후보 = `--cg 4` (레고 세팅 세 장면 80/80 완주, 오차 2.5~3.6 %, 단독 9.0~14.9 ms)** -- 가지 nshape, 커밋 1af27f6 (ptan) · 8ea4248·229a2db·4adbef5 (bloc 1/2/3, exe/bloc_wrap.py, 기본 0) · 222f87d·c85e6d4 (레고 세팅 config exe/plastfix_lego_cfg.py, 실행 사슬 exe/vast_plastfix_lego.sh, 렌더 위 방향), vast.ai RTX A6000 plastfix_a 60807240 · plastfix_b 60807244 (destroy 안 함), 결과 R2 lbours/plastfix/{runs,lego,unit}/
+### CM189.1 가설 판정 (옛 장면 chair_paste, 정답 PG plasticine E 2e5 σy 200, 0.3 m 낙하 50 프레임)
+- 식 이식 오류: 아님. exe/fem_ag_unit.py 단위 대조 (R2 lbours/plastfix/unit/unit_pg.json) 에서 plasticine_chair_paste·foam_drums_honey 의 F_e 최대 차 3.4e-4, τ 상대 차 99 % 6e-4 이하.
+- 항복 부족: 아님. 착지 프레임 (6) 항복 비율 우리 0.66 · 정답 0.07 (우리가 더 항복).
+- 감쇠 부족: 아님 (출렁임은 아래 보폭 자름의 결과). 
+- 뉴턴 덜 풀림: 원인. 기준 판에서 50 프레임 중 12 프레임은 --y0loc 의 몸 전체 되돌림 (yl_fb) 이 걸려 시작점이 모든 노드에서 U (k 25~27, 관성 속도 0) 가 되고, 장벽 실현 가능 보폭이 몸 전체 스칼라라 2^-3~2^-9 로 잘림 -> 덜 풀린 걸음 BE 갱신이 속도를 지움. 착지 프레임 운동 에너지 우리 0.08 · 정답 3.20 J, 무게중심 z 프레임 8 우리 0.697 · 정답 0.432.
+### CM189.2 옛 장면 변형 (50 프레임, ms 는 같이 쓰던 GPU 라 참고)
+| 판 | chair 오차 | drums 오차 |
+|---|---|---|
+| 기준 | 14.98 % | 5.50 % |
+| --ptan 1 (일관 접선) | 15.59 | 5.66 |
+| newton 30 cg 20 | 12.80 | 5.03 |
+| + 보폭 자름 끔 (진단) | 11.49 | 발산 |
+| --bloc 1 (장벽 보폭 노드별) | 14.00 | - |
+| --bloc 2 (+ 시작점 관통 쪽 몫 보수적 k_q, 되돌림 없음) | 13.29 (단독 13.8 ms) | 4.68 (단독 16.4 ms) |
+| --bloc 3 (+ 뒤집힘 보폭 노드별) | 12 프레임 발산 | - |
+bloc 2 는 chair 무게중심을 프레임 9 까지 정답에 맞춤 (0.361 대 0.350) 뒤 hexff 전역 뒤집힘 보폭 2^-10~-19 로 다시 튐.
+### CM189.3 레고 L000 세팅 (조정자 11-15: L000 회전, substep 2.0008e-5, frame_dt 1/60, 80 프레임, 초기 속도 0, 바닥 = 최저점 - lift 0.00373)
+정답: 원본 PG 8339ed6 은 채우기에서 600 초 시간 초과 (프레임 0) -> i-physgaussian 사본 (재질 코드는 원본과 같음, 추가 재질·채우기 고침) R2 datasets/anchorflow/nshape/gt_pg/<장면>_lego. 우리 판 = BA_1 + substep_fix 감싸개 (exe/nshape_cmd.py, ssfix_wrap). 단독 ms 는 plastfix_b 에 다른 GPU 작업 없을 때.
+| 장면 | 판 | 오차 | 단독 ms | 다시 푼 프레임 |
+|---|---|---|---|---|
+| chair | 기준 | 3.14 % | 25.2 | 71 |
+| chair | --bloc 2 | 23 프레임 발산 | - | - |
+| chair | --ptan 1 | 67 프레임에서 끊김 | - | 154 |
+| chair | --newton 10 | 2.94 | 38.1 | 105 |
+| chair | --cg 4 | 3.29 | 10.3 | 0 |
+| bread | 기준 | 3.56 | 11.7 | 24 |
+| bread | --bloc 2 | 3.78 | 7.8 | 0 |
+| bread | --cg 4 | 3.63 | 9.0 | 0 |
+| drums | 기준 | 2.55 | (10.8 같이 쓰던 GPU) | - |
+| drums | --bloc 2 | 22 프레임부터 입자 흩어짐·메모리 부족 | - | - |
+| drums | --cg 4 | 2.38 | 14.9 | 11 |
+레고 세팅에서는 장벽 보폭 문제 없음 (보폭 최소 1, 되돌림 0) -- 다시 풀기는 ‖g‖²/F² > 0.5 판정 (걸음마다 PCG 2 회로 뉴턴 방향이 덜 풀림); 뉴턴 반복을 늘리면 오히려 늘고 PCG 4 회면 사라짐.
+렌더: 렌더러는 회전 전 모델 좌표로 그리므로 --up 을 회전 R 의 셋째 행 (세계 위) 으로 (elastic_new b317cec 와 같음); 처음 영상은 0,0,1 이라 중력이 화면 아래가 아니었음 (시뮬은 정상: 무게중심 z chair 정답 0.933->0.700 · 우리 0.933->0.715).
+영상 (정답 | 우리 K=1, 위에서 40 도, yuv420p faststart, 81 프레임 전체 디코드 확인): R2 v20261009/{chair_paste_fix_K1_cmp, drums_honey_fix_K1_cmp, bread_foam_drop_K1_cmp}.mp4 = ~/vidcache/plastfix/ 같은 이름; 우리 판 한 칸 *_ours_only.mp4.
