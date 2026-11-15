@@ -10,6 +10,7 @@
   --ssf_split D   프레임에서 무너진 걸음 (덜 풀림 ∧ 끝 잔차 ‖g‖²/F² > --ssf_bigT (기본 1 = 잔차가 힘 크기 자체보다 큼), 또는 비유한·메모리 초과) 이 있으면 입자 상태를 되돌려 걸음 수 K 를 두 배로 다시 풂 (최대 2^D 배; 실행기 --ksplit 을 K>1 기준으로 일반화)
   --ssf_det 1     (기본 1) 프레임 끝 입자 det F <= 0 도 무너진 프레임으로 (뒤집힌 상태는 풀이 실패의 확실한 표지)
   --ssf_bec 1     매 걸음 끝 갱신을 국소 후퇴 오일러 (--ue be --ue_loc 비트 와 같이; HHT 는 자유 노드만) -- 접촉 노드의 HHT 가속도 외삽이 큰 N 발산의 원인 (절 CM186)
+  --ssf_kmax 256  다시 풀 때 걸음 수 상한 (기본 256; 그래프 캡처 메모리)
   --ssf_tolp 1    PCG 허용치 tolP 에도 1/N 곱함 (선택)
   --ssf_tsum 1    (wolffix 11-15) 다시 푼 프레임의 시간 s.last_ms = 버린 시도들 + 마지막 시도 합 (실시간 판정용; 0 = 마지막 시도만, 옛 동작)
 사용: python exe/ssfix_wrap.py --ssf_tol 1 exe/stabhex_wrap.py ... exe/fem_an_rt_sim.py ... (바깥 첫 감싸개로)
@@ -83,10 +84,11 @@ def _install():
             oom = False
             try:
                 redo = ostep(s, t)
-            except torch.OutOfMemoryError:                                              # 발산한 입자가 노드 상자를 키워 용량 다시 할당이 메모리 초과 -> 무너진 프레임으로 취급
+            except torch.OutOfMemoryError:                                               # 발산한 입자가 노드 상자를 키워 용량 다시 할당이 메모리 초과 -> 무너진 프레임으로 취급
                 oom = True; redo = False
             dp = 0; tw = 0.0
-            while dp < D and (oom or collapsed(s, int(s.K))):
+            first = ST["frames"] == 1                                                  # 프레임 0 (정지에서 시작하는 첫 풀이) 은 비유한·메모리 초과가 아니면 다시 풀지 않음
+            while dp < D and (K0 << (dp + 1)) <= int(float(C["kmax"])) and (oom or (collapsed(s, int(s.K)) and not first) or (first and not bool(torch.isfinite(s.x).all()))):
                 tw += float(getattr(s, "last_ms", 0.0) or 0.0) if not oom else 0.0
                 dp += 1; ST["retry"] += 1
                 if oom:
@@ -101,7 +103,9 @@ def _install():
                 ART.set_K_an(s, K0 << dp, h)
                 try:
                     redo = ostep(s, t) or redo
-                except torch.OutOfMemoryError:
+                except (torch.OutOfMemoryError, RuntimeError) as ex_:                    # 그래프 캡처 메모리 부족 (CUDA error: out of memory) 도 같이
+                    if not isinstance(ex_, torch.OutOfMemoryError) and "out of memory" not in str(ex_):
+                        raise
                     oom = True
             if C["dumpfail"] and dp == D and (oom or collapsed(s, int(s.K))) and not ST.get("dumped"):   # 최대 깊이에서도 무너진 프레임의 시작 상태 (재현용, 진단)
                 ST["dumped"] = True
