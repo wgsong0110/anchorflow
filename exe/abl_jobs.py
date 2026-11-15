@@ -3,6 +3,7 @@
 import sys
 V = dict(ficus="def q1 rho0 rho1 q27 q64 c075 c15 c20 ak", bread="def q1 rho0 rho1 q27 q64 c075 c15 c20 ak",
          vasedeck="def q1 q27 q64 c075 c15 c20", plane="def q1 q27 q64 c075 c15 c20", pillow2sofa="def q1 rho0 rho1 q27 q64 c075 c15 c20", wolf="def q1 rho0 rho1 q27 q64 c075 c15 c20",
-         toast="def q1 rho0 rho1", sand_castle="def q1 rho0 rho1")
+         pillow2sofa_bc="defb q27 q64 c075 c15 c20", toast="def q1 rho0 rho1", sand_castle="def q1 rho0 rho1")
 sc = sys.argv[1].split(",")
-print(",".join(f"{s}:{v}:{r}" for r in (1, 2, 3) for s in sc for v in V[s].split()))
+NAME = lambda s: s.replace("_bc", "")
+print(",".join(f"{NAME(s)}:{v}:{r}" for r in (1, 2, 3) for s in sc for v in V[s].split()))

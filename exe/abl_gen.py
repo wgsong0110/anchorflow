@@ -6,6 +6,8 @@
 import json, os, re, sys
 scene, var, rep, out = sys.argv[1:5]
 rep = int(rep)
+if var == "defb":   # CM183: 기본 판 (def) 과 같은 명령 -- 다른 기계에서 B·C 표의 기준 짝을 따로 재려고 이름만 다름
+    var = "def"
 HERE = os.path.dirname(os.path.abspath(__file__))
 if var == "ak":
     # CM183 A1 (입자 적분점 판 = 절 AK, 실행기 exe/fem_ex_sim.py). 단일 차이 ablation 이 아님: 옛 명시적 symplectic + 고정 Kuhn 사면체 + P2G/G2P 는 유지, 셀 에너지만 입자 적분점 (Σ w_p ψ(A_T F_p)).

@@ -13,8 +13,8 @@ for f in glob.glob(f"{CACHE}/*/metrics.json"):
 def med(x):
     x = [v for v in x if v is not None]
     return S.median(x) if x else None
-def cell(sc, v):
-    rs = R.get((sc, v), [])
+def cell(sc, v, bc=False):
+    rs = R.get((sc, "defb" if (bc and v == "def" and (sc, "defb") in R) else v), [])
     if not rs:
         return None
     ok = [r for r in rs if r.get("diverged") is None and r["frames_done"] == r["frames"]]
@@ -33,13 +33,13 @@ def fe(d):
     if d["ok"] < d["n"]: s += "$^{%d/%d}$" % (d["ok"], d["n"])
     return s
 def fm(d): return "--" if d is None or d["ms"] is None else "%.1f" % d["ms"]
-def tex_table(title, scenes, vars_, names, extra_eig=True):
+def tex_table(title, scenes, vars_, names, extra_eig=True, bc=False):
     cols = "l" + "rr" * len(scenes)
     t = ["\\begin{center}\\small\\begin{tabular}{%s}\\toprule" % cols,
          "판 & " + " & ".join("\\multicolumn{2}{c}{%s}" % s.replace("_", "\\_") for s in scenes) + "\\\\",
          " & " + " & ".join("오차 \\% & ms" for _ in scenes) + "\\\\\\midrule"]
     for v in vars_:
-        t.append(names.get(v, v) + " & " + " & ".join("%s & %s" % (fe(cell(s, v)), fm(cell(s, v))) for s in scenes) + "\\\\")
+        t.append(names.get(v, v) + " & " + " & ".join("%s & %s" % (fe(cell(s, v, bc)), fm(cell(s, v, bc))) for s in scenes) + "\\\\")
     t.append("\\bottomrule\\end{tabular}\\end{center}")
     return "\n".join(t)
 def tex_detail(scenes, vars_, names):
@@ -54,12 +54,12 @@ def tex_detail(scenes, vars_, names):
     return "\n".join(t)
 N = {"def": "기본 (2$^3$ 점, HHT $\\rho_\\infty{=}0.8$)", "q1": "가우스 1$^3$ 점", "q27": "가우스 3$^3$ 점 (27)", "q64": "가우스 4$^3$ 점 (64)",
      "rho0": "$\\rho_\\infty{=}0$ (일반화-$\\alpha$)", "rho1": "$\\rho_\\infty{=}1$ (중점)", "c075": "칸 $\\times$0.75", "c15": "칸 $\\times$1.5", "c20": "칸 $\\times$2"}
-SA = ["ficus", "pillow2sofa", "bread", "toast", "sand_castle"]; SB = ["ficus", "bread", "vasedeck", "plane"]; SD = ["ficus", "vasedeck", "plane", "wolf", "bread", "pillow2sofa"]
+SA = ["ficus", "pillow2sofa", "bread", "toast", "sand_castle"]; SB = ["ficus", "bread", "wolf", "pillow2sofa"]; SD = ["ficus", "vasedeck", "plane", "wolf", "bread", "pillow2sofa"]
 out = []
 out.append("% 자동 생성 (exe/abl_table.py)")
 out.append("\\subsection*{A. 설계 선택 ablation}\n" + tex_table("A", SA, ["def", "q1", "rho0", "rho1"], N) + "\n" + tex_detail(SA, ["def", "q1", "rho0", "rho1"], N))
-out.append("\\subsection*{B. 가우스점 수}\n" + tex_table("B", SB, ["q1", "def", "q27", "q64"], N) + "\n" + tex_detail(SB, ["q1", "def", "q27", "q64"], N))
-out.append("\\subsection*{C. 칸 크기}\n" + tex_table("C", SB, ["c075", "def", "c15", "c20"], N) + "\n" + tex_detail(SB, ["c075", "def", "c15", "c20"], N))
+out.append("\\subsection*{B. 가우스점 수}\n" + tex_table("B", SB, ["q1", "def", "q27", "q64"], N, bc=True) + "\n" + tex_detail(SB, ["q1", "def", "q27", "q64"], N))
+out.append("\\subsection*{C. 칸 크기}\n" + tex_table("C", SB, ["c075", "def", "c15", "c20"], N, bc=True) + "\n" + tex_detail(SB, ["c075", "def", "c15", "c20"], N))
 out.append("\\subsection*{D. 재질 일반성}\n" + tex_table("D", SD, ["def"], N))
 open(f"{OUT}/ablation_1115_tables.tex", "w").write("\n\n".join(out))
 # 그림: B (가우스점 수 대 오차) · C (칸 배수 대 오차·시간)
