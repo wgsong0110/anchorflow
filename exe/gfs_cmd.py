@@ -19,7 +19,7 @@ if pre:      # 사용자 11-15: cut·particle_impulse 경계 감싸개를 사슬
     k = c.index("exe/nlwhy_wrap.py"); c = c[:k] + pre + " " + c[k:]
 _FIX = __import__("os").environ.get("GFS_FIX", "1") == "1"
 if _FIX:      # 절 CM184 (기본 켬): 바닥 접촉 뒤집힘·발산 수정. (2) 뉴턴 시작점 섞기·보폭에 가우스 점 뒤집힘 불가능 (exe/hexff_wrap.py --hff 1, lib/anchorflow/fem_hexff.py). GFS_FIX=0 이면 옛 판 그대로.
-    k = c.index("exe/nlwhy_wrap.py"); c = c[:k] + "exe/hexff_wrap.py --hff 1 " + c[k:]
+    k = c.index("exe/nlwhy_wrap.py"); c = c[:k] + "exe/hexff_wrap.py --hff 1 " + ("--hff_kfe " + __import__("os").environ["GFS_HKFE"] + " " if __import__("os").environ.get("GFS_HKFE") else "") + c[k:]
 if floor == "1":
     assert "--floor none" in c; c = c.replace("--floor none", "--floor vel --fl_bar --fl_bst 1 --y0eb --hgt --bar_cnt")
     if _FIX:  # 절 CM184 (1): 장벽 바닥 장면은 거의 빈 노드를 관성 예측 Ũ 에 고정하지 않음 (--mlow 0; wolf 장벽 바닥 판이 이미 쓰는 --mlow 1e-20 과 같은 규칙, 바닥 없는 bread 는 1e-3 그대로)

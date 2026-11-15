@@ -16,7 +16,7 @@
 import numpy as np
 import torch
 
-INFO = dict(tau=0.0, mods=[], n_kfe=0, n_chk=0, n_lmix=0, lmix=0)
+INFO = dict(tau=0.0, mods=[], n_kfe=0, n_chk=0, n_lmix=0, lmix=0, kfe=1)
 
 HF_SRC = r"""
 // ---- 절 CM184 hexff: 가우스 점 뒤집힘 불가능 보폭·시작점 확인 ----
@@ -148,6 +148,8 @@ def _wrap_k(k0):
             if (name == "rt_bar_kfe" and len(args) != 12) or (name == "yl_chk" and len(args) != 13):
                 INFO.setdefault("bad_args", set()).add((name, len(args)))
                 return r
+            if name == "rt_bar_kfe" and not INFO["kfe"]:
+                return r
             if name == "rt_bar_kfe":       # (IP, cb, BW, y0, y1, U, thinv, n0, n1, n2, pn, kk)
                 k0(s, "hf_kfe", n, (args[0], args[1], P(s.BG), P(s.Fq), P(s.Vq), args[3], args[4], args[5], args[6], np.float32(INFO["tau"]), args[11]), b)
                 INFO["n_kfe"] += 1
@@ -159,10 +161,10 @@ def _wrap_k(k0):
     return k
 
 
-def install(tau=0.0, lmix=0):
+def install(tau=0.0, lmix=0, kfe=1):
     import cupy as cp
     from . import fem_an_rt as ART
-    INFO["tau"] = float(tau); INFO["lmix"] = int(lmix)
+    INFO["tau"] = float(tau); INFO["lmix"] = int(lmix); INFO["kfe"] = int(kfe)
     base = cp.RawModule
     if not getattr(base, "_hff", False):
         def RawModule(*a, **kw):
@@ -188,4 +190,4 @@ def install(tau=0.0, lmix=0):
             s._hff = True
         init._hff = True
         C.__init__ = init
-    print(f"[절 CM184 hexff] 가우스 점 뒤집힘 불가능 보폭 (rt_bar_kfe 뒤 hf_kfe) + 시작점 섞기 확인 (yl_chk 뒤 hf_chk), τ {tau}, 거의 빈 노드 고정 자리 섞기 {lmix}", flush=True)
+    print(f"[절 CM184 hexff] 가우스 점 뒤집힘 불가능 보폭 (rt_bar_kfe 뒤 hf_kfe) + 시작점 섞기 확인 (yl_chk 뒤 hf_chk), τ {tau}, 보폭 조건 {kfe}, 거의 빈 노드 고정 자리 섞기 {lmix}", flush=True)

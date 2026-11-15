@@ -20,6 +20,12 @@ ROWS = [
  ("sand\\_castle", "sand_castle", 1, "gf_sand_castle_cmp.mp4", "cut+impulse"),
  ("젤리+총알", "jellybullet", 1, "gf_jellybullet_gt.mp4 (정답만; 비교 영상 없음)", "공식 프레임 일정 (0--19, 200--239, 381--), 메모리 부족으로 135/199"),
 ]
+import os
+SFX = os.environ.get("GFS_SFX", "")      # 절 CM184: 고친 판 결과 (실행 디렉토리 = 장면 이름 + SFX, 영상 gf_<장면><SFX>_cmp.mp4, K 1, 메모 = 바닥 대응만)
+TITLE = os.environ.get("GFS_TITLE", "GaussianFluent 공개 장면 (watermelon 제외): 우리 판 결과 (절 CM182)")
+if SFX:
+    _base = {"dragonfruit": "dragonfruit", "kiwi": "kiwi", "pineple": "pineple", "toast": "toast", "pumkin": "pumkin", "lollipop": "lollipop", "cake": "cake", "milk": "milk", "sand\\_castle": "sand_castle", "젤리+총알": "jellybullet"}
+    ROWS = [(nm, _base[nm] + SFX, 1, (f"gf_{_base[nm]}{SFX}_cmp.mp4" if nm != "젤리+총알" else f"gf_jellybullet{SFX}_cmp.mp4"), note.split(". K=")[0].split(", 메모리")[0]) for nm, d, K, vid, note in ROWS]
 rows = []
 for name, d, K, vid, note in ROWS:
     s, t, v = cat(f"{d}/summary.json"), cat(f"{d}/topo.json"), cat(f"{d}/visual.json")
@@ -33,7 +39,7 @@ for name, d, K, vid, note in ROWS:
     rows.append(r)
 def f(x, p=1): return "--" if (x is None or x != x) else f"{x:.{p}f}"
 tex = ["% lualatex gf_scenes_results.tex", "\\documentclass[10pt]{article}", "\\usepackage[margin=0.6in,landscape]{geometry}", "\\usepackage{fontspec}", "\\setmainfont{Noto Serif CJK KR}", "\\usepackage{booktabs,array}",
-       "\\title{GaussianFluent 공개 장면 (watermelon 제외): 우리 판 결과 (절 CM182)}", "\\date{2026-11-15 기준}", "\\begin{document}\\maketitle", "\\small",
+       "\\title{" + TITLE + "}", "\\date{2026-11-15 기준}", "\\begin{document}\\maketitle", "\\small",
        "\\begin{table}[h]\\centering\\setlength{\\tabcolsep}{3pt}", "\\begin{tabular}{lrrrrrrrrrrl}\\toprule",
        "장면 & K & 완주 & 오차 \\% & 정답 이탈 \\% & 우리 이탈 \\% (마지막) & 조각 정답/우리 & PSNR & SSIM & LPIPS & ms/프레임 & 비고 \\\\\\midrule"]
 md = ["| 장면 | K | 완주 프레임 | 평균 오차 % | 정답 이웃 이탈 최대 % | 우리 이탈 최대 % (마지막) | 조각 정답/우리 최대 | PSNR | SSIM | LPIPS | ms/프레임 (비단독) | 영상 |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
