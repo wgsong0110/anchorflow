@@ -53,7 +53,7 @@ def old_cmd(m, n, out, dump=""):
         c2 = (f"cd {WT} && {PY} -u exe/stab_omni.py --repo {W}/OmniPhysGS --h5 {c}/init/sim_0000000000.h5 --config {c}/config.json --substeps {n} --out {out}.npz")
         return c2 + (f" --dump {dump}" if dump else "")
     if m in ("pg", "ipg"):
-        c2 = (f"cd {PG} && {PY} -u {WT}/exe/stab_mpm.py --method {m} --h5 {c}/init/sim_0000000000.h5 --config {c}/config.json "
+        c2 = (f"cd {PG} && AF_IPG_FUSED=1 OMP_NUM_THREADS=2 {PY} -u {WT}/exe/stab_mpm.py --method {m} --h5 {c}/init/sim_0000000000.h5 --config {c}/config.json "
               f"--substeps {n} --out {out}.npz --ckpt_every 0")
         return c2 + (f" --dump {dump}" if dump else "")
     c2 = (f"cd {WT} && {PY} -u exe/gf_mpm.py --config {c}/config.json --h5 {c}/init/sim_0000000000.h5 "
