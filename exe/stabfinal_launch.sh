@@ -10,7 +10,7 @@ SK=$(rclone config dump | python3 -c "import sys,json;print(json.load(sys.stdin)
 EP=$(rclone config dump | python3 -c "import sys,json;print(json.load(sys.stdin)['r2']['endpoint'])")
 if [ "$MODE" = new ]; then
 ONS="bash -c '(command -v unzip >/dev/null && command -v tmux >/dev/null || (apt-get update -qq && apt-get install -y -qq tmux curl git unzip) >/dev/null 2>&1); command -v rclone >/dev/null || (curl -sL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rc.zip && unzip -q -o /tmp/rc.zip -d /tmp && cp /tmp/rclone-*/rclone /usr/local/bin/); mkdir -p /root/.config/rclone; printf \"[r2]\\ntype = s3\\nprovider = Cloudflare\\naccess_key_id = %s\\nsecret_access_key = %s\\nendpoint = %s\\nacl = private\\nno_check_bucket = true\\n\" \"\$R2_ACCESS_KEY\" \"\$R2_SECRET\" \"\$R2_ENDPOINT\" > /root/.config/rclone/rclone.conf; rclone copyto r2:storage/result/anchorflow/lbours/stabfinal/code/boot_$C.sh /root/boot_sf.sh; env | grep -E \"^(R2_|SF_|CONTAINER_)\" | sed \"s/^/export /\" > /root/sfenv.sh; tmux has-session -t sf 2>/dev/null || tmux new-session -d -s sf \"source /root/sfenv.sh; bash /root/boot_sf.sh > /root/boot_sf.out 2>&1\"'"
-vastai create instance $ID --image pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel --disk 200 --ssh --direct --label "final_stab_$TAG" \
+vastai create instance $ID --image pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel --disk 80 --ssh --direct --label "final_stab_$TAG" \
   --env "-e R2_ACCESS_KEY=$AK -e R2_SECRET=$SK -e R2_ENDPOINT=$EP -e SF_COMMIT=$C -e SF_JOBS=$JOBS -e SF_TAG=$TAG -e SF_PAR=$PAR" --onstart-cmd "$ONS" --raw
 else
   vastai label instance $ID "final_stab_$TAG" >/dev/null

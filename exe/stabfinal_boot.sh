@@ -1,6 +1,6 @@
 #!/bin/bash
 # [stabfinal] 안정성 실험 마무리 (레고·pillow2sofa·ship_plastic_lego·mic_metal_lego) vast 부팅. stab1115_boot.sh 를 이어 받음.
-#   env: SF_COMMIT (코드 tar R2 lbours/stabfinal/code/sf_<커밋>.tar), SF_JOBS = "씬:단계[,단계]+씬:단계" 직렬 (단계 main | fin = 다른 인스턴스 계획 기다림 -> 장면 결과 전부 받기 -> vis,speed -> 분석 -> 비교 영상),
+#   env: SF_COMMIT (코드 tar R2 lbours/stabfinal/code/sf_<커밋>.tar), SF_JOBS = "씬:단계[,단계]+씬:단계" 직렬 (단계 main | fin = 다른 인스턴스 계획 기다림 -> 장면 결과 전부 받기 -> vis -> 분석 -> 비교 영상 | speed = 우리 판 계획 기다림 -> 단독 시간, A6000 에서만),
 #        SF_TAG = 인스턴스 이름 (표식 marks/<TAG>, 추가 인자 code/extra_<TAG>.txt, 받을 패턴 code/fetch_<TAG>.txt), SF_PAR (기본 4), R2_* (없으면 기존 rclone 설정)
 #   끝나면 R2 대조 차이 0 이면 스스로 destroy (CONTAINER_ID·CONTAINER_API_KEY 가 있을 때).
 set -u
@@ -98,11 +98,17 @@ for job in $(echo "$JOBS" | tr ';' ' '); do
     done
     rclone copy $OUT $RX/res -q --transfers 8 "${EXC[@]}"
     rclone copy $RX/res/$s $OUT/$s -q --transfers 16 --exclude "drv*.log" --exclude "DRV_DONE_*" --exclude "config.json" --exclude "init/**" --exclude "gt/**"
-    EXF=$(echo "$EXTRA" | sed -E "s/--methods [^ ]+//"); eval python -u exe/stab1115_drv.py --scene $s --par $PAR --stages vis,speed $EXF --methods pg,ipg,omni,ours >> /root/sf/drv_$s.log 2>&1
+    EXF=$(echo "$EXTRA" | sed -E "s/--methods [^ ]+//"); eval python -u exe/stab1115_drv.py --scene $s --par $PAR --stages vis $EXF --methods pg,ipg,omni,ours >> /root/sf/drv_$s.log 2>&1
     python -u exe/stab1115_an.py --scene $s --out $OUT/$s/an.json --hextag _f5 > /root/sf/an_$s.log 2>&1
     say "[분석] $s $(tail -n 6 /root/sf/an_$s.log | tr '\n' ' ' | cut -c1-400)"
     python -u exe/stabfinal_vid.py --root $OUT --scene $s --font $W/font.otf --out $OUT/$s/vis/${s}_stab_cmp.mp4 > /root/sf/vid_$s.log 2>&1
     say "[영상] $s $(tail -n 2 /root/sf/vid_$s.log | tr '\n' ' ' | cut -c1-300)"
+  elif [ "$stg" = speed ]; then
+    # 단독 시간 (A6000 인스턴스에서만): 우리 판 계획 (확정 N·사다리 발산) 이 R2 에 올라올 때까지 기다린 뒤, 이 카드에 다른 계산 프로세스가 없을 때 하나씩
+    for w in $(seq 1 400); do [ -n "$(rclone lsf $RX/res/$s/plan_ours_f5.json 2>/dev/null)" ] && break; [ $((w % 6)) = 1 ] && say "[기다림] $s plan_ours_f5.json"; sleep 300; done
+    rclone copy $RX/res/$s $OUT/$s -q --include "plan_*.json" --include "speed/**"
+    EXF=$(echo "$EXTRA" | sed -E "s/--methods [^ ]+//"); eval python -u exe/stab1115_drv.py --scene $s --par 1 --stages speed $EXF --methods ours >> /root/sf/drv_$s.log 2>&1
+    say "[단독 시간] $s $(grep -h '프레임당' $OUT/$s/speed/t_N*_f5/log.txt 2>/dev/null | grep -o '프레임당 [0-9.]* ms' | tr '\n' ' ')"
   else
     eval python -u exe/stab1115_drv.py --scene $s --par $PAR --stages $stg $EXTRA >> /root/sf/drv_$s.log 2>&1
   fi
