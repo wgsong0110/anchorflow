@@ -33,5 +33,7 @@ if _km and _km[-1] > 1:      # 사용자 11-15: 프레임당 걸음 수 K > 1. -
 _drop = __import__("os").environ.get("GFS_DROP", "").split()      # 절 CM184 진단: 기본 명령에서 플래그 빼기 (값 있으면 값까지); 기본 빈 값 = 그대로
 for _f in _drop:
     c = re.sub(r"(^| )" + re.escape(_f) + r"( (?!--)\S+)?(?= |$)", " ", c)
+_ca = __import__("os").environ.get("GFS_CAUTO", "40000")      # 절 CM185 (공통 규칙): 점유 칸 수 상한 40000 (통과 장면 최대 bread 34969 보다 큼 -> PG 장면 불변); 0 = 끔
+if float(_ca) > 0: extra = ["--cell_auto", _ca] + list(extra)
 c = re.sub(r"--out \S+$", "", c).strip() + " --dump --dump_F --dump_part " + " ".join(extra) + f" --out {out}"
 print(c)

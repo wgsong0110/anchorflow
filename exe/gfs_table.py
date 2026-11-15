@@ -33,6 +33,10 @@ for name, d, K, vid, note in ROWS:
         rows.append(dict(name=name, ok=False, note=note, vid=vid)); continue
     fd = s.get("frames_done"); nf = s["args"]["frames"]; dv = s.get("diverged")
     r = dict(name=name, ok=True, K=s["args"].get("K"), done=f"{fd}/{nf}", div=dv, err=100 * s["err_mean_done"] if s.get("err_mean_done") is not None else None, ms=s.get("ms_mean"), note=note, vid=vid)
+    TS = os.environ.get("GFS_TSFX", "")      # 절 CM184: 프레임 시간을 따로 잰 단독 측정 (실행 디렉토리 = 장면 + TSFX) 값으로
+    if TS:
+        st = cat(f"{d[:len(d) - len(SFX)] if SFX else d}{TS}/summary.json")
+        r["ms"] = st.get("ms_mean") if st else None
     if t:
         r.update(gesc=100 * t["gt"]["esc_max"], gp=t["gt"]["pieces_last"], oesc=100 * t["ours"]["esc_max"] if t["ours"]["esc_max"] is not None else None, op=t["ours"]["pieces_max"], olast=100 * t["ours"]["esc_last"] if t["ours"]["esc_last"] is not None else None)
     if v: r.update(psnr=v["psnr"], ssim=v["ssim"], lpips=v["lpips"])
@@ -41,8 +45,8 @@ def f(x, p=1): return "--" if (x is None or x != x) else f"{x:.{p}f}"
 tex = ["% lualatex gf_scenes_results.tex", "\\documentclass[10pt]{article}", "\\usepackage[margin=0.6in,landscape]{geometry}", "\\usepackage{fontspec}", "\\setmainfont{Noto Serif CJK KR}", "\\usepackage{booktabs,array}",
        "\\title{" + TITLE + "}", "\\date{2026-11-15 기준}", "\\begin{document}\\maketitle", "\\small",
        "\\begin{table}[h]\\centering\\setlength{\\tabcolsep}{3pt}", "\\begin{tabular}{lrrrrrrrrrrl}\\toprule",
-       "장면 & K & 완주 & 오차 \\% & 정답 이탈 \\% & 우리 이탈 \\% (마지막) & 조각 정답/우리 & PSNR & SSIM & LPIPS & ms/프레임 & 비고 \\\\\\midrule"]
-md = ["| 장면 | K | 완주 프레임 | 평균 오차 % | 정답 이웃 이탈 최대 % | 우리 이탈 최대 % (마지막) | 조각 정답/우리 최대 | PSNR | SSIM | LPIPS | ms/프레임 (비단독) | 영상 |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+       "장면 & K & 완주 & 오차 \\% & 정답 이탈 \\% & 우리 이탈 \\% (마지막) & 조각 정답/우리 & PSNR & SSIM & LPIPS & " + ("ms/프레임 (A6000 단독)" if os.environ.get("GFS_TSFX") else "ms/프레임") + " & 비고 \\\\\\midrule"]
+md = ["| 장면 | K | 완주 프레임 | 평균 오차 % | 정답 이웃 이탈 최대 % | 우리 이탈 최대 % (마지막) | 조각 정답/우리 최대 | PSNR | SSIM | LPIPS | " + ("ms/프레임 (A6000 단독, 진단 일부 끔)" if os.environ.get("GFS_TSFX") else "ms/프레임 (비단독)") + " | 영상 |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
 DIV = [r for r in rows if r["ok"] and r["div"]]; NONE = [r for r in rows if not r["ok"]]
 rows = [r for r in rows if r["ok"] and not r["div"]]
 for r in rows:

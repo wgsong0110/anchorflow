@@ -114,7 +114,14 @@ if [ "$STG" = jb ]; then      # 젤리 + 총알 (GF 젤리 러너 gs_simulation_
 fi
 if [ "$STG" = ours ]; then      # 우리 판 + 지표 + 영상 (exe/gfs_ours.sh). XS_SCENES 항목 = 이름:모델:설정:프레임수:바닥(plane|cfg)
   export W AF DS R RX LOG TAG; export GF=$W/GaussianFluent; export -f say; mkdir -p $W/ag
+  [ -n "${XS_DROP:-}" ] && export GFS_DROP="${XS_DROP//+/ }"; [ -n "${XS_CAUTO:-}" ] && export GFS_CAUTO="$XS_CAUTO"      # 절 CM185: 단독 시간 판 = 진단 플래그 뺌 (절 CM184 cm184x 와 같은 목록), 칸 상한
+  say "[설정] GFS_DROP='${GFS_DROP:-}' GFS_CAUTO=${GFS_CAUTO:-기본 40000}"
   rclone copyto $R/lbours/fem_cm/code/NotoSansCJKkr-Regular.otf $W/font.otf -q
+  if [[ ",${XS_SCENES:-}," == *",watermelon:"* ]]; then      # 절 CM185: 수박 = 정답 R2 _vastmirror/wm2/gf (GF 공식 러너, 절 CM9 이후 같은 정답), 모델 _vastmirror/gfmodel/model/watermelon -> gfs 배치로
+    MI=$R/_vastmirror; mkdir -p $W/gt/watermelon $W/hf/model $W/hf/config
+    rclone copy $MI/wm2/gf/simulation_ply $W/gt/watermelon/simulation_ply --transfers 16 -q; rclone copy $MI/gfmodel/model/watermelon $W/hf/model/watermelon --transfers 16 -q
+    rclone copyto $MI/wm2/gf/config.json $W/hf/config/watermelon_wm2.json -q; say "  [수박 준비] 정답 h5 $(ls $W/gt/watermelon/simulation_ply | grep -c h5) 모델 $(ls $W/hf/model/watermelon | tr '\n' ' ')"
+  fi
   for e in $(echo ${XS_SCENES:-} | tr ',' ' '); do IFS=: read n m c nf fl <<< "$e"; say "[우리 판] $n"; if [ "$n" = jellybullet ]; then bash $AF/exe/gfs_jb_ours.sh "$fl"; elif [[ "$fl" == *SWEEP* ]]; then      # 사용자 11-15: K 를 2, 4, 8 순서로 올려 처음 완주하는 값 (한 인스턴스에서 차례로; 발산하면 사후 처리 없이 다음 K)
     fl0=${fl//SWEEP+/}; fl0=${fl0//SWEEP/}
     for K in 2 4 8; do last=""; [ $K = 8 ] && last=1

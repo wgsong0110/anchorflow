@@ -21,6 +21,7 @@ ap.add_argument("--data", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--frames", type=int, default=80)
 ap.add_argument("--cell", type=float, default=1.0)
+ap.add_argument("--cell_auto", type=float, default=0.0, help="절 CM185 (공통 규칙, 기본 0 = 끔): 프레임 0 입자가 점유한 칸 수 (칸 = --cell 배) 가 N 을 넘으면 칸 배수를 (점유/N)^(1/3) 배로 키움 -- 실시간 해상도 상한. N 아래 장면은 그대로")
 ap.add_argument("--floor", choices=["vel", "none"], default="vel")
 ap.add_argument("--cfg_bc", action="store_true")
 ap.add_argument("--region_density", action="store_true")
@@ -34,6 +35,7 @@ ap.add_argument("--no_vfl_out", action="store_true")
 ap.add_argument("--fl_bar", action="store_true", help="장벽 바닥 (절 AN.19, 정의 변경): 법선 = 팔분 표본점 IPC 거리 장벽 (d̂ = ½ dx_정답, κ = (λ+2μ) V_q / d̂²), 고착 = 정답 sticky 가중 (띠 제한 없음) 을 접선에만; --ls_n 선탐색 필요")
 ap.add_argument("--fl_bst", type=int, default=0, choices=[0, 1, 2], help="절 AN.21 (--fl_bar 위, 정의 변경): 띠 고착 -- 장벽 띠 안 (d < d̂) 표본점의 고착 몫 = 1 (정답 sticky 노드 v = 0 처럼 완전 고착, 접선); 띠 밖 1 = 0, 2 = 정답 sticky 가중 그대로")
 ap.add_argument("--fl_stk", action="store_true", help="절 CM12 (--fl_bar 위, 사용자 승인 정의 변경): 장벽 바닥 (B) 에 (A) 가우스 점 고착 (CM8 a 판 정의 그대로: 가우스 점 걸음 끝 위치 s < 0 의 정답 sticky 가중 -> 노드 k_A = (1 − r̄)^κ, 바깥 법선 이탈 아니면 세 성분, 고착 노드 가속도 0) 을 함께; 장벽 띠 고착 (접선) 과 곱")
+ap.add_argument("--fl_bnd", type=int, default=0, choices=[0, 1], help="절 CM159 (--fl_bar --fl_bst 1 위, 정의 변경, 기본 0): 띠 고착 몫을 정답 sticky 정의대로 평면 아래 격자 노드 ((x_n − p)·n < 0, 격자 위치 A L) 에만 모음 -- 평면 위 노드는 고착 안 받음")
 ap.add_argument("--bar_cross", action="store_true", help="절 CM10 (--fl_bar 위, 사용자 승인 정의 변경): 장벽을 바닥 평면을 관통하는 B-스플라인 칸 (칸 범위 = 코드의 칸 정의, 걸음 시작 위치에서 판정) 에 속한 표본점에만")
 ap.add_argument("--bar_cnt", action="store_true", help="절 CM10 진단 (결과 불변, --fl_bar 위): 프레임마다 장벽이 걸린 표본점 수·전체 대비·칸 수, 관통 칸 수를 fem.jsonl bc 에")
 ap.add_argument("--bar_node", default="", choices=["", "add", "only"], help="절 CM14 (--fl_bar 위, 사용자 승인 11-05 정의 변경): B-스플라인 노드 위치의 바닥 위 높이 d_n 에 같은 IPC 장벽 (κ_n = (λ+2μ) V_n / d̂_n², V_n = Σ_q w V_q; 노드 대각). add = 표본점 장벽에 더함, only = 노드 장벽만 (띠 고착은 표본점 그대로)")
@@ -166,6 +168,19 @@ L = min(a.frames, int(d["x"].shape[0]) - 1)
 DXG = float(cfg.get("grid_lim", 2.0)) / int(cfg.get("n_grid", 100))
 NODE_H = a.cell * DXG * math.sqrt(2.0)
 lat = SX.lattice(NODE_H, SX.HZ_CUBE * NODE_H, device=dev, dtype=torch.float64)
+CAUTO = None
+if a.cell_auto > 0:                                                                     # 절 CM185: 점유 칸 수 상한 (칸 정의 = 아래 _ncross 의 점유 칸과 같음)
+    _x0c = d["x"][0].to(dev).double()
+    _occ0 = int(torch.unique(torch.floor(_x0c @ lat.Ai.T - 0.5), dim=0).shape[0])
+    CAUTO = dict(N=a.cell_auto, occ0=_occ0, cell0=a.cell)
+    if _occ0 > a.cell_auto:
+        a.cell = a.cell * (_occ0 / a.cell_auto) ** (1.0 / 3.0)
+        NODE_H = a.cell * DXG * math.sqrt(2.0)
+        lat = SX.lattice(NODE_H, SX.HZ_CUBE * NODE_H, device=dev, dtype=torch.float64)
+        CAUTO["occ1"] = int(torch.unique(torch.floor(_x0c @ lat.Ai.T - 0.5), dim=0).shape[0])
+    CAUTO["cell"] = a.cell; del _x0c
+    print(f"[절 CM185 칸 상한] {json.dumps(CAUTO)}", flush=True)
+    os.makedirs(a.out, exist_ok=True); json.dump(CAUTO, open(os.path.join(a.out, "cauto.json"), "w"))
 dt = h / a.K
 VD_S = float(cfg.get("grid_v_damping_scale", 1.0))
 DAMP = (VD_S ** (dt / float(cfg["substep_dt"]))) if (a.pg_vdamp and VD_S < 1.0) else 1.0
@@ -174,8 +189,9 @@ if a.floor == "vel":
     pl = [b for b in cfg["boundary_conditions"] if b.get("type") == "surface_collider"][0]
     NR = np.array(pl["normal"], dtype=np.float64); NR = NR / np.linalg.norm(NR)
     PT = [float(q) for q in pl["point"]]
-    FL = dict(PT=PT, NR=NR.tolist(), PN=float(np.dot(PT, NR)), DXG=DXG, KEX=dt / float(cfg["substep_dt"]), vout=not a.no_vfl_out, pt=a.fl_pt, bar=a.fl_bar, bst=a.fl_bst, bfull=a.bar_full, bcross=a.bar_cross, bcnt=a.bar_cnt, stk=a.fl_stk, DH=0.5 * DXG, KS=(lam + 2.0 * mu) / (0.5 * DXG) ** 2)
+    FL = dict(PT=PT, NR=NR.tolist(), PN=float(np.dot(PT, NR)), DXG=DXG, KEX=dt / float(cfg["substep_dt"]), vout=not a.no_vfl_out, pt=a.fl_pt, bar=a.fl_bar, bst=a.fl_bst, bfull=a.bar_full, bcross=a.bar_cross, bcnt=a.bar_cnt, stk=a.fl_stk, bnd=a.fl_bnd, DH=0.5 * DXG, KS=(lam + 2.0 * mu) / (0.5 * DXG) ** 2)
     assert a.fl_bar or not a.fl_stk, "--fl_stk 는 --fl_bar 위 (절 CM12)"
+    assert a.fl_bar or not a.fl_bnd, "--fl_bnd 는 --fl_bar 위 (절 CM159)"
     if a.fl_nost:
         FL["KEX"] = 0.0
     if a.fl_dhm != 1.0:
