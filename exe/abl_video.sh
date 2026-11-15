@@ -6,7 +6,7 @@ S=$1; G=$2; PY=/home/dkta/.conda/envs/af/bin/python; W=/home/dkta/work; AG=/dev/
 RA=r2:storage/result/anchorflow/lbours/ablation; O=/dev/shm/dkta/ablvid_$S; mkdir -p $O /dev/shm/dkta/tmp; export TMPDIR=/dev/shm/dkta/tmp
 case $S in ficus) GT=$W/lbours/ficus_v0/gt; CFG=$GT/config.json;; bread) GT=$AG/gt_bread; CFG=$GT/config.json;; esac
 for v in def q1 rho0 rho1; do
-  rclone copyto $RA/runs/${S}_${v}_r1/pred.pt $O/$v.pt -q || { echo "$v pred 없음"; continue; }
+  SRC=${S}_${v}_r1; [ $v = def ] && SRC=${S}_defb_r1; rclone copyto $RA/runs/$SRC/pred.pt $O/$v.pt -q || { echo "$v pred 없음"; continue; }
   $PY -u exe/lb_roll_to_h5.py --dump $O/$v.pt --traj $GT --out $O/h5_$v > $O/h5_$v.log 2>&1
   CUDA_VISIBLE_DEVICES=$G $PY -u exe/lb_render.py --sim $O/h5_$v --config $CFG --shape $S --out $O/$v.mp4 --frame_label 0 --caption " " < /dev/null > $O/r_$v.log 2>&1
   echo "$v $(stat -c %s $O/$v.mp4 2>&1)"; rm -rf $O/h5_$v $O/$v.pt
