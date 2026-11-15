@@ -54,6 +54,7 @@ PYEOF
     say "정답 렌더 $s $(tail -1 $O/gt_render_$s.log | cut -c1-120) $(ls $O/gt_frames_$s | wc -l) 장"; fi; }
 one() { local s=$1 v=$2 g=$3 D=$O/$1/$2 n=hex_$1 IN=$O/in_$1 c R=$R4/$1/$2
   mkdir -p $D/metrics
+  [ -n "$(ls $D/*.npz* 2>/dev/null)" ] || rclone copy $R $D -q --exclude "*.frames/**" --exclude "render/**"      # 다른 인스턴스에서 이어 돌리기: R2 의 끝난 결과·체크포인트를 먼저 받음
   ( while :; do sleep 600; rclone copy $D $R -q --exclude "*.frames/**" --exclude "render/*_frames/**"; done ) & local SY=$!
   case $s in
   wolf|bread)
