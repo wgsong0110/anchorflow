@@ -49,5 +49,5 @@ one() { local m=$1 g=$2 n=${1}_$S c
     CUDA_VISIBLE_DEVICES=$g $PY -u exe/gfs_post.py vid --gt_png $O/gt_frames --our_png $D/render/${n}_frames --out_json $D/metrics/${n}_visual.json --out_mp4 $D/render/${n}_cmp.mp4 --fps 24 < /dev/null > $D/metrics/${n}_visual.log 2>&1
     say "시각 $n rc=$? $(tail -1 $D/metrics/${n}_visual.log | cut -c1-160)"; rm -rf $D/render/${n}_frames.tmp; }
   rclone copy $D $R/main -q; }
-P=""; i=0; for m in $JOBS; do one $m $((i % NG)) & P="$P $!"; i=$((i + 1)); sleep 5; done
+GM=(${GPUMAP:-}); P=""; i=0; for m in $JOBS; do one $m ${GM[$i]:-$((i % NG))} & P="$P $!"; i=$((i + 1)); sleep 5; done
 wait $P; kill $SYNC 2>/dev/null; rclone copy $D $R/main -q; say "끝"

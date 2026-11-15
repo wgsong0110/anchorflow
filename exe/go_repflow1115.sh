@@ -87,7 +87,7 @@ main)
       --target_video $IN/${S}_target.mp4 --out $D/metrics/$n.json < /dev/null > $D/metrics/$n.log 2>&1; say "지표 $n rc=$? $(grep -a '측정\|rror' $D/metrics/$n.log | tail -2 | tr '\n' ' ')"; }
     rclone copy $D $R/main/$S -q; }
   P=""; i=0
-  for m in ${JOBS:-hex vrgsx gsverse simp pt1 pt10 pt100 pt1000}; do one $m $((i % NG)) & P="$P $!"; i=$((i + 1)); sleep 5; done
+  GM=(${GPUMAP:-}); for m in ${JOBS:-hex vrgsx gsverse pt1 pt10 pt100 pt1000}; do one $m ${GM[$i]:-$((i % NG))} & P="$P $!"; i=$((i + 1)); sleep 5; done   # GPUMAP: 방법마다 카드 번호 (큰 방법 하나가 카드를 혼자 쓰게)
   wait $P; kill $SYNC 2>/dev/null
   rclone copy $D $R/main/$S -q; say "main 끝"
   ;;
