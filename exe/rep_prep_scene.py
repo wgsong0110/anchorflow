@@ -15,7 +15,7 @@ ap.add_argument("--name", required=True)
 ap.add_argument("--cfg", required=True)
 ap.add_argument("--model", required=True)
 ap.add_argument("--out_dir", required=True)
-ap.add_argument("--max_g", type=int, default=200000, help="가우시안 상한 (불투명도 큰 순, rep_aux 와 같음)")
+ap.add_argument("--max_g", type=int, default=0, help="가우시안 상한 (0 = 상한 없음: 공식 불투명도 필터를 통과한 점 전부 -- 부분표본 금지, 사용자 11-15)")
 a = ap.parse_args()
 sys.path.append(a.pg)
 sys.path.append(os.path.join(a.pg, "gaussian-splatting"))
@@ -41,7 +41,7 @@ tpos, so, omp = transform2origin(rot, pp["scale"])
 tpos = shift2center111(tpos)                                      # 시뮬 좌표
 kidx = torch.nonzero(keep).squeeze(1).cpu().numpy()
 T = tpos.cpu().numpy().astype(np.float64)
-if len(T) > a.max_g:                                              # 불투명도 큰 순
+if a.max_g > 0 and len(T) > a.max_g:                                              # 불투명도 큰 순
     o = np.argsort(-op[keep].cpu().numpy())[:a.max_g]
     o.sort()
     T, kidx = T[o], kidx[o]
