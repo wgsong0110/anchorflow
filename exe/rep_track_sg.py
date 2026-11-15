@@ -120,6 +120,8 @@ ap.add_argument("--save_traj", action="store_true",
                 help="모든 프레임의 가우시안 위치(float16)를 저장 (물리 지표·EMD 재측정용)")
 ap.add_argument("--hex_pbar", action="store_true",
                 help="hex (rep4 11-15): 계량에 입자 (가우시안) 위치 det 로그 장벽 log det F_p (가중 1/√N) 을 가우스 점 장벽과 함께 넣는다")
+ap.add_argument("--hex_lmax_gauss", action="store_true",
+                help="hex --hex_pbar: ε·λmax 의 λmax 를 가우스 점 장벽 계량만으로 잰다 (기존 판과 같은 감쇠 크기)")
 ap.add_argument("--feas", action="store_true",
                 help="riem (rep4 11-15): Armijo 되돌림이 로그 장벽의 정의역을 지킨다 -- 시도 보폭에서 입자 증분 det F_p > 0 "
                      "(그리고 hex 는 가우스 점 det > 0) 일 때만 받아들인다 (아니면 반으로)")
@@ -1291,6 +1293,10 @@ for t in range(T_START, T + 1):
             return lambda u: vjp_fn(jvp(rf, (th,), (u,))[1])[0]
         with torch.no_grad():                                 # 프레임마다 λmax (거듭제곱법 20 번)
             Hv = GN(theta.detach())
+            if a.method == "hex" and a.hex_pbar and a.hex_lmax_gauss:
+                # ε 의 기준 λmax 는 기존 판과 같은 가우스 점 장벽 계량에서 (입자 장벽을 더해도 감쇠 ε·λmax 의 크기는 그대로)
+                _th0 = theta.detach()
+                Hv = lambda v_: _gn_prod(res_hex_lb, _th0, v_, rep.cn, rep.BGn)
             u = torch.randn_like(theta)
             for _ in range(20):
                 u = Hv(u); lmax = float(u.norm()); u = u / max(lmax, 1e-30)
