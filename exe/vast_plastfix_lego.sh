@@ -78,7 +78,8 @@ run1() { local sfx=$1 drop=$2 nodump=$3; local D=$W/ours/${SC}_K1${sfx}; mkdir -
     [ $(grep -o "python -u exe/" <<< "$CMD" | wc -l) = 1 ] || { say "[명령] python -u exe/ 가 하나가 아님"; return 9; }
     CMD=$(sed -e 's#python -u exe/#python -u exe/ssfix_wrap.py --ssf_bec 1 --ssf_split 3 --ssf_bigT 0.5 --ssf_tsum 1 exe/#' -e 's/--ue_loc 50 /--ue_loc 51 /' -e 's/--wrx_col 1 /--wrx_col 0 /' <<< "$CMD")
   fi
-  [ -n "$4" ] && CMD=$(sed "s#python -u exe/#python -u $4 exe/#" <<< "$CMD")      # 감싸개 맨 앞 (예: exe/bloc_wrap.py --bloc 2)
+  [ -n "$4" ] && CMD=$(sed "s#python -u exe/#python -u $4 exe/#" <<< "$CMD")
+  [ -n "${PF_EXTRA:-}" ] && CMD=$(sed -E "s# --out (\S+)\$# $PF_EXTRA --out \1#" <<< "$CMD")      # 실행기 인자 덧붙임 (예: --cg 4; argparse 는 뒤 값)      # 감싸개 맨 앞 (예: exe/bloc_wrap.py --bloc 2)
   echo "$CMD" > $D/cmd.txt; local t0=$(date +%s)
   CUDA_VISIBLE_DEVICES=0 timeout 7200 bash -c "$CMD" < /dev/null > $D/run.log 2>&1; local rc=$?
   say "  [$SC K=1$sfx] rc=$rc $(( $(date +%s) - t0 )) 초 $(grep -ah '롤아웃\]' $D/run.log | tail -1 | cut -c1-200) $(grep -a 'rror' $D/run.log | tail -1 | cut -c1-160)"
@@ -96,8 +97,18 @@ say "  [$SC] 오차 $ERR % 단독 $MS ms 발산 $(python -c "import json;print(j
 # ---- (5) 렌더
 CB=${NS_CAMBACK:-1.6}; EL=${NS_ELEV:-40}; B2=${NS_BACK2:-1.1}
 python -u exe/lb_roll_to_h5.py --dump $D/pred.pt --traj $AG/gt_$SC --out $D/h5_ours > $D/h5.log 2>&1
-CUDA_VISIBLE_DEVICES=0 python -u exe/lb_render.py --sim $AG/gt_$SC --config $CFG --shape $SC0 --out $D/gt.mp4 --cam_back $CB --elev $EL --back2 $B2 --png $D/gt_png < /dev/null > $D/r_gt.log 2>&1
-CUDA_VISIBLE_DEVICES=0 python -u exe/lb_render.py --sim $D/h5_ours --config $CFG --shape $SC0 --out $D/ours.mp4 --cam_back $CB --elev $EL --back2 $B2 --png $D/ours_png < /dev/null > $D/r_ours.log 2>&1
+UP=$(python -c "
+import json,math,numpy as np
+c=json.load(open('$CFG')); R=np.eye(3)
+for dg,ax in zip(c['rotation_degree'],c['rotation_axis']):
+    cs,sn=math.cos(dg/180*3.1415926),math.sin(dg/180*3.1415926)
+    R=np.array({0:[[1,0,0],[0,cs,-sn],[0,sn,cs]],1:[[cs,0,sn],[0,1,0],[-sn,0,cs]],2:[[cs,-sn,0],[sn,cs,0],[0,0,1]]}[ax])@R
+print(','.join('%.6f'%q for q in R[2]))")      # 렌더러는 회전 전 모델 좌표로 그림 -> 세계 위 (중력 반대) = R 셋째 행 (elastic_new b317cec 와 같음)
+say "  [$SC] 렌더 위 방향 $UP"
+CUDA_VISIBLE_DEVICES=0 python -u exe/lb_render.py --sim $D/h5_ours --config $CFG --shape $SC0 --out $D/ours.mp4 --cam_back $CB --elev $EL --up $UP --back2 $B2 --png $D/ours_png < /dev/null > $D/r_ours.log 2>&1
+OV=$D/${VN%_cmp.mp4}_ours_only.mp4; ffmpeg -y -loglevel error -i $D/ours.mp4 -vf "scale='min(2400,iw)':-2,format=yuv420p" -c:v libx264 -crf 18 -movflags +faststart $OV && rclone copyto $OV $VD/$(basename $OV) -q
+say "  [$SC] 우리 판 한 칸 $VD/$(basename $OV) 디코드 오류 줄 $(ffmpeg -v error -i $OV -f null - 2>&1 | wc -l)"
+CUDA_VISIBLE_DEVICES=0 python -u exe/lb_render.py --sim $AG/gt_$SC --config $CFG --shape $SC0 --out $D/gt.mp4 --cam_back $CB --elev $EL --up $UP --back2 $B2 --png $D/gt_png < /dev/null > $D/r_gt.log 2>&1
 python -u exe/gfs_post.py vid --gt_label "$GTL" --our_label "우리 K=1  오차 ${ERR}%  ${MS} ms" --gt_png $D/gt_png --our_png $D/ours_png --out_json $D/visual.json --out_mp4 $D/cmp_raw.mp4 --font $W/font.otf --fps $(python -c "import json;print(round(1/json.load(open('$CFG'))['frame_dt']))") > $D/vid.log 2>&1
 V=$D/$VN
 ffmpeg -y -loglevel error -i $D/cmp_raw.mp4 -vf "scale='min(2400,iw)':-2,format=yuv420p" -c:v libx264 -crf 18 -movflags +faststart $V
