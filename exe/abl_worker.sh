@@ -19,8 +19,10 @@ for j in ${JOBS//,/ }; do IFS=: read s v r <<< "$j"
   say "$n rc=$rc $(( $(date +%s) - t0 )) 초 $(grep -ah '롤아웃\]' $D/log.txt | tail -1 | cut -c1-200) $(grep -a 'rror' $D/log.txt | tail -1 | cut -c1-200)"
   CUDA_VISIBLE_DEVICES=$GPU $PY exe/abl_an.py $D $s $v $r > $D/an.log 2>&1; say "$n 분석 rc=$? $(tail -1 $D/an.log | cut -c1-200)"
   [ -f $D/metrics.json ] || echo "{\"rc\": $rc, \"no_summary\": true}" > $D/metrics.json
-  rclone copy $D $RA/runs/$n -q --transfers 8 --exclude "q27src/**" --exclude "pred.pt" $([ "$r" = 1 ] && echo "" || echo "")
+  rclone copy $D $RA/runs/$n -q --transfers 8 --exclude "q27src/**" --exclude "pred.pt" --exclude "roll_fem.pt" $([ "$r" = 1 ] && echo "" || echo "")
   [ "$r" = 1 ] && [ -f $D/pred.pt ] && rclone copyto $D/pred.pt $RA/runs/$n/pred.pt -q
+  # CM183 A1: fem_ex_sim 덤프 roll_fem.pt 는 ficus 만 올림 (bread 는 F float32 로 수 GB -> 지표만 metrics.json 에)
+  [ "$r" = 1 ] && [ "$s" = ficus ] && [ -f $D/roll_fem.pt ] && rclone copyto $D/roll_fem.pt $RA/runs/$n/roll_fem.pt -q
   rm -rf $D
 done
 say "일꾼 끝"

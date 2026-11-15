@@ -12,18 +12,26 @@ try:
 except Exception as e:
     M["no_summary"] = repr(e)
 try:
-    pd = [json.loads(l).get("pd") or {} for l in open(f"{D}/fem.jsonl")]
-    M["nJneg_max"] = max([q.get("nJneg", 0) for q in pd], default=None)
-    M["Jmin"] = min([q["Jmin"] for q in pd if "Jmin" in q], default=None)
-    M["flip_frames"] = sum(1 for q in pd if q.get("nJneg", 0) > 0)
+    if var == "ak":                                  # CM183 A1: fem_ex_sim 출력 (fem.jsonl 키 Fp_inv = 뒤집힌 입자 F 수, Fp_detmin = 입자 F det 최소)
+        rows = [json.loads(l) for l in open(f"{D}/fem.jsonl")]
+        M["nJneg_max"] = max([q.get("Fp_inv", 0) or 0 for q in rows], default=None)
+        M["Jmin"] = min([q["Fp_detmin"] for q in rows if q.get("Fp_detmin") is not None], default=None)
+        M["flip_frames"] = sum(1 for q in rows if (q.get("Fp_inv", 0) or 0) > 0)
+        pd = []
+    else:
+        pd = [json.loads(l).get("pd") or {} for l in open(f"{D}/fem.jsonl")]
+        M["nJneg_max"] = max([q.get("nJneg", 0) for q in pd], default=None)
+        M["Jmin"] = min([q["Jmin"] for q in pd if "Jmin" in q], default=None)
+        M["flip_frames"] = sum(1 for q in pd if q.get("nJneg", 0) > 0)
 except Exception as e:
     M["fem_err"] = repr(e)
 try:
     cmd = open(f"{D}/cmd.txt").read()
     data = cmd.split("--data ")[1].split()[0]
-    if os.path.exists(f"{D}/pred.pt"):
+    PP = f"{D}/pred.pt" if os.path.exists(f"{D}/pred.pt") else f"{D}/roll_fem.pt"      # CM183: fem_ex_sim 은 roll_fem.pt (pred·F·v; 키 pred·F 는 같음)
+    if os.path.exists(PP):
         import torch
-        P = torch.load(f"{D}/pred.pt", map_location="cpu", weights_only=False)
+        P = torch.load(PP, map_location="cpu", weights_only=False)
         X = P["pred"].double(); F = P.get("F")
         M["pred_frames"] = int(X.shape[0])
         if F is not None:
@@ -71,6 +79,8 @@ if int(rep) == 1 and os.path.exists(f"{D}/q27solver.pt") and os.path.exists(f"{D
         c = E["cases"][0]; M["eig"] = dict(n_zero=c["n_zero"], n_near=c["n_near"], kb=c["kb"], all_kb_small=c["all_kb_small"], q=q)
     except Exception as e:
         M["eig_err"] = repr(e) + r.stderr[-300:]
+elif int(rep) == 1 and var == "ak":
+    M["eig"] = "해당 없음 (사면체 입자 적분점 판: 육면체 가우스점 모드 분석 q27_eig.py 대상 아님)"
 elif int(rep) == 1 and var == "q64":
     M["eig"] = "미지원 (q27_eig.py 는 1·8·27 점만)"
 json.dump(M, open(f"{D}/metrics.json", "w"), ensure_ascii=False, indent=1)

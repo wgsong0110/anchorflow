@@ -7,6 +7,22 @@ import json, os, re, sys
 scene, var, rep, out = sys.argv[1:5]
 rep = int(rep)
 HERE = os.path.dirname(os.path.abspath(__file__))
+if var == "ak":
+    # CM183 A1 (입자 적분점 판 = 절 AK, 실행기 exe/fem_ex_sim.py). 단일 차이 ablation 이 아님: 옛 명시적 symplectic + 고정 Kuhn 사면체 + P2G/G2P 는 유지, 셀 에너지만 입자 적분점 (Σ w_p ψ(A_T F_p)).
+    # 명령 = R2 원본 cmd.txt 그대로 (ficus: lbours/fem_ak_ficus/ficus_cm05_r1 = 절 AK 최종 기본 판 VAR['cm05'] 전개, 커밋 46bd2fb;
+    #        bread: lbours/fem_ag_bread/ag_bread_n160_pfm_r1 = 절 AG.8 --ak_pq_plast frame + --ah_mlow 0.1, 커밋 437e4a6), 데이터 경로만 vast_abl.sh 의 것으로, --out 바꿈.
+    # 정답·오차 정의: 같은 데이터 .pt (d["gt"]), 같은 오차 (프레임별 입자 평균 |x-x_gt|/EXT 의 평균, fem_ex_sim 머리말 "fem_rt_sim 과 같은 지표"). 장면은 ficus·bread 만 (나머지: 빈 출력 + 종료코드 3 = 입자 구속 BC·소성·접촉 미지원).
+    PYB = "/home/dkta/.conda/envs/af/bin/python"
+    AKC = dict(
+        ficus="%s -u exe/fem_ex_sim.py --out @OUT --data /dev/shm/dkta/anerr_data/F_pg_v0.pt --tag F_pg_v0 --frames 125 --node_h 0.056569 --floor none --cfg_bc --region_density --pg_vdamp --N 640 "
+              "--mode lag --opt --mass tet --rstat --cfuse --cfuse_mode 2 --sp vcap --sp_vcap 1e9 --lim_sr 1e30 --ak_pq --ak_pq4 --ak_fstep --ah_fast --ak_prep --ak_fuse --sp_vcap 0.5 --ak_capmu @DUMP --ak_en 0 --ai_rigid 8" % PYB,
+        bread="%s -u exe/fem_ex_sim.py --out @OUT --data /dev/shm/dkta/ag_data/bread.pt --tag bread --frames 300 --node_h 0.018856 --floor none --pbc --pg_vdamp --plast --mode lag --opt --mass tet --rstat "
+              "--lim_sr 5 --cfuse --cfuse_mode 2 --sp vcap --sp_vcap 0.5 @DUMP --N 160 --lim_sr 1e30 --sp_vcap 1e9 --ak_pq --ak_pq_plast frame --ah_mlow 0.1" % PYB)
+    if scene not in AKC:
+        sys.exit(3)
+    # 반복 1 만 덤프 (roll_fem.pt: 위치·F·v, F 는 float32; abl_an.py 가 읽음), 반복 2·3 은 덤프 없음 (시간 판)
+    print(" ".join(AKC[scene].replace("@OUT", out).replace("@DUMP", "--dump_f32" if int(rep) == 1 else "--no_dump").split()))
+    sys.exit(0)
 T = json.load(open(f"{HERE}/pr_ours_tmpl.json"))
 NW = "/home/dkta/work/newsc"
 NS = dict(vasedeck=dict(fr=75, base="ficus", drop=["--region_density"]), plane=dict(fr=400, base="bread", drop=[]),
