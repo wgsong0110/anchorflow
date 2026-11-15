@@ -42,7 +42,7 @@ if a.cmd == "to_h5":
     sys.exit(0)
 
 # grid
-import imageio.v2 as imageio
+import shutil, subprocess, tempfile
 from PIL import Image, ImageDraw, ImageFont
 fs = [sorted(glob.glob(f"{d}/*.png")) for d in a.png]
 n = min(len(q) for q in fs)
@@ -50,7 +50,7 @@ print("[격자] 칸", len(fs), "프레임", [len(q) for q in fs], "->", n, flush
 im0 = np.asarray(Image.open(fs[0][0]).convert("RGB")); H, Wd = im0.shape[:2]
 cols = a.cols; rows = (len(fs) + 1 + cols - 1) // cols if a.title else (len(fs) + cols - 1) // cols
 F1 = ImageFont.truetype(a.font, int(H * 0.055)); F2 = ImageFont.truetype(a.font, int(H * 0.06))
-WR = imageio.get_writer(a.out, fps=a.fps, codec="libx264", quality=9, pixelformat="yuv420p", macro_block_size=16)
+TD = tempfile.mkdtemp(prefix="repgrid_", dir=os.path.dirname(os.path.abspath(a.out)))      # 프레임 PNG -> ffmpeg (imageio 없어도 됨)
 for i in range(n):
     can = Image.new("RGB", (Wd * cols, H * rows), (255, 255, 255)); dr = ImageDraw.Draw(can)
     for k, q in enumerate(fs):
@@ -62,6 +62,8 @@ for i in range(n):
         for ln in a.title.split("|"):
             dr.text((c * Wd + int(Wd * 0.06), y), ln, fill=(0, 0, 0), font=F2); y += int(H * 0.1)
         dr.text((c * Wd + int(Wd * 0.06), y + int(H * 0.05)), f"프레임 {i}", fill=(120, 120, 120), font=F2)
-    WR.append_data(np.asarray(can))
-WR.close()
+    can.save(f"{TD}/{i:05d}.png")
+subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(a.fps), "-i", f"{TD}/%05d.png", "-vf", "scale='min(2400,iw)':-2,format=yuv420p",
+                "-c:v", "libx264", "-crf", "18", "-movflags", "+faststart", a.out], check=True)
+shutil.rmtree(TD)
 print(f"[영상] {a.out}  {Wd * cols}x{H * rows}  {n} 프레임", flush=True)
