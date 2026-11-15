@@ -15,6 +15,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--out", required=True)
 ap.add_argument("--old", default="")
 ap.add_argument("--smoke", type=int, default=0)
+ap.add_argument("--merge_only", action="store_true")
 ap.add_argument("--only", default="", help="씬 하나만 (L000|ficus)")
 a = ap.parse_args()
 D = os.getcwd()
@@ -57,7 +58,7 @@ def others():
     return [ln.split(",")[1].strip() for ln in smi("compute-apps=gpu_uuid,pid").splitlines() if ln.split(",")[0].strip() == u0]
 
 
-for t in ("L000", "ficus"):
+for t in (() if a.merge_only else ("L000", "ficus")):
     if a.only and t != a.only:
         continue
     for K in KS:
@@ -119,7 +120,7 @@ for d in sorted(glob.glob(f"{a.out}/t_ours_*")):
                   err=(100 * s["err_mean"] if not s.get("diverged") and s.get("err_mean") is not None else None),
                   err_done=(100 * s["err_mean_done"] if s.get("err_mean_done") is not None else None), ms=s.get("ms_mean"),
                   ms_max=s.get("ms_max") or (1e3 * max(ss) if ss else None), div=s.get("diverged"), others=card_others(d), K=int(m.group(2)), cg=int(m.group(3))))
-old = json.load(open(a.old)) if a.old and os.path.exists(a.old) else []
+old = json.load(open(a.old)) if a.old and os.path.isfile(a.old) else []
 allp = [p for p in old if p["method"] != "ours"] + P
 json.dump(P, open(f"{a.out}/points_ours.json", "w"), indent=1, ensure_ascii=False)
 json.dump(allp, open(f"{a.out}/points.json", "w"), indent=1, ensure_ascii=False)
