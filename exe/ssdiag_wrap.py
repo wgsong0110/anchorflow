@@ -4,7 +4,7 @@ import json, os, runpy, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 argv = sys.argv[1:]
-C = dict(f0="0", f1="0", kh="0", pen="0", nd="0")
+C = dict(f0="0", f1="0", kh="0", pen="0", nd="0", load="")
 while argv and argv[0].startswith("--sd_"):
     C[argv[0][5:]] = argv[1]; del argv[:2]
 F0, F1 = int(C["f0"]), int(C["f1"])
@@ -35,6 +35,19 @@ def _install():
             LOG.write(json.dumps(dict(f=n[0], K=K, rows=rows)) + "\n"); LOG.flush()
         return o
     ART.RTSolver.counts = counts
+    if C["load"]:                                                                    # --sd_load 경로: 첫 step 호출에서 저장해 둔 프레임 시작 입자 상태 (ssfix --ssf_dumpfail) 로 바꿔 그 프레임을 재현
+        ostep = ART.RTSolver.step; LD = dict(done=False)
+
+        def step(s, t):
+            if not LD["done"]:
+                LD["done"] = True
+                d = torch.load(C["load"], map_location="cpu")
+                s.ga_first = False
+                s._rs([q.to(s.x.device) for q in d["bk"]])
+                s.alloc(None)
+                print(f"[ssdiag] 프레임 시작 상태 불러옴: 원래 프레임 {d['fi']} K0 {d['K0']}", flush=True)
+            return ostep(s, t)
+        ART.RTSolver.step = step
     if C.get("nd", "0") != "0":                                                      # --sd_nd 1 (--sh_direct 1 판): 걸음 첫 뉴턴 반복 시작 (rt_grad it0) 마다 잔차 상위 노드·√k 분포 -> ssnd.jsonl (결과 불변)
         import numpy as np
         okn = ART.RTSolver.k; NS = dict(fr=0, stp=0, it=0); LG = open(os.path.join(out, "ssnd.jsonl"), "a")
