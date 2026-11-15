@@ -25,6 +25,7 @@ def install(out):
         r = oa(s, need)
         try:
             capN = s.mn.numel()
+            assert s.f.numel() == capN * 3 and s.g0buf.numel() >= capN * 3, (s.f.shape, s.g0buf.shape, s.mn.shape)
             nt = int(s.nt); NR = KMAX * nt
             dev = s.dev
             s.wfF0 = torch.zeros(NR, capN * 3, device=dev, dtype=torch.float64)
@@ -33,8 +34,8 @@ def install(out):
             s.wfY = torch.zeros(NR, capN * 3, device=dev, dtype=torch.float32)
             s.wfK = torch.zeros(NR, 1, device=dev, dtype=torch.int32)
             s.wfDG = torch.zeros(NR, s.SC.numel(), device=dev, dtype=s.SC.dtype)
-            s.wfN = {nm: torch.zeros_like(getattr(s, nm)) for nm in ("meff", "mn", "sk", "pm", "U", "Ut", "eta")}
-            s.wfIP = torch.zeros_like(s.IP)
+            s.wfN = {nm: torch.zeros_like(getattr(s, nm)).reshape(-1) for nm in ("meff", "mn", "sk", "pm", "U", "Ut", "eta")}
+            s.wfIP = torch.zeros_like(s.IP).reshape(-1)
             s._wf_k, s._wf_it = -1, 0
             ST["nalloc"] += 1
         except Exception as e:
@@ -60,23 +61,23 @@ def install(out):
         if getattr(s, "wfG", None) is not None and name == "rt_bar_n":
             i = row(s)
             if i is not None:
-                s.dcopy(s.wfF0[i, :s.f.numel()], s.f)
+                s.dcopy(s.wfF0[i, :s.f.numel()], s.f.reshape(-1))
         r = ok(s, name, n, args, b)
         if getattr(s, "wfG", None) is not None:
             i = row(s)
             if i is not None:
                 if name == "rt_bar_n":
-                    s.dcopy(s.wfF1[i, :s.f.numel()], s.f)
+                    s.dcopy(s.wfF1[i, :s.f.numel()], s.f.reshape(-1))
                 elif name == "rt_grad":
-                    s.dcopy(s.wfG[i, :s.g0buf.numel()], s.g0buf); s.dcopy(s.wfY[i, :s.y.numel()], s.y)
+                    s.dcopy(s.wfG[i, :s.g0buf.numel()], s.g0buf.reshape(-1)); s.dcopy(s.wfY[i, :s.y.numel()], s.y.reshape(-1))
                 elif name == "rt_kstep":
-                    s.dcopy(s.wfK[i], s.kk[:1])
+                    s.dcopy(s.wfK[i], s.kk.reshape(-1)[:1])
                 elif name == "rt_lsup":
-                    s.dcopy(s.wfDG[i], s.SC)
+                    s.dcopy(s.wfDG[i], s.SC.reshape(-1))
                 elif name == "rt_meff" and s._wf_k == 0:
                     for nm, t in s.wfN.items():
-                        s.dcopy(t, getattr(s, nm))
-                    s.dcopy(s.wfIP, s.IP)
+                        s.dcopy(t, getattr(s, nm).reshape(-1))
+                    s.dcopy(s.wfIP, s.IP.reshape(-1))
         return r
     R.alloc, R.k, R.ctl = alloc, k, ctl
 
@@ -109,7 +110,7 @@ def install(out):
                              F1=s.wfF1[:rows, :].cpu().numpy()[:, i3].reshape(rows, -1, 3).astype(np.float32),
                              G=s.wfG[:rows, :].cpu().numpy()[:, i3].reshape(rows, -1, 3),
                              Y=s.wfY[:rows, :].cpu().numpy()[:, i3].reshape(rows, -1, 3),
-                             KK=s.wfK[:rows, 0].cpu().numpy(), SC=s.wfDG[:rows].cpu().numpy(), DG=s.DG[:2 * rows].cpu().numpy())
+                             KK=s.wfK[:rows, 0].cpu().numpy(), SC=s.wfDG[:rows].cpu().numpy(), DG=s.DG[:2 * rows].cpu().numpy().reshape(2 * rows, -1))
                     np.savez_compressed(os.path.join(ST["out"], "wfd", "f%03d.npz" % f_), **D)
                     ST["nwrite"] += 1
                 except Exception as e:
