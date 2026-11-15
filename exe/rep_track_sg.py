@@ -114,6 +114,7 @@ ap.add_argument("--tet_quality", type=float, default=0.05,
                 help="phystwin logbarrier: 4-클릭 사면체 중 정지 품질 6√2·V/l_rms³ 이 이보다 작은(납작한) 것은 버린다")
 ap.add_argument("--ipm_mu0", type=float, default=1e-4, help="ipm: 첫 장벽 계수 μ")
 ap.add_argument("--ipm_stages", type=int, default=4, help="ipm: μ 를 10 배씩 줄이는 단계 수 (프레임마다)")
+ap.add_argument("--save_F", type=int, default=0, help="앞 K 점 (GF: 가우시안) 의 프레임별 변형 기울기 F (float16) 도 저장 (GF 렌더용, result['Fs'] [T,K,9])")
 ap.add_argument("--traj32", action="store_true", help="--save_traj 를 float32 로 (위상 지표용; 기본 float16)")
 ap.add_argument("--save_traj", action="store_true",
                 help="모든 프레임의 가우시안 위치(float16)를 저장 (물리 지표·EMD 재측정용)")
@@ -1125,12 +1126,14 @@ if RENDER and CK is None:
     render(G0, Fall=Fcum)
 rows, CURVE, DOFS, STOP, EMDP = [], [], [], [], []
 PHYS, TRAJS, YPREV = [], [], [G0[FI].clone()]
+FSAVE = []
 t0 = time.time()
 T_START = 1
 if CK is not None:
     Pref, Fcum, Rcum = CK["Pref"], CK["Fcum"], CK["Rcum"]
     (rows, CURVE, DOFS, STOP, EMDP, PHYS, TRAJS, YPREV) = [CK["L"][k] for k in (
         "rows", "CURVE", "DOFS", "STOP", "EMDP", "PHYS", "TRAJS", "YPREV")]
+    FSAVE = CK["L"].get("FS", [])
     torch.set_rng_state(CK["rng"].cpu()); torch.cuda.set_rng_state(CK["cuda_rng"].cpu())
     T_START = CK["t"] + 1
     t0 -= CK["elapsed"]
@@ -1511,12 +1514,14 @@ for t in range(T_START, T + 1):
             Pref = yall.clone()
         else:
             Fcum = Fall
+    if a.save_F:       # 렌더용 공분산 변환: phystwin 은 공식 회전 R (누적), 나머지는 F
+        FSAVE.append((Rcum if a.method == "phystwin" else Fall)[:a.save_F].reshape(-1, 9).half().cpu().numpy())
     if RENDER:
         render(yall, Fall=Fall, Rall=(Rcum if a.method == "phystwin" else None))
     if a.ckpt_every > 0 and t % a.ckpt_every == 0 and t < T:
         if RENDER and FR:
             _fc = os.path.join(FRD, f"f{t:03d}.npy"); np.save(_fc, np.stack(FR)); FCHUNKS.append(_fc); FR = []
-        _L = dict(rows=rows, CURVE=CURVE, DOFS=DOFS, STOP=STOP, EMDP=EMDP, PHYS=PHYS, TRAJS=TRAJS, YPREV=YPREV)
+        _L = dict(rows=rows, CURVE=CURVE, DOFS=DOFS, STOP=STOP, EMDP=EMDP, PHYS=PHYS, TRAJS=TRAJS, YPREV=YPREV, FS=FSAVE)
         torch.save(dict(t=t, Pref=Pref, Fcum=Fcum, Rcum=Rcum, L=_L, fchunks=FCHUNKS, elapsed=time.time() - t0,
                         rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state()), CKPT + ".tmp")
         os.replace(CKPT + ".tmp", CKPT)
@@ -1549,6 +1554,7 @@ np.savez_compressed(a.out, metrics=R, dof=np.array(DOFS), L=L,
                     emd_tgt=np.stack([q[2] for q in EMDP]),
                     phys=np.array(PHYS, dtype=np.float64),     # t, KE, P(3), Lang(3), mean detF
                     **({"traj": np.stack(TRAJS)} if TRAJS else {}),
+                    **({"Fs": np.stack(FSAVE)} if FSAVE else {}),
                     **({"hex_edge_sim": rep.edge_sim, "hex_edge_norm": rep.h, "hex_dx": a.hex_dx, "hex_cell": a.hex_cell,
                         "gauss_note": "det 는 칸당 2x2x2 가우스 점에서만 장벽; 칸 안 모든 점 det>0 보장 아님"}
                        if a.method == "hex" else {}))
