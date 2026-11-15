@@ -64,6 +64,9 @@ CASES = {
         ("foam_hotdog", dict(material="foam", E=1e6, nu=0.3, yield_stress=2000.0, plastic_viscosity=100.0, density=1000.0), 0.02, 0.01, 2e-5),   # wmats/hotdog_viscoplastic.json
         ("foam_hotdog_dtframe", dict(material="foam", E=1e6, nu=0.3, yield_stress=2000.0, plastic_viscosity=100.0, density=1000.0), 0.02, 0.01, 1.0 / 60),
         ("plasticine_bread", dict(material="plasticine", E=2000.0, nu=0.3, yield_stress=200.0, density=200.0), 0.2, 0.05, 1e-4),            # topo/bread_plastic_config.json
+        ("plasticine_chair_paste", dict(material="plasticine", E=2e5, nu=0.3, yield_stress=200.0, density=1000.0), 0.05, 0.02, 1e-4),     # 절 CM189 nshape_cfg/chair_paste.json
+        ("foam_drums_honey", dict(material="foam", E=2e4, nu=0.4, yield_stress=50.0, plastic_viscosity=200.0, density=1400.0), 0.05, 0.02, 1e-4),   # 절 CM189 nshape_cfg/drums_honey.json (정답 서브스텝)
+        ("foam_drums_honey_dtframe", dict(material="foam", E=2e4, nu=0.4, yield_stress=50.0, plastic_viscosity=200.0, density=1400.0), 0.05, 0.02, 0.04),   # 우리 걸음 dt (프레임)
     ],
     "gf": [
         ("watermelon", dict(material="watermelon", E=2000.0, nu=0.38, friction_angle=45.0, beta=1.0, xi=3.0, hardening=1.0, density=1.0), 0.05, 0.05, 1e-4),   # wm2/gf/config.json

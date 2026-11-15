@@ -3,7 +3,7 @@
   - com_z: 입자 평균 높이 (입자 질량 = 부피 x 밀도, 같은 밀도라 정답 입자 부피 가중 대신 단순 평균 -- 두 쪽 같은 입자 집합이라 비교에 충분)
   - ke: 프레임 사이 변위로 낸 운동 에너지 대리 0.5 <|dx/dt|^2> (출렁임)
   - psi: 입자 평균 탄성 에너지 밀도 (PG 응력 모형: plasticine 0/5 = FCR, metal 1·foam 3 = 헨키 StVK)
-  - yfrac: 항복면 위 (또는 밖) 입자 비율 -- 헨키 편차 ‖2μ ε̂‖ >= 0.99 sqrt(2/3) σ_y (plasticine 은 손상으로 σ_y 가 줄어들 수 있어 초기 σ_y 기준 = 하한)
+  - yfrac: 항복면 위 (또는 밖) 입자 비율 -- 헨키 편차 ‖2μ ε̂‖ >= 0.99 x (plasticine·metal σ_y, foam √(2/3) σ_y; 정답 식 그대로) (plasticine 은 손상으로 σ_y 가 줄어들 수 있어 초기 σ_y 기준 = 하한)
   - edev: 평균 ‖ε̂‖ (탄성 편차 변형률)
   python nshape_plast_an.py --h5 DIR --pred pred.pt --config cfg.json --out out.json"""
 import argparse, glob, json, math, os
@@ -27,7 +27,8 @@ def stats(x, F, xprev):
     else:
         psi = mu * (eps ** 2).sum(1) + 0.5 * lam * tr[:, 0] ** 2
     sn = (2 * mu * ed).norm(dim=1)
-    yf = float((sn >= 0.99 * math.sqrt(2 / 3) * ys).double().mean()) if ys > 0 else float("nan")
+    thr = ys if mat in ("plasticine", "metal") else math.sqrt(2 / 3) * ys   # 절 CM189: PG von Mises (재질 1·5) 는 ‖dev τ‖ > ys, 점소성 (재질 3) 은 ‖s‖ > √(2/3) ys
+    yf = float((sn >= 0.99 * thr).double().mean()) if ys > 0 else float("nan")
     ke = float((0.5 * ((x - xprev.to(dev).double()[ok]) / fdt).pow(2).sum(1)).mean()) if xprev is not None else 0.0
     return dict(com_z=float(x[:, 2].mean()), psi=float(psi.mean()), yfrac=yf, edev=float(ed.norm(dim=1).mean()), ke=ke, n=int(ok.sum()))
 

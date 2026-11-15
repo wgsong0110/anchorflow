@@ -654,6 +654,35 @@ __device__ __forceinline__ void aq_jbar_t(const float* S, const float* prm, floa
     for (int i=0;i<3;i++) { pe[i] += kJ*(J - 1.f)/S[i]; for (int j=0;j<3;j++) D[i][j] += (i == j) ? kJ/(S[i]*S[i]) : kJ*J/(S[i]*S[j]); }
 }
 #endif
+#if AF_PTAN
+// 절 CM189 --ptan 1: 반환 사상과 일관된 접선 (재질 1·3·5 = PG von Mises 계열). 합성 주값 응력 p_i(σ) = P_i(RM(σ)) RM(σ)_i / σ_i (aq_elem 의 힘과 같은 식,
+// 상태 ys·logJp·al 은 걸음 시작값 지역 사본) 를 시험 σ 에서 중심 차분 -> 대칭화. 항복 안 한 점은 탄성 접선과 같음.
+__device__ __forceinline__ void aq_cpi(int mat, const float* sg, const float* prm, float ys, float lj, float al, float dt, float* p) {
+    float se[3] = {sg[0], sg[1], sg[2]}; float y_ = ys, l_ = lj, a_ = al;
+    pl_rm(mat, se, prm, y_, l_, a_, dt);
+    float Pe[3]; pl_pi(mat, se, prm, a_, Pe);
+    for (int i=0;i<3;i++) p[i] = Pe[i]*se[i]/sg[i];
+}
+__device__ __noinline__ void aq_tan9c(int mat, float s0, float s1, float s2, const float* prm, float ys, float lj, float al, float dt, float* pe, float* D9) {
+    float c[3] = {s0, s1, s2};
+    aq_cpi(mat, c, prm, ys, lj, al, dt, pe);
+    float Dt[9];
+    #pragma unroll
+    for (int j=0;j<3;j++) {
+        float sj = (j == 0) ? s0 : ((j == 1) ? s1 : s2);
+        float h = fmaxf(1e-3f*fabsf(sj), 1e-4f);
+        float sp[3] = {s0 + ((j == 0) ? h : 0.f), s1 + ((j == 1) ? h : 0.f), s2 + ((j == 2) ? h : 0.f)};
+        float sm[3] = {s0 - ((j == 0) ? h : 0.f), s1 - ((j == 1) ? h : 0.f), s2 - ((j == 2) ? h : 0.f)};
+        float pp[3], pm[3]; aq_cpi(mat, sp, prm, ys, lj, al, dt, pp); aq_cpi(mat, sm, prm, ys, lj, al, dt, pm);
+        float ih = 0.5f/h;
+        Dt[j] = (pp[0] - pm[0])*ih; Dt[3+j] = (pp[1] - pm[1])*ih; Dt[6+j] = (pp[2] - pm[2])*ih;
+    }
+    D9[0] = Dt[0]; D9[4] = Dt[4]; D9[8] = Dt[8];
+    D9[1] = D9[3] = 0.5f*(Dt[1] + Dt[3]); D9[2] = D9[6] = 0.5f*(Dt[2] + Dt[6]); D9[5] = D9[7] = 0.5f*(Dt[5] + Dt[7]);
+    for (int k=0;k<9;k++) if (!isfinite(D9[k])) D9[k] = 0.f;
+    for (int k=0;k<3;k++) if (!isfinite(pe[k])) pe[k] = 0.f;
+}
+#endif
 __device__ __forceinline__ void aq_tan(int mat, const float* ss0, const float* prm, float al, float* pe, float D[3][3]) {
     float D9[9]; aq_tan9(mat, ss0[0], ss0[1], ss0[2], prm, al, pe, D9);
     for (int i=0;i<3;i++) for (int j=0;j<3;j++) D[i][j] = D9[i*3+j];
@@ -723,6 +752,12 @@ __global__ void __launch_bounds__(128) aq_elem(const int* IP, const int* cb, con
       al0 = al;
 #endif
       float pe[3], D[3][3], Ev[3][3], Dk[3][3];
+#if AF_PTAN
+      if ((mat == 1 || mat == 3 || mat == 5) && !(prm[15] > 0.5f)) {
+          float D9c[9]; aq_tan9c(mat, ss[0], ss[1], ss[2], prm, Sq[(size_t)qq*4], Sq[(size_t)qq*4+1], al0, dt, pe, D9c);
+          for (int i=0;i<3;i++) for (int j=0;j<3;j++) D[i][j] = D9c[i*3+j];
+      } else
+#endif
       aq_tan(mat, ss, prm, al0, pe, D);
 #ifdef AF_JBAR
       aq_jbar_t(S, prm, pe, D);                                               // 절 CM13 판 (1): 장벽 주값 헤시안·응력 (투영은 아래 그대로)
@@ -964,6 +999,7 @@ __global__ void aq_vbar(const int* IP, const float* cm, float* vm) {
 }
 '''
 AO_SRC = "#define AF_CTAN_MODE %d\n" % int(os.environ.get("AF_CTAN", "0")) + AO_SRC
+AO_SRC = "#define AF_PTAN %d\n" % int(os.environ.get("AF_PTAN", "0")) + AO_SRC                 # 절 CM189 --ptan (exe/ptan_wrap.py; 0 = 옛 판, 소스 전처리 결과 같음)
 
 
 
