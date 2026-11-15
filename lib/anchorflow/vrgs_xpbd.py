@@ -17,7 +17,7 @@
   - 풀이 순서: 가우스-자이델, 사면체 탐욕 색칠 (같은 색은 꼭짓점을 공유하지 않음) -- GPU XPBD 표준.
   - 질량: 사면체 집중 질량 ρ V_T / 4 (ρ = 사면체 안 가우시안의 입자 밀도 평균, 없으면 config 밀도).
   - 바닥: 정점 비관통 z ≥ 바닥 (반복마다 투영) + 고착 (닿은 정점은 이번 서브스텝 접선 이동 취소) = 정답 sticky collider.
-  - 고정 경계 (ficus cuboid): rest 위치가 상자 안인 정점 역질량 0.
+  - 고정 경계 (ficus cuboid): rest 위치가 상자 안인 정점 역질량 0. 시간 구간 cuboid (pillow2sofa) 는 PG 와 같이 start <= t < end 동안만 (프레임 시작 시각 판정).
   - 감쇠: 씬 config grid_v_damping_scale 를 같은 시간율로 정점 속도에 (서브스텝마다 s^(dt/substep_dt)); lego 는 1 (없음).
   - 초기 속도: 입자 속도의 질량·무게중심 가중 평균 (한 번, 프레임 0).
 서브스텝 안에서는 입자를 쓰지 않는다 (가우시안 갱신은 프레임 끝 한 번).
@@ -264,7 +264,7 @@ class VRGS:
     """케이지 XPBD. x0 [Np,3] 입자 rest, v0 [Np,3], m [Np] 입자 질량, rho_p [Np] 입자 밀도."""
 
     def __init__(s, x0, v0, m, rho_p, E, nu, g, frame_dt, N, iters, vmax=30000, floor_z=None, fix_boxes=(), damp_scale=1.0, damp_dt=None,
-                 h=None, nrot=5, rot_bcs=()):
+                 h=None, nrot=5, rot_bcs=(), fix_boxes_t=()):
         dev = "cuda"
         s.Np = x0.shape[0]
         x0 = x0.to(dev).double()
@@ -304,7 +304,17 @@ class VRGS:
             msk = (ax.abs() < hh) & (rp.norm(dim=-1) < rr)
             s.kin_g.append(msk); s.kin |= msk
         s.fixed |= s.kin
+        # [final_pa_bl] 시간 구간 고정 상자 (PG cuboid start <= t < end): rest 위치가 상자 안인 정점은 그 구간 동안만 역질량 0, 뒤엔 자유 (프레임 시작 시각으로 판정)
+        s.fixw = []
+        for (pt, sz, t0, t1) in fix_boxes_t:
+            mw = ((V - torch.tensor(pt, device=dev, dtype=torch.float64)).abs() < torch.tensor(sz, device=dev, dtype=torch.float64)).all(-1) & ~s.fixed
+            s.fixw.append((mw, float(t0), float(t1)))
+        s.w_free = w.float().contiguous().clone()
+        s.w_free[s.fixed] = 0.0
         w[s.fixed] = 0.0
+        for (mw, t0, t1) in s.fixw:
+            if t0 <= 1e-6 < t1:
+                w[mw] = 0.0
         s.fr = 0
         s.vd = torch.zeros(s.nv, 3, device=dev, dtype=torch.float32)
         s.kin_u8 = s.kin.to(torch.uint8).contiguous()
@@ -317,6 +327,7 @@ class VRGS:
         vbar = (m_[:, None] * v0).sum(0) / m_.sum()
         vv = torch.where(Ms[:, None] > 0, Ps / Ms.clamp(min=1e-300)[:, None], vbar[None])
         vv[s.fixed] = 0.0
+        vv[w == 0.0] = 0.0
         s.X0 = V.float().contiguous(); s.V0 = vv.float().contiguous()
         s.x = s.X0.clone(); s.xp = s.X0.clone(); s.v = s.V0.clone()
         s.w = w.float().contiguous()
@@ -348,6 +359,20 @@ class VRGS:
     def reset(s):
         s.fr = 0
         s.x.copy_(s.X0); s.xp.copy_(s.X0); s.v.copy_(s.V0); s.q.zero_(); s.q[:, 3] = 1.0
+        if s.fixw:
+            s._pin()
+
+    def _pin(s):
+        """[final_pa_bl] 프레임 시작 시각 t 에 켜진 구간 고정 상자의 정점 역질량 0 (+ 속도 0), 꺼진 상자는 원래 역질량. 그래프는 s.w 를 그대로 읽음."""
+        t = s.fr * s.frame_dt
+        w = s.w_free.clone()
+        on = torch.zeros_like(s.fixed)
+        for (mw, t0, t1) in s.fixw:
+            if t0 <= t + 1e-6 < t1:
+                on |= mw
+        w[on] = 0.0
+        s.w.copy_(w)
+        s.v[on] = 0.0
 
     def _rec_sub(s):
         M = _mod()
@@ -393,6 +418,8 @@ class VRGS:
             s.capture()
         if s.rotg:
             s._drive()
+        if s.fixw:
+            s._pin()
         e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         e0.record()
         for _ in range(s.N):
@@ -426,5 +453,5 @@ class VRGS:
         return (Ds @ s.Dmi.reshape(-1, 3, 3))[s.tid.long()]
 
     def info(s):
-        return dict(h=s.h, nv=s.nv, nt=s.nt, ncolor=len(s.colors), nfixed=int(s.fixed.sum()), mass_cage=s.mass_cage, mass_part=s.mass_part,
+        return dict(h=s.h, nv=s.nv, nt=s.nt, ncolor=len(s.colors), nfixed=int(s.fixed.sum()), nfixed_t=[int(q[0].sum()) for q in s.fixw], mass_cage=s.mass_cage, mass_part=s.mass_part,
                     bind_min=s.bind_min, N=s.N, iters=s.iters, dt=s.dt, damp=s.damp, E=s.E, nu=s.nu)

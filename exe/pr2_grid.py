@@ -37,6 +37,7 @@ ap.add_argument("--par", type=int, default=1, help="동시 비측정 판 상한"
 ap.add_argument("--jobs", default="")
 ap.add_argument("--reps", type=int, default=3)
 ap.add_argument("--smoke", type=int, default=0, help="연기 시험: 프레임 수를 이 값으로 (표는 smoke 표시)")
+ap.add_argument("--prep_only", action="store_true", help="[final_pa_bl] 준비 판 (공개 코드 베이스라인 물성·학습, VR-GS E 맞춤) 만 하고 끝 (시간 안 재는 카드용)")
 a = ap.parse_args()
 PY = "/home/dkta/.conda/envs/af/bin/python"
 W = "/home/dkta/work"
@@ -198,7 +199,7 @@ def prep_cmds(m, t, F):
             [PY, "-u", f"{D}/exe/stab_sg.py", "--mode", "train", "--sg", SG_REPO, "--fit", F, "--out", F] + da_elastic(t)]
 
 
-def prep(m, t, tmo=16 * 3600):
+def prep(m, t, tmo=float(os.environ.get("PR2_PREP_TMO_H", "16")) * 3600):
     """씬마다 한 번 (빈 카드 하나). 반환: 상한 hi (실패·마감이면 None). 결과 p/<방법>_<씬>_prep/res.json."""
     F = pdir(m, t, 0, "prep")
     if os.path.exists(f"{F}/res.json"):
@@ -557,7 +558,7 @@ def one_run_cached(m, t, N, k):
     return json.load(open(f)) if os.path.exists(f) else None
 
 
-VR_REF = dict(vasedeck=400)                                          # VR-GS E 를 맞추는 기준 서브스텝 (프레임 간격 / 논문 비교 dt 1e-4), 반복 11
+VR_REF = dict(vasedeck=400, pillow2sofa=200)                                         # VR-GS E 를 맞추는 기준 서브스텝 (프레임 간격 / 논문 비교 dt 1e-4), 반복 11
 
 
 def ensure_E(t):
@@ -574,6 +575,11 @@ def ensure_E(t):
 
 if a.jobs:
     for m, t, Ns in json.load(open(a.jobs)):
+        if Ns == "hi":                                                     # [final_pa_bl] 대표 점 하나: 준비 판의 공식 서브스텝 (PhysTwin N0 · Spring-Gaus 학습 끝 n_step)
+            hi = prep(m, t)
+            if hi is None:
+                say(f"[준비 실패] {m} {t}"); continue
+            Ns = [hi]
         if Ns == "auto":                                                   # 공개 코드 베이스라인: 준비 판 (논문 절차 물성) 뒤 공식 서브스텝 hi 의 1/4, 1/2, 1 배
             hi = prep(m, t)
             if hi is None:
@@ -582,6 +588,11 @@ if a.jobs:
         if m == "vrgs":
             ensure_E(t)
         JOBS += [dict(m=m, t=t, N=N) for N in Ns]
+    if a.prep_only:
+        json.dump(JOBS, open(f"{OUT}/prep_jobs.json", "w"), ensure_ascii=False, indent=1)
+        open(f"{OUT}/prep.END", "w").write(time.strftime("%F %T") + "\n")
+        say("[준비만 끝]")
+        os._exit(0)
     for k in range(1, a.reps + 1):                                     # 반복을 바깥으로: 같은 설정이 시간상 떨어져 측정됨 (워밍업·열 효과 분산)
         for j in JOBS:
             if time.time() >= a.until:

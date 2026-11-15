@@ -20,6 +20,8 @@
   (4) 질량점 = 정답 입자에서 무작위 11024 개 (rep_track2·fps_phystwin 과 같은 수, 씨앗 0) -> 공식 data_process_sample 복셀 0.005 m 처음 점.
       가우시안 이동의 뼈대에 ficus 조작점 (움직임 0) 을 더함 (화분 입자가 화분 조작점을 따라가게).
   (5) 렌더·대화형 전용 import (pynput·gaussian_splatting 렌더러·pyrender) 는 빈 모듈, ipdb.set_trace 는 예외 (보간 SVD 실패 = 발산으로 셈).
+  (7) [final_pa_bl] PG 시간 구간 cuboid (pillow2sofa 방석 받침, start <= t < end 동안만 고정): 상자 안 입자는 조작점이 아니라 질량점으로 두고,
+      구간 동안 공식 적분 커널 끝에서 x 그대로·v 0 (아래 코드 주석). 상시 고정 상자는 예전대로 조작점.
   (6) config 중력 0 (ficus): 공식 커널 update_vel_from_force 의 박힌 중력 (0, 0, −9.8) 을 인자로 못 바꿔서, 중력 항만 뺀 같은 커널로
       모듈 속성을 바꿔 끼움 (공식 파일은 안 고침; 중력 ≠ 0 인 L000 은 공식 커널 그대로).
 
@@ -104,6 +106,7 @@ RMASK = C.rot_membership(x0[psel], S["ROT"]) if S["ROT"] else []                
 for _m in RMASK:
     ctrl = ctrl | _m
 REAL = bool(ctrl.any())
+PINW = [(C.in_boxes(x0[psel][~ctrl], [b_]), b_[2], b_[3]) for b_ in S["BOXW"]]      # [final_pa_bl] 시간 구간 cuboid 안 질량점 (조작점 아님) -- 구간 동안만 고정 (아래 (7))
 obj_idx, ctl_idx = psel[~ctrl], psel[ctrl]
 B = to_pt(S["X"][:, obj_idx])                                  # [L+1, M, 3]
 CP = to_pt(x0[ctl_idx])                                        # [Nc, 3] 처음 위치
@@ -193,6 +196,74 @@ if G0:                                                         # (6) 정답 conf
         v_new[tid] = v2
     _smw.update_vel_from_force = _update_vel_from_force_g0
     print("[PhysTwin] config 중력 0 -> 공식 커널의 중력 9.8 항 뺀 커널로", flush=True)
+if PINW:                                                       # (7) [final_pa_bl] PG 시간 구간 cuboid: 공식 integrate_ground_collision 과 같은 커널에 '고정이면 x 그대로·v 0' 만 더한 것으로
+    #     바꿔 끼우고 (공식 파일은 안 고침), 고정 배열은 step() 의 launch 에 덧붙임 (spring_mass_warp 모듈의 wp 를 launch 만 가로채는 대리로).
+    #     고정 집합은 공식 set_controller_target(frame_idx) 가 불릴 때 (CMA·학습·추론 모두 프레임마다) 프레임 시작 시각 (frame_idx−1) 프레임 간격 으로 정함
+    #     (PG: start <= t < end; pillow2sofa 구간 끝 0.5·1.0 s 는 프레임 경계라 서브스텝 판정과 같음).
+    @wp.kernel
+    def _integrate_ground_collision_pin(x: wp.array(dtype=wp.vec3), v: wp.array(dtype=wp.vec3), collide_elas: wp.array(dtype=float),
+                                        collide_fric: wp.array(dtype=float), dt: float, reverse_factor: float, pin: wp.array(dtype=wp.int32),
+                                        x_new: wp.array(dtype=wp.vec3), v_new: wp.array(dtype=wp.vec3)):
+        tid = wp.tid()
+        x0 = x[tid]
+        v0 = v[tid]
+        normal = wp.vec3(0.0, 0.0, 1.0) * reverse_factor
+        x_z = x0[2]
+        v_z = v0[2]
+        next_x_z = (x_z + v_z * dt) * reverse_factor
+        if next_x_z < 0.0 and v_z * reverse_factor < -1e-4:
+            v_normal = wp.dot(v0, normal) * normal
+            v_tao = v0 - v_normal
+            v_normal_length = wp.length(v_normal)
+            v_tao_length = wp.max(wp.length(v_tao), 1e-6)
+            clamp_collide_elas = wp.clamp(collide_elas[0], low=0.0, high=1.0)
+            clamp_collide_fric = wp.clamp(collide_fric[0], low=0.0, high=2.0)
+            v_normal_new = -clamp_collide_elas * v_normal
+            a = wp.max(0.0, 1.0 - clamp_collide_fric * (1.0 + clamp_collide_elas) * v_normal_length / v_tao_length)
+            v_tao_new = a * v_tao
+            v1 = v_normal_new + v_tao_new
+            toi = -x_z / v_z
+        else:
+            v1 = v0
+            toi = 0.0
+        xn = x0 + v0 * toi + v1 * (dt - toi)
+        if pin[tid] != 0:
+            xn = x0
+            v1 = wp.vec3(0.0, 0.0, 0.0)
+        x_new[tid] = xn
+        v_new[tid] = v1
+
+    _PIN = wp.zeros(int((~ctrl).sum()), dtype=wp.int32, device="cuda:0")
+    _PIN_ON = {}                                                                # 켜진 구간 번호 묶음 -> 고정 배열 (GPU, 미리 만들어 둠)
+    _PIN_LAST = [None]
+
+    class _WpLaunchProxy:
+        def __getattr__(self, k):
+            return getattr(wp, k)
+
+        def launch(self, *args, **kw):
+            k_ = kw.get("kernel", args[0] if args else None)
+            if k_ is _integrate_ground_collision_pin:
+                assert int(kw["dim"]) == _PIN.shape[0], f"질량점 수 {kw['dim']} != 고정 배열 {_PIN.shape[0]}"
+                kw["inputs"] = list(kw["inputs"]) + [_PIN]
+            return wp.launch(*args, **kw)
+    _smw.integrate_ground_collision = _integrate_ground_collision_pin
+    _smw.wp = _WpLaunchProxy()
+    _sct0 = _smw.SpringMassSystemWarp.set_controller_target
+
+    def _set_controller_target(self, frame_idx, pure_inference=False):
+        t = (frame_idx - 1) * S["frame_dt"]                                     # 프레임 시작의 시뮬 시각 (PG config 단위)
+        key = tuple(i for i, (m_, t0_, t1_) in enumerate(PINW) if C.box_active(t0_, t1_, t))
+        if _PIN_LAST[0] != key:
+            if key not in _PIN_ON:
+                on = torch.zeros(_PIN.shape[0], dtype=torch.int32)
+                for i in key:
+                    on[PINW[i][0]] = 1
+                _PIN_ON[key] = wp.from_torch(on.cuda().contiguous(), dtype=wp.int32)
+            wp.copy(_PIN, _PIN_ON[key]); _PIN_LAST[0] = key
+        return _sct0(self, frame_idx, pure_inference)
+    _smw.SpringMassSystemWarp.set_controller_target = _set_controller_target
+    print(f"[PhysTwin] 시간 구간 고정 (PG cuboid): " + ", ".join(f"{int(m_.sum())} 질량점 [{t0_}, {t1_}) s" for (m_, t0_, t1_) in PINW), flush=True)
 from qqtt.engine.cma_optimize_warp import OptimizerCMA         # noqa: E402
 from qqtt.engine.trainer_warp import InvPhyTrainerWarp         # noqa: E402
 import wandb                                                   # noqa: E402
