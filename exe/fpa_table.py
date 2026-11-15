@@ -70,16 +70,22 @@ NA = {}
 BLF = f"{C}/pareto_bl.json" if os.path.exists(f"{C}/pareto_bl.json") else f"{C}/pareto_bl_partial.json"
 if os.path.exists(BLF):
     for r in json.load(open(BLF)):
-        if r.get("N") is None:                                                 # 해당 없음 (탄성 전용) -- 표에서 따로 적음
+        if r["scene"] in ("wolf", "bread") and r.get("err") is None:             # 해당 없음 (탄성 전용) -- 표에서 따로 적음
             continue
+        SN = {("vrgs", "pillow2sofa"): "실패: 3 회 모두 f128 발산 (직접 구현에 물체 충돌$\\cdot$상자 경계 없음)",
+              ("springgaus", "pillow2sofa"): "미완: 공식 동역학 학습 14/300 반복 (반복당 114 s, 예상 13.7 h) 에서 예산으로 중단"}
+        if r.get("err") is None and (r["method"], r["scene"]) in SN:
+            r = dict(r, note=SN[(r["method"], r["scene"])], N=r.get("N") or 0)
         if r.get("err") is None or not r.get("ms"):
             NA[(r["method"], r["scene"])] = r.get("note") or "실패"
         P.append(dict(r, src="final_pa/bl/pareto_bl.json"))
 json.dump(dict(pareto=P, na={f"{k[0]}:{k[1]}": v for k, v in NA.items()}), open(f"{C}/fpa_summary.json", "w"), ensure_ascii=False, indent=1)
 SHORT = dict(ours="K={N}", mpm="서브스텝 {N} (공식)", vrgs="서브스텝 {N} $\\times$ 반복 11", phystwin="서브스텝 $N_0$={N}", springgaus="학습 n\\_step {N}")
 for p in P:
-    if p.get("N") is not None:
+    if p.get("N"):
         p["setting"] = SHORT[p["method"]].format(N=p["N"])
+    elif p.get("N") == 0:
+        p["setting"] = "--"
 LAB = dict(ours="우리", mpm="정답 MPM (PhysGaussian)", vrgs="VR-GS", phystwin="PhysTwin", springgaus="Spring-Gaus")
 L = ["% 자동 생성 (exe/fpa_table.py)", r"\begin{center}\scriptsize\begin{tabular}{llllrrr}\toprule",
      r"장면 & 방법 & 설정 & 완주/회 & 오차 \% (3 회) & ms (3 회 중앙값) & ms 3 회 \\\midrule"]
