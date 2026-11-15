@@ -64,10 +64,22 @@ def load_scene(a, dev="cpu"):
             if bc.get("type") == "cuboid":
                 assert max(abs(float(q)) for q in bc["velocity"]) == 0.0
                 BOX.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]]))
+            elif bc.get("type") == "enforce_particle_translation":                       # paper_remeasure2: 정지 영역 (속도 0) 도 조작점 상자로 (vasedeck 윗부분·pillow2sofa 소파)
+                assert max(abs(float(q)) for q in bc["velocity"]) == 0.0, "속도가 있는 translation 은 미지원"
+                BOX.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]]))
+    ROT = []                                                                             # paper_remeasure2: PG 회전 구동기 -> [(점, 단위 법선, 반 높이, 반지름, [(회전 몫, 이동 몫, 시작, 끝), ..]), ..]
+    if a.cfg_bc:
+        _grp = {}
+        for bc in (cfg.get("boundary_conditions") or []):
+            if bc.get("type") == "enforce_particle_velocity_rotation":
+                nv_ = torch.as_tensor(bc["normal"], dtype=torch.float64); nv_ = (nv_ / nv_.norm()).tolist()
+                k_ = (tuple(float(q) for q in bc["point"]), tuple(nv_), float(bc["half_height_and_radius"][0]), float(bc["half_height_and_radius"][1]))
+                _grp.setdefault(k_, []).append((float(bc["rotation_scale"]), float(bc["translation_scale"]), float(bc.get("start_time", 0.0)), float(bc.get("end_time", 1e3))))
+        ROT = [(k_[0], list(k_[1]), k_[2], k_[3], w_) for k_, w_ in _grp.items()]
     g = [float(q) for q in cfg["g"]]
     assert abs(g[0]) < 1e-12 and abs(g[1]) < 1e-12 and g[2] <= 0, f"중력이 -z 또는 0 이 아님 {g}"   # ficus 공식 config = 0
     S = dict(d=d, cfg=cfg, L=L, x0=x0, X=d["x"][:L + 1], v0=d["v"][0].double(), vol=vol, rho=rho, mass=vol * rho,
-             EXT=float((x0.max(0).values - x0.min(0).values).norm()), FZ=FZ, BOX=BOX, g=g, frame_dt=float(cfg["frame_dt"]),
+             EXT=float((x0.max(0).values - x0.min(0).values).norm()), FZ=FZ, BOX=BOX, ROT=ROT, g=g, frame_dt=float(cfg["frame_dt"]),
              E=float(cfg["E"]), nu=float(cfg["nu"]))
     return S
 
@@ -77,6 +89,36 @@ def time_scale(Kl, g):
     중력 0 (ficus 공식 config) 이면 맞출 중력이 없어 c = 1 (길이만 바꿈; 사용자 결정 11-05)."""
     gz = abs(float(g[2]))
     return (Kl * gz / 9.8) ** 0.5 if gz > 0 else 1.0
+
+
+def rot_membership(x, rot):
+    """회전 구동 원기둥 (처음 위치 기준) 안 입자 마스크 [(점, 법선, 반 높이, 반지름, 구간들)] -> 그룹마다 bool [N]."""
+    out = []
+    for (pt, nv, hh, rr, _w) in rot:
+        n_ = torch.as_tensor(nv, device=x.device, dtype=x.dtype); off = x - torch.as_tensor(pt, device=x.device, dtype=x.dtype)
+        ax = off @ n_; rp = off - ax[:, None] * n_
+        out.append((ax.abs() < hh) & (rp.norm(dim=-1) < rr))
+    return out
+
+
+def rot_traj(x0, rot, masks, L, h):
+    """구동 입자의 프레임별 위치 [L+1, N, 3] (PG 정의: v = rs (r_perp x n) + ts n = 각속도 −rs n 의 강체 회전 + n 방향 이동, 프레임 [(f−1)h, f h) 와 겹친 몫 f 만큼 곱해 합침).
+    프레임 f 위치는 f−1 위치에서 한 프레임 회전 (로드리게스) -- 우리 판 노드 구속·VR-GS 구동과 같은 프레임 평균 속도."""
+    X = x0.unsqueeze(0).repeat(L + 1, 1, 1).clone()
+    for (pt, nv, hh, rr, wins), msk in zip(rot, masks):
+        n_ = torch.as_tensor(nv, dtype=x0.dtype); p_ = torch.as_tensor(pt, dtype=x0.dtype)
+        for f in range(1, L + 1):
+            t = (f - 1) * h
+            rs = ts = 0.0
+            for (r_, t_, t0, t1) in wins:
+                fr = max(0.0, min(t + h, t1) - max(t, t0)) / h
+                rs += r_ * fr; ts += t_ * fr
+            th = -rs * h                                            # 각속도 -rs n
+            r = X[f - 1][msk] - p_
+            ax = (r @ n_)[:, None] * n_; rp = r - ax
+            rot_ = ax + rp * torch.cos(torch.tensor(th, dtype=x0.dtype)) + torch.cross(n_.expand_as(rp), rp, dim=-1) * torch.sin(torch.tensor(th, dtype=x0.dtype))
+            X[f][msk] = p_ + rot_ + ts * h * n_
+    return X
 
 
 def in_boxes(x, boxes):

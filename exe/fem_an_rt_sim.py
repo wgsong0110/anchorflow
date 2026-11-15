@@ -257,7 +257,7 @@ SOLVER = ADET.DetRT if a.det else ART.RTSolver
 MATX = {}
 SNHX = dict(snh=True) if a.elx == "snh" else {}                                    # 절 CM18: 탄성 판만 (MATX 에 안 넣음 -- MATX 가 차면 재질 판 발산 판정이 켜짐)
 MATNAME = cfg.get("material")
-if MATNAME in ("sand", "foam", "plasticine", "watermelon"):                            # 절 CM2: 재질 판 (lib/anchorflow/fem_mat_rt.py) -- 같은 실행기·같은 인자
+if MATNAME in ("sand", "foam", "plasticine", "watermelon", "metal"):                            # 절 CM2: 재질 판 (lib/anchorflow/fem_mat_rt.py) -- 같은 실행기·같은 인자
     assert a.elx == "fcr", "--elx snh 는 탄성 판만 (재질 판 수박은 exe/fem_ao_rt_sim.py --elx, 절 CM13)"     # 절 CM22: --fp_interp·--qjd 재질 판도 (끄면 그대로)
     from anchorflow import fem_mat_rt as MRT
     from anchorflow import fem_ao_cuda as AO

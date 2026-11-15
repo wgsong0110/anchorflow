@@ -25,6 +25,7 @@
 import argparse
 import glob
 import json
+import math
 import os
 import sys
 import time
@@ -93,7 +94,7 @@ if a.mode == "prep":
     lo, hi = Xs.reshape(-1, 3).min(0).values, Xs.reshape(-1, 3).max(0).values
     pad = 0.1 * float((hi - lo).max())
     lo, hi = (lo - pad).tolist(), (hi + pad).tolist()
-    fix = bool(S["BOX"])
+    fix = bool(S["BOX"]) or bool(S["ROT"])
     if S["FZ"] is not None:
         gz = float(to_sg(torch.tensor([[0.0, 0.0, S["FZ"]]]))[0, 2])
         zmin = Xs[..., 2].amin(dim=1)                                                           # 프레임별 최저점
@@ -157,6 +158,7 @@ DYNAMIC:
     if fix:
         for (pt, sz) in S["BOX"]:
             bc["fix_boxes_sg"].append((to_sg(torch.tensor([pt]))[0].tolist(), [float(q) * Ks for q in sz]))
+        bc["rot_sg"] = [dict(pt=to_sg(torch.tensor([g_[0]]))[0].tolist(), n=g_[1], hh=g_[2] * Ks, rr=g_[3] * Ks, wins=g_[4], c=c) for g_ in S["ROT"]]   # paper_remeasure2: PG 회전 구동기 (SG 길이 단위, 시간은 c 배)
         torch.save(dict(x0=to_sg(x0).float(), v0=(S["v0"] * (Ks / c)).float()), f"{FIT}/af_v0.pt")
         bc["v0"] = f"{FIT}/af_v0.pt"
         json.dump([0.0, 0.0, 0.0], open(f"{CK}/init_velocity_{VIT}.json", "w"))                 # 속도 단계 건너뜀 (공식 규약), 균일 속도 0
@@ -170,7 +172,7 @@ sys.path.insert(0, SG)
 GPU = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
 BC = json.load(open(BCJ))
 import lib.models.spring_mass.Spring_Mass as SMM                                              # noqa: E402
-if BC["fix_boxes_sg"] or BC["v0"]:                                                              # (2) ficus 화분 고정·초기 속도장
+if BC["fix_boxes_sg"] or BC["v0"] or BC.get("rot_sg"):                                          # (2) ficus 화분 고정·초기 속도장 (+ 회전 구동 앵커)
     _V = torch.load(BC["v0"])
     _init0, _step0 = SMM.Spring_Mass.initialize, SMM.Spring_Mass.step
 
@@ -179,16 +181,42 @@ if BC["fix_boxes_sg"] or BC["v0"]:                                              
         X0 = _V["x0"].to(xyz.device)
         V0 = _V["v0"].to(xyz.device)
         idx = torch.cat([torch.cdist(self.init_xyz[i:i + 256].float(), X0).topk(8, largest=False).indices for i in range(0, self.n_points, 256)])
-        self.af_fix = C.in_boxes(self.init_xyz.float(), BC["fix_boxes_sg"])
+        self.af_fix = C.in_boxes(self.init_xyz.float(), BC["fix_boxes_sg"]) if BC["fix_boxes_sg"] else torch.zeros(self.n_points, dtype=torch.bool, device=xyz.device)
+        self.af_rot = []                                                                          # 회전 구동 앵커 (처음 위치가 원기둥 안), 구동 시각 = 서브스텝 수 x dt
+        for g_ in BC.get("rot_sg") or []:
+            n_ = torch.tensor(g_["n"], device=xyz.device, dtype=torch.float32); p_ = torch.tensor(g_["pt"], device=xyz.device, dtype=torch.float32)
+            off = self.init_xyz.float() - p_; ax = off @ n_; rp = off - ax[:, None] * n_
+            m_ = (ax.abs() < g_["hh"]) & (rp.norm(dim=-1) < g_["rr"])
+            self.af_rot.append((m_, n_, p_, g_)); self.af_fix = self.af_fix | m_
+        self.af_nstep = 0
         v = V0[idx].mean(1)
         v[self.af_fix] = 0.0
         self.init_v = v.to(self.init_xyz.dtype)
         print(f"[ficus 처리] 앵커 {self.n_points}, 고정 {int(self.af_fix.sum())}, 초기 속력 최대 {float(v.norm(dim=1).max()):.3g}", flush=True)
 
     def _step(self, xyz, v, K, m, rebound_k, fric_k, damp, dt):
+        xyz_in = xyz
         xyz, v = _step0(self, xyz, v, K, m, rebound_k, fric_k, damp, dt)
         fx = self.af_fix[:, None]
-        return torch.where(fx, self.init_xyz, xyz), torch.where(fx, torch.zeros_like(v), v)
+        base = self.init_xyz
+        vnew = torch.zeros_like(v)
+        for (m_, n_, p_, g_) in self.af_rot:                                                      # PG: v = rs (r_perp x n) + ts n (rs 는 시뮬 시간 기준 -> SG 시간 = 시뮬 시간 x c), 위치는 한 서브스텝 강체 회전
+            t_sim = self.af_nstep * float(dt) / g_["c"]
+            rs = sum(r_ for (r_, t_, t0, t1) in g_["wins"] if t0 <= t_sim < t1)
+            ts = sum(t_ for (r_, t_, t0, t1) in g_["wins"] if t0 <= t_sim < t1)
+            th = -rs * float(dt) / g_["c"]
+            off = xyz_in - p_; ax = (off @ n_)[:, None] * n_; rp = off - ax
+            xr = p_ + ax + rp * math.cos(th) + torch.cross(n_.expand_as(rp), rp, dim=-1) * math.sin(th) + ts * float(dt) / g_["c"] * n_
+            mm = m_[:, None]
+            xyz = torch.where(mm, xr.to(xyz.dtype), xyz)
+            vnew = torch.where(mm, ((xr - xyz_in) / float(dt)).to(v.dtype), vnew)
+            fx = fx & ~mm
+            base = base
+        self.af_nstep += 1
+        keep = self.af_fix[:, None]
+        for (m_, _n, _p, _g) in self.af_rot:
+            keep = keep & ~m_[:, None]
+        return torch.where(keep, self.init_xyz, xyz), torch.where(self.af_fix[:, None], vnew, v)
     SMM.Spring_Mass.initialize = _initialize
     SMM.Spring_Mass.step = _step
 import train as T                                                                               # noqa: E402  (공식 train.py, __main__ 블록은 안 돎)
