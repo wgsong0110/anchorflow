@@ -2,6 +2,7 @@
 # rep4 (11-15): 표현력 실험 장면 4 개 (wolf·bread = PG 흐름, 나머지 둘 = 새 형상 PG 장면 nshape 정답 궤적) 의 우리 판 (hex) 다시 돌리기 + 진단 + nshape 다섯 방법.
 #   사용: bash exe/go_rep4.sh <커밋> '<장면:판 ...>'   (사용자 11-15: GaussianFluent 장면은 뺀다)
 #   nshape 장면 판 = fix (우리 판) | pt1 pt10 pt100 pt1000 | gsverse | vrgsx | sg (ε·η = 기존 규칙 값 그대로, go_repflow_gf.sh 와 같은 명령).  판 base = 기존 hex (진단만 추가 --hex_diag, 결과 불변), feas = + 되돌림 정의역 (--feas), fix = + 입자 위치 장벽 (--hex_pbar --feas; 새 공통 규칙)
+#   판 hex = 기존 우리 판 그대로 (플래그 없음; 사용자 11-15: 뒤집힘·화질 고치기 중단, L2 오차만).  env NOVIS=1 이면 추적 (RMSE 는 추적기 요약) 만 -- 지표·위상·렌더 안 함.
 #   ε·η·dx = 기존 그대로 (hex 1e-3/0.5; wolf·bread dx 0.02 = 기존, nshape dx = grid_lim/n_grid). 카드 = 나열 순서 % 카드 수.
 #   wolf·bread: rep_track_sg --video (r10 과 같은 렌더) + rep_metrics (목표 영상 = archive_20261009/r10).
 #   nshape: 정답 = R2 datasets/anchorflow/nshape/gt/<장면> (i-PhysGaussian 공식 러너 h5, 입자 전부; rep_prep_gf 로 같은 정규화), 지표 = rep_metrics_gf · rep_topo_gf,
@@ -15,7 +16,7 @@ export TMPDIR=/dev/shm/dkta/tmp TORCHINDUCTOR_CACHE_DIR=/dev/shm/dkta/rep4_induc
 PY=${PY:-python}; W=/home/dkta/work; PG=$W/i-physgaussian; GF=$W/GaussianFluent; AFX=$PWD
 L=$O/go_$(hostname).log; say() { echo "[rep4 $(date '+%F %T')] $*" >> $L; rclone copyto $L $R4/go_$(hostname).log -q; }
 say "시작 커밋 $H 판 $JOBS"
-flags_of() { case $1 in base) echo "--hex_diag";; feas) echo "--hex_diag --feas";; fix) echo "--hex_diag --hex_pbar --feas";; fixL) echo "--hex_diag --hex_pbar --feas --hex_lmax_gauss";; esac; }
+flags_of() { case $1 in hex) echo "";; base) echo "--hex_diag";; feas) echo "--hex_diag --feas";; fix) echo "--hex_diag --hex_pbar --feas";; fixL) echo "--hex_diag --hex_pbar --feas --hex_lmax_gauss";; esac; }
 prep_pg() { local s=$1 IN=$O/in_$s m
   mkdir -p $IN
   for f in gflow_$s.npz aux_$s.npz; do [ -s $IN/$f ] || rclone copyto $RA/repflow/inputs/$f $IN/$f -q; done
@@ -53,7 +54,7 @@ one() { local s=$1 v=$2 g=$3 D=$O/$1/$2 n=hex_$1 IN=$O/in_$1 c R=$R4/$1/$2
     local KF=$(cd $GF && $PY $AFX/exe/rep_render_gf.py --gf $GF --model_path $GF/model_$s --config $IN/config.json --count 1 2>&1 | grep -a GS_NUM | tail -1 | awk '{print $2}')
     local B="exe/rep_track_sg.py --opt riem --tb none --flow $IN/gflow_$s.npz --aux $IN/aux_$s.npz"
     case $v in
-      base|feas|fix|fixL) c="$B --method hex --riem_energy logbarrier --riem_eps 1e-3 --riem_lr 0.5 --hex_dx $DX $(flags_of $v)";;
+      hex|base|feas|fix|fixL) c="$B --method hex --riem_energy logbarrier --riem_eps 1e-3 --riem_lr 0.5 --hex_dx $DX $(flags_of $v)";;
       vrgsx)   n=vrgsx_$s; c="$B --method vrgsx --riem_energy logbarrier --riem_eps 1e-3 --riem_lr 1";;
       gsverse) n=gsverse_$s; c="$B --method vrgs --riem_energy logbarrier --riem_eps 1e-3 --riem_lr 1";;
       sg)      n=sg_$s; read -r _ E ETA <<< "$(rclone cat $RA/lbours/repflow1115/sg/tune_pick.txt | grep BEST)"
@@ -63,9 +64,9 @@ one() { local s=$1 v=$2 g=$3 D=$O/$1/$2 n=hex_$1 IN=$O/in_$1 c R=$R4/$1/$2
     [ -f $D/$n.npz ] || { echo "CUDA_VISIBLE_DEVICES=$g $PY -u $c --out $D/$n.npz --resume --save_traj --traj32 --save_F ${KF:-0}" > $D/$n.cmd.txt; say "$s/$v 카드 $g 시작 (가우시안 $KF): $c"
       CUDA_VISIBLE_DEVICES=$g $PY -u $c --out $D/$n.npz --resume --save_traj --traj32 --save_F ${KF:-0} < /dev/null >> $D/$n.log 2>&1; say "$s/$v rc=$? $(grep -a '요약\|rror' $D/$n.log | tail -2 | cut -c1-260 | tr '\n' ' ')"; }
     rclone copy $D $R -q
-    [ -f $D/metrics/$n.json ] || { CUDA_VISIBLE_DEVICES=$g $PY -u exe/rep_metrics_gf.py --res $D/$n.npz --flow $IN/gflow_$s.npz --sim $O/h5_$s --out $D/metrics/$n.json < /dev/null > $D/metrics/$n.log 2>&1; say "지표 $s/$v rc=$? $(grep -a '측정\|rror' $D/metrics/$n.log | tail -2 | tr '\n' ' ')"; }
-    [ -f $D/metrics/${n}_topo.json ] || { $PY -u exe/rep_topo_gf.py --res $D/$n.npz --flow $IN/gflow_$s.npz --out $D/metrics/${n}_topo.json < /dev/null > $D/metrics/${n}_topo.log 2>&1; say "위상 $s/$v rc=$? $(tail -1 $D/metrics/${n}_topo.log | cut -c1-260)"; }
-    [ -f $D/metrics/${n}_visual.json ] || { mkdir -p $D/render; ( cd $GF && CUDA_VISIBLE_DEVICES=$g $PY -u $AFX/exe/rep_render_gf.py --gf $GF --model_path $GF/model_$s --config $IN/config.json --res $D/$n.npz --aux $IN/aux_$s.npz --out $D/render/$n.mp4 < /dev/null > $D/render/$n.log 2>&1 )
+    [ -n "${NOVIS:-}" ] || [ -f $D/metrics/$n.json ] || { CUDA_VISIBLE_DEVICES=$g $PY -u exe/rep_metrics_gf.py --res $D/$n.npz --flow $IN/gflow_$s.npz --sim $O/h5_$s --out $D/metrics/$n.json < /dev/null > $D/metrics/$n.log 2>&1; say "지표 $s/$v rc=$? $(grep -a '측정\|rror' $D/metrics/$n.log | tail -2 | tr '\n' ' ')"; }
+    [ -n "${NOVIS:-}" ] || [ -f $D/metrics/${n}_topo.json ] || { $PY -u exe/rep_topo_gf.py --res $D/$n.npz --flow $IN/gflow_$s.npz --out $D/metrics/${n}_topo.json < /dev/null > $D/metrics/${n}_topo.log 2>&1; say "위상 $s/$v rc=$? $(tail -1 $D/metrics/${n}_topo.log | cut -c1-260)"; }
+    [ -n "${NOVIS:-}" ] || [ -f $D/metrics/${n}_visual.json ] || { mkdir -p $D/render; ( cd $GF && CUDA_VISIBLE_DEVICES=$g $PY -u $AFX/exe/rep_render_gf.py --gf $GF --model_path $GF/model_$s --config $IN/config.json --res $D/$n.npz --aux $IN/aux_$s.npz --out $D/render/$n.mp4 < /dev/null > $D/render/$n.log 2>&1 )
       CUDA_VISIBLE_DEVICES=$g $PY -u exe/gfs_post.py vid --gt_png $O/gt_frames_$s --our_png $D/render/${n}_frames --out_json $D/metrics/${n}_visual.json --out_mp4 $D/render/${n}_cmp.mp4 --fps 24 < /dev/null > $D/metrics/${n}_visual.log 2>&1
       say "시각 $s/$v rc=$? $(tail -1 $D/metrics/${n}_visual.log | cut -c1-160)"; }
     ;;
