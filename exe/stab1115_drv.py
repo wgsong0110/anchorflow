@@ -93,7 +93,7 @@ def run(m, n, rep):
         with SEM:
             if m == "gf": GSEM.acquire()
             try:
-                t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 TI_DEVICE_MEMORY_FRACTION={a.tifrac} {old_cmd(m, n, out)}", out + ".log")
+                t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 AF_TI_MEM={a.tifrac} {old_cmd(m, n, out)}", out + ".log")
             finally:
                 if m == "gf": GSEM.release()
         for t in glob.glob(out + "_tmp*"):
@@ -176,7 +176,7 @@ PYEOF""", f"{V}/{name}_conv.log")
                     f"--render_npz {V}/{name}_full.npz --video {V}/{name}.mp4 --png_dir {png} --out {V}/{name}.r.npz", f"{V}/{name}_render.log")
             shutil.rmtree(d, ignore_errors=True); os.path.exists(f"{V}/{name}_full.npz") and os.remove(f"{V}/{name}_full.npz")
         else:
-            sh(f"CUDA_VISIBLE_DEVICES=0 TI_DEVICE_MEMORY_FRACTION=0.5 {old_cmd(m, n, f'{V}/{name}', dump=dump)}", f"{V}/{name}_dump.log")
+            sh(f"CUDA_VISIBLE_DEVICES=0 AF_TI_MEM=0.5 {old_cmd(m, n, f'{V}/{name}', dump=dump)}", f"{V}/{name}_dump.log")
             rc = sh(f"cd {WT} && CUDA_VISIBLE_DEVICES=0 {PY} -u exe/rep_ip.py --sim {dump} --cfg {ST}/{S}/config.json --shape {S} --method ours --frames {FR} --render_ref "
                     f"--video {V}/{name}.mp4 --png_dir {png} --out {V}/{name}.r.npz", f"{V}/{name}_render.log")
             shutil.rmtree(dump, ignore_errors=True)
