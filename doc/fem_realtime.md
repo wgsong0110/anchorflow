@@ -11723,3 +11723,17 @@ bloc 2 는 chair 무게중심을 프레임 9 까지 정답에 맞춤 (0.361 대 
 | vasedeck | 50/50 9.94 % 32.7 | 50/50 9.70 % 16.2 |
 | pillow2sofa | 50/50 12.46 % 19.7 | 50/50 12.39 % 14.5 |
 발산 없음, 나빠진 장면 없음 (레고 +0.11 %p). -> exe/nshape_cmd.py (PG 장면 기본 판 명령) 에 `--cg 4` 기본 (NS_CG4=0 이면 옛 판). --bloc 2 는 레고 세팅 chair 발산·drums 메모리 부족이라 기본 아님.
+
+## CM190. 논문 파레토 (방법마다 대표 설정 하나) 와 ablation A~E 최종 -- 레고·pillow2sofa·bread·wolf, 새 기본 판 (`--cg 4` + 서브스텝 수정 ssfix) (조정자 11-15 위임, 사용자 범위 확정) -- **진행 중 (vast 크레딧 0 으로 19:22 UTC 모든 인스턴스 정지, 충전 뒤 이어 감)** -- 가지 final_pa (nshape + pr2 합침 a17882e), 커밋 4dd56bc (exe/fpa_cmd.py 명령 생성, exe/fpa_worker.sh·vast_fpa.sh·fpa_launch.sh·fpa_jobs.py, lib/anchorflow/fem_an_rt.py·exe/fem_an_rt_sim.py `--ga be`) · d236113 (일꾼: 영 모드 분석만 카드에서) · 01f07ee (진단 판 old·cgonly) · exe/fpa_table.py·fpa_video.sh·fpa_compose.py; 베이스라인 가지 final_pa_bl (92dfe58·9293295·23effb3·cf55da5, 시간 구간 cuboid 경계); vast.ai RTX A6000 x2 final_pa_a 60820067 (machine 154722) · final_pa_b 60820073 (14804), 둘 다 300 W = 기본; 결과 R2 lbours/final_pa/{runs,bl,marks,code}, 논문 폴더 pareto_final_1115.tex·ablation_final_1115.tex
+### CM190.1 새 기본 판 명령 (exe/fpa_cmd.py)
+- 장면별 검증된 기본 명령 = exe/pr_ours_tmpl.json (레고 cm157 LA_1, bread cm157 BA_1, wolf cm139 Kacdhnz), pillow2sofa = pr2_grid 유도 (ficus FA_1 + rotbc_wrap 입자 선택 구속, 300 프레임). 여기에 `--cg 4` (원래 --cg 값 대체), `--wrx_col 0 --mlow 1e-3 --ue_loc 51`, 바깥 감싸개 `exe/ssfix_wrap.py --ssf_bec 1 --ssf_split 3 --ssf_bigT 0.5 --ssf_tsum 1`.
+- 판: def, k2·k4 (파레토), q1·q27·q64, be (후퇴 오일러), mid (HHT ρ∞ 1), nofpi (--fp_interp 끔 = 격자->입자 F 전달), c075·c15·c20, ssN (E, 50 프레임), old·cgonly (진단).
+- `--ga be` (새 선택지, 기본 판 불변): 같은 증분 포텐셜 경로에서 α_m=α_f=0, γ=β=1, 첫 프레임 a0 계산 생략, `--ue beall` 강제 (매 걸음 U1=y, v1=(y−U)/h, a=0) -> 정확한 후퇴 오일러. 이론 경로 (`--scheme theta --theta 1`) 는 재질 판·--fp_interp·--ksplit 이 ga 만 지원해 단일 차이가 안 됨.
+### CM190.2 결과 (1 차, 정지 전까지; 표 = 논문 폴더 *_final_1115_tables/table.tex 자동 생성)
+- 우리 K=1 (3 회 중앙값): 레고 5.99 % 13.0 ms, wolf 4.38 % 17.4 ms; 1 회: pillow2sofa 1.48 % 11.8 ms, bread 5.85 % 18.3 ms.
+- 옛 기본 판 대비 (진단 1 회): 레고 5.24 -> 5.99 %, wolf 4.59 -> 4.38 %, bread 2.00 -> 5.85 % (옛 판 + --cg 4 만으로 6.04 % -> 원인은 --cg 4; 프레임 100 뒤 찢어진 조각에서 벌어짐 3.8 대 17.1 % (f299)); bread 는 새 판에서 --fp_interp 만 끄면 1.81 %.
+- 레고 A: 1 점 5.04 % (25.7 ms, 영 모드 2055 대 기본 20), 후퇴 오일러 7.11 %, 중점 6.56 %, F 누적 6.27 %. pillow2sofa 후퇴 오일러 f283 발산 (입자 det F<=0 8201).
+- E: 레고 N 1~128 모두 완주 (4.43·3.84·3.76·3.77·3.86·3.99·4.18·4.54 %), wolf N<=8 완주, N16 f27 GPU 메모리 부족 (노드 상자 1.65 M -> 2.47 M), N32·64 f24·26 CUDA 잘못된 메모리 접근 (노드 상자 급증 직후), N128 f1 같은 오류 -- 원인 미분리.
+- 베이스라인 (1 회): 레고 정답 MPM 833 = 1107 ms, VR-GS 167x11 7.54 % 301 ms, PhysTwin N0 162 5.63 % 35.5 ms, Spring-Gaus 200 30.5 % 824 ms; pillow2sofa PhysTwin N0 143 5.90 % 70.5 ms (bl1 디스크에만), VR-GS 직접 구현은 물체 충돌·상자 경계가 없어 f128 발산, Spring-Gaus 동역학 학습 중 정지. wolf·bread 는 탄성 전용 세 방법 해당 없음 (R2 lbours/final_pa/bl/na.json).
+### CM190.3 남은 것
+- 충전 뒤: final_pa_a·b start -> /root/fpa/restart.sh (진행 중이던 판을 대기열 앞에 되돌리고 d236113 일꾼으로) -> pillow2sofa·bread 의 A~C 2·3 회와 C 1 회, E, 진단 판; 베이스라인 bl1 (T1 r2·r3), bl2 (Spring-Gaus pillow2sofa 학습); 레고 대표 영상 (exe/fpa_video.sh + fpa_compose.py, ~/vidcache/final/pa/).
