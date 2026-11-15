@@ -16,7 +16,7 @@
 import numpy as np
 import torch
 
-INFO = dict(tau=0.0, mods=[], n_kfe=0, n_chk=0, n_lmix=0, lmix=0, kfe=1, mats=(7,))
+INFO = dict(tau=0.0, mods=[], n_kfe=0, n_chk=0, n_lmix=0, lmix=0, kfe=1, skip=(2,))
 
 HF_SRC = r"""
 // ---- 절 CM184 hexff: 가우스 점 뒤집힘 불가능 보폭·시작점 확인 ----
@@ -144,7 +144,7 @@ def _wrap_k(k0):
             k0(s, "hf_lmix", n, (args[0], kn_, kk_, args[3], P(s.sk), P(s.eta), P(s.mn), np.float32(s.mthr), P(getattr(s, "fixd", None)), P(s.U), P(s.Ut), yh_, y_, np.int32(INFO["lmix"])), 256)
             INFO["n_lmix"] += 1
         if getattr(s, "_hff", False) and getattr(s, "_pkc", None) is None and name in ("rt_bar_kfe", "yl_chk") \
-                and (INFO["mats"] is None or getattr(s, "_mat", None) in INFO["mats"]):      # 기본: 뒤집힌 F 에서 응력이 정의되지 않는 재질 (7 = GF NACC, 신-후크 J^-2/3) 만
+                and getattr(s, "_mat", None) not in INFO["skip"]:      # 기본: 모래 (재질 2, Drucker-Prager 반환 사상이 주값 크기 |σ| 로 정의돼 뒤집힘을 스스로 다룸) 빼고 전부 (탄성 실행기 포함)
             P = lambda t: np.uint64(t.data_ptr())
             if (name == "rt_bar_kfe" and len(args) != 12) or (name == "yl_chk" and len(args) != 13):
                 INFO.setdefault("bad_args", set()).add((name, len(args)))
@@ -162,10 +162,10 @@ def _wrap_k(k0):
     return k
 
 
-def install(tau=0.0, lmix=0, kfe=1, mats=(7,)):
+def install(tau=0.0, lmix=0, kfe=1, skip=(2,)):
     import cupy as cp
     from . import fem_an_rt as ART
-    INFO["tau"] = float(tau); INFO["lmix"] = int(lmix); INFO["kfe"] = int(kfe); INFO["mats"] = mats
+    INFO["tau"] = float(tau); INFO["lmix"] = int(lmix); INFO["kfe"] = int(kfe); INFO["skip"] = tuple(skip)
     base = cp.RawModule
     if not getattr(base, "_hff", False):
         def RawModule(*a, **kw):
@@ -191,4 +191,4 @@ def install(tau=0.0, lmix=0, kfe=1, mats=(7,)):
             s._hff = True
         init._hff = True
         C.__init__ = init
-    print(f"[절 CM184 hexff] 가우스 점 뒤집힘 불가능 보폭 (rt_bar_kfe 뒤 hf_kfe) + 시작점 섞기 확인 (yl_chk 뒤 hf_chk), τ {tau}, 보폭 조건 {kfe}, 대상 재질 {mats} (None = 전부), 거의 빈 노드 고정 자리 섞기 {lmix}", flush=True)
+    print(f"[절 CM184 hexff] 가우스 점 뒤집힘 불가능 보폭 (rt_bar_kfe 뒤 hf_kfe) + 시작점 섞기 확인 (yl_chk 뒤 hf_chk), τ {tau}, 보폭 조건 {kfe}, 뺀 재질 {skip}, 거의 빈 노드 고정 자리 섞기 {lmix}", flush=True)
