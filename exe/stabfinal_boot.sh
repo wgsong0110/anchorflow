@@ -93,7 +93,7 @@ for job in $(echo "$JOBS" | tr ';' ' '); do
     # 다른 인스턴스의 계획 (plan_<방법>.json) 이 R2 에 다 올라올 때까지 기다림 (5 분 간격), 그 뒤 장면 결과 전부 받기
     NEED="plan_pg.json plan_ipg.json plan_omni.json plan_ours_f5.json"
     for w in $(seq 1 400); do
-      miss=""; for p in $NEED; do rclone lsf $RX/res/$s/$p >/dev/null 2>&1 && [ -n "$(rclone lsf $RX/res/$s/$p 2>/dev/null)" ] || miss="$miss $p"; done
+      miss=""; for p in $NEED; do rclone cat $RX/res/$s/$p 2>/dev/null | python -c "import sys,json; d=json.load(sys.stdin); sys.exit(1 if d.get('stale') else 0)" 2>/dev/null || miss="$miss $p"; done   # [stabfinal] stale 표시 계획 (옛 실행 환경 오류 판정) 은 없는 것으로
       [ -z "$miss" ] && break; [ $((w % 6)) = 1 ] && say "[기다림] $s 없음:$miss"; sleep 300
     done
     rclone copy $OUT $RX/res -q --update --transfers 8 "${EXC[@]}"
