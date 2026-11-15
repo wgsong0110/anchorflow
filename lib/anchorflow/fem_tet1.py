@@ -78,6 +78,22 @@ NEW_TRI = "((oc == af_tt(fx + (size_t)p*3)) ? 1.f : 0.f)"
 YQ = [(r"\+ 1\.f \+ \(\(oc & 4\) \? GG : -GG\)", "+ af_tc(q & 7, 0)"), (r"\+ 1\.f \+ \(\(oc & 2\) \? GG : -GG\)", "+ af_tc(q & 7, 1)"),
       (r"\+ 1\.f \+ \(\(oc & 1\) \? GG : -GG\)", "+ af_tc(q & 7, 2)")]
 
+# 절 CM180 (사용자 요청 11-15) 혼합 판 `--tmx 1` (`--tmx 2` = P2G 만 B-스플라인, G2P (위치·속도·F 갱신) 은 사면체) (tet1_wrap, 기본 0): 탄성 (적분점·F_q·힘·헤시안) 은 사면체 그대로, 입자 <-> 노드 전달 (P2G·G2P·S_구속 노드 몫) 만 육면체
+# 이차 B-스플라인 가중. 노드 = 같은 격자 정수점이라 대응 변환 없음. 사면체 칸 [floor(y), +1) 의 꼭짓점 8 개는 항상 입자의 B-스플라인 노드 (round(y) 둘레 3 칸) 안에 듦.
+# 사면체 기저의 fx = y - floor(y) in [0,1) 에서 B-스플라인 base = floor(y - 1/2) = pb + sh (sh = fx < 1/2 ? -1 : 0), 칸 안 좌표 fx - sh.
+# 노드 상자는 아래쪽 한 층 늘림 (rt_coord 의 최솟값 b - 1), 위쪽은 사면체 판이 이미 b + 2 까지 가짐.
+MIX = [0]
+R_PBN = re.compile(r"\(pb\[p\*3(\+1|\+2)?\]\+([ijk])\)")
+
+
+def _mix_bwf(m_):
+    return ("int sh_[3]; for (int a=0;a<3;a++) { sh_[a] = (fx[p*3+a] < 0.5f) ? -1 : 0; bwf(fx[p*3+a] - (float)sh_[a], %s[a], dw[a]); }" % m_.group(1))
+
+
+def _mix_pb(m_):
+    return "(pb[p*3%s]+sh_[%d]+%s)" % (m_.group(1) or "", "ijk".index(m_.group(2)), m_.group(2))
+
+
 INFO = dict(mode=None, mods=[], err=None)
 OUT = ["."]
 
@@ -134,7 +150,7 @@ def _bodies(src):
     return out
 
 
-def transform(src):
+def transform(src, mix=False):
     """사면체 기저로 바꾼 소스와 규칙별 적용 수. 대상 글자가 없는 모듈은 그대로.
     입자 가중 (bwf 줄·27 곱·기울기) 은 bwf 를 부르는 함수 본문 안에서만 바꿈 (정답 격자 B-스플라인 커널 -- 예 fem_wolfh5 w5s_acc -- 은 그대로)."""
     cnt = {}
@@ -143,6 +159,18 @@ def transform(src):
     for name, a, b in reversed(_bodies(s)):
         body = s[a:b]
         n1 = n2 = 0
+        if mix and not (mix == 2 and name.startswith("rt_g2p")):                       # --tmx 2: G2P 커널 (rt_g2p*) 은 사면체 그대로, P2G·S_구속 노드 몫만 B-스플라인
+            body, n1 = R_BWF.subn(_mix_bwf, body)
+            body, n2 = R_BWF3.subn(_mix_bwf, body)
+            if not (n1 or n2):
+                continue
+            body, n3 = R_PBN.subn(_mix_pb, body)
+            cnt["mixbwf"] = cnt.get("mixbwf", 0) + n1 + n2
+            cnt["mixpb"] = cnt.get("mixpb", 0) + n3
+            if n3 != 3 or re.search(r"pb\[p\*3[^\]]*\]\+[ijk]\b", body) or re.search(r"bwf\(fx\[p\*3\+a\], ", body):
+                left.append(name + "(mix pb %d)" % n3)
+            s = s[:a] + body + s[b:]
+            continue
         body, n1 = R_BWF.subn(NEW_BWF, body)
         body, n2 = R_BWF3.subn(NEW_BWF, body)
         if not (n1 or n2):
@@ -163,6 +191,8 @@ def transform(src):
         cnt["tri"] = n
     for fn in ("rt_coord",):
         s = _sub_fn(s, fn, r"floorf\(y - 0\.5f\)", "floorf(y)", cnt)
+        if mix:
+            s = _sub_fn(s, fn, r"b0 = b; b1 = b;", "b0 = b - 1; b1 = b;", cnt)
     for fn in ("rt_gauss",):
         s = _sub_fn(s, fn, r"ac\[28\]\*0\.125f", "ac[28]*AF_TVW(q & 7)", cnt)
         s = _sub_fn(s, fn, r"ac\[29\]\*0\.125f", "ac[29]*AF_TVW(q & 7)", cnt)
@@ -175,8 +205,10 @@ def transform(src):
                     "float tvw_ = ((q & 7) < 6) ? ((1.f - %.9ef)*aq[27]/ac[28] + %.9ef/6.f) : 0.f; Vq[q] = ac[28]*tvw_; float mm = ac[29]*tvw_;" % (kap, kap), cnt)
     cnt = {k: v for k, v in cnt.items() if v}
     if cnt:
-        if "bwf(fx" in s:
+        if "bwf(fx" in s and not mix:
             left.append("bwf(fx")
+        if mix and (cnt.get("rt_coord:b0 = b; b1 = b;", 0) != 1 or not cnt.get("mixbwf")):
+            left.append("mix 규칙 수 (rt_coord 최솟값 %s, bwf %s)" % (cnt.get("rt_coord:b0 = b; b1 = b;"), cnt.get("mixbwf")))
         if re.search(r"fx\[p\*3\] >= 1\.f", s):
             left.append("oc")
         if "? t[0] : 1.f - t[0]" in s:
@@ -258,9 +290,11 @@ def _dump():
         pass
 
 
-def install(out, mode):
+def install(out, mode, mix=0):
     import cupy as cp
     OUT[0] = out
+    MIX[0] = int(mix)
+    INFO["mix"] = int(mix)
     INFO["mode"] = int(mode)
     base = cp.RawModule
     if not getattr(base, "_tet1", False):
@@ -279,7 +313,7 @@ def install(out, mode):
                         a[0] = code2
                 if INFO["mode"] == 1:
                     try:
-                        code2, cnt = transform(code)
+                        code2, cnt = transform(code, int(MIX[0]))
                     except Exception as e_:
                         INFO["err"] = str(e_)[:600]; _dump(); raise
                     rec.update(rules=cnt, sha_tet=hashlib.sha1(code2.encode()).hexdigest()[:12])
