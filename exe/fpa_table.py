@@ -40,6 +40,8 @@ def agg(s, v):
 def cell(a, k="err", fmt="%.2f"):
     if a is None or a["n"] == 0:
         return "--"
+    if a[k] is None and k == "ms":
+        return "--"
     if a[k] is None:
         d = a["div"][0] if a["div"] else None
         if isinstance(d, (int, float)):
@@ -165,7 +167,7 @@ def table(title, vs, extra=True):
                 if not a["n"]:
                     continue
                 T.append(f"{nm} & {vname(v)} & {a['ok']}/{a['n']} & {a['flip'] if a['flip'] is not None else '--'} & "
-                         f"{'%.3g' % a['rise'] if a['rise'] is not None else '--'} & {a['eig'] if a['eig'] is not None else '--'}\\\\")
+                         f"{'%.3g' % a['rise'] if a['rise'] is not None else '--'} & {a['eig'] if (a['eig'] is not None and v in ('def', 'q1', 'q27')) else '--'}\\\\")
         T.append(r"\bottomrule\end{tabular}\end{center}")
     return T
 
