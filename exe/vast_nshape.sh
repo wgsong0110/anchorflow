@@ -76,6 +76,7 @@ if [ "$HAVE" -ge $((NF + 1)) ]; then say "[정답] R2 에 있음 ($HAVE)"; else
   rclone copy $O $DS/gt/$SC --transfers 16 -q --exclude "fill.npy"; say "[정답] R2 올림 $DS/gt/$SC"
   [ $n -ge $((NF + 1)) ] || { say "[정답 실패] 프레임 $n/$((NF + 1))"; echo "정답 실패" | rclone rcat $RX/$TAG.END; exit 1; }
 fi
+rclone cat ${XS_CODE}/af_code.tar | tar -x -C $AF      # 절 CM186: 우리 판 직전에 코드 묶음 다시 (학습·정답 도중 공통 수정이 올라왔으면 반영)
 # ---- (3) 우리 판 (발산하면 K 1 -> 2 -> 4 -> 8, 사용자 11-15 규칙)
 export W AF DS R RX LOG TAG GF; export -f say; mkdir -p $W/ag
 export GFS_VIDDIR=$VD; [ $SOLV = pg ] && export GFS_KEEP_DT=1 GFS_GTLABEL="정답 (PhysGaussian)"
