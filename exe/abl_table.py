@@ -35,8 +35,8 @@ def fe(d):
 def fm(d): return "--" if d is None or d["ms"] is None else "%.1f" % d["ms"]
 def tex_table(title, scenes, vars_, names, extra_eig=True, bc=False):
     cols = "l" + "rr" * len(scenes)
-    t = ["\\begin{center}\\small\\begin{tabular}{%s}\\toprule" % cols,
-         "판 & " + " & ".join("\\multicolumn{2}{c}{%s}" % s.replace("_", "\\_") for s in scenes) + "\\\\",
+    t = ["\\begin{center}%s\\begin{tabular}{%s}\\toprule" % ("\\scriptsize" if len(scenes) > 4 else "\\small", cols),
+         "판 & " + " & ".join("\\multicolumn{2}{c}{%s}" % (s.replace("_", "\\_") + ("$^\\dagger$" if s in ("vasedeck", "plane") else "")) for s in scenes) + "\\\\",
          " & " + " & ".join("오차 \\% & ms" for _ in scenes) + "\\\\\\midrule"]
     for v in vars_:
         t.append(names.get(v, v) + " & " + " & ".join("%s & %s" % (fe(cell(s, v, bc)), fm(cell(s, v, bc))) for s in scenes) + "\\\\")
@@ -67,6 +67,21 @@ for sc_, (cell_, dx_) in DX.items():
     t.append("%s & %.4g & %.4g & %.4g & %.4g & %.4g\\\\" % (sc_, dx_, cell_, 0.75 * cell_, 1.5 * cell_, 2 * cell_))
 t.append("\\bottomrule\\end{tabular}\\end{center}")
 out.append("\\subsection*{C. 칸 크기 (절대 값)}\n" + "\n".join(t))
+# E. 서브스텝 강인성 (반복 번호 2 한 번씩, 50 프레임): ss = 기본 판 (--K N), ssf = + 뉴턴 허용치 tolN/N (exe/ssfix_wrap.py, 절 CM184)
+def ecell(sc, v):
+    rs = R.get((sc, v), [])
+    if not rs:
+        return "--"
+    r = rs[0]
+    if r.get("diverged") is not None or r["frames_done"] != r["frames"]:
+        return "발산 f%s" % r.get("diverged")
+    return "%.2f" % (100 * r["err"])
+SE = ["ficus", "bread", "wolf", "pillow2sofa"]
+t = ["\\begin{center}\\small\\begin{tabular}{l" + "rr" * len(SE) + "}\\toprule", "$N$ & " + " & ".join("\\multicolumn{2}{c}{%s}" % x_ for x_ in SE) + "\\\\", " & " + " & ".join("기본 & 수정" for _ in SE) + "\\\\\\midrule"]
+for n_ in (1, 2, 4, 8, 16, 32, 64, 128):
+    t.append("%d & " % n_ + " & ".join("%s & %s" % (ecell(x_, "ss%d" % n_), ecell(x_, "ssf%d" % n_)) for x_ in SE) + "\\\\")
+t.append("\\bottomrule\\end{tabular}\\end{center}")
+out.append("\\subsection*{E. 서브스텝 수 $N$ 강인성 (오차 \\%, 50 프레임)}\n" + "\n".join(t))
 open(f"{OUT}/ablation_1115_tables.tex", "w").write("\n\n".join(out))
 # 그림: B (가우스점 수 대 오차) · C (칸 배수 대 오차·시간)
 try:

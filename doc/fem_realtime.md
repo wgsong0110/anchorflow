@@ -11583,3 +11583,8 @@ GF 소스 (R2 _vastmirror/GaussianFluent) 를 대조하면 우리 측정 정의�
 - 영상 result/anchorflow/v20261009/fem_wm_fracture_cmp.mp4 (= R2 lbours/wmfrac/vid/, 2368x1264, 101 프레임, yuv420p·faststart, 로컬 ~/vidcache/wmfrac/ 에서 전체 디코드·f5·f15·f100 확인): 위 줄 3DGS RGB · 아래 줄 손상 색 (logJp viridis -0.2~0.4), 열 = 정답 (GF 공식) | 에너지 보존 판 | 우리 판 전 (K 1) | 우리 판 후 (K 4).
 - R2 lbours/wmfrac/ : gfv/<판>/ (cmd·log·energy.jsonl (프레임·서브스텝 에너지·손상)·sv/ 부분표본·전 입자 logJp), gfv/fw0_s4d/ (프레임 h5 전부, 보존 판 덤프), gfv/fw0_s4d_clean/ (비유한 입자 되돌린 렌더용), fem/<판>/ (명령·로그·summary·fem.jsonl; pred.pt 는 올리지 않음), vid/, code/.
 - 회귀: 공통 경로 (실행기·lib) 를 안 고쳐서 레고·ficus·bread 회귀 안 함.
+
+## CM183. 설계 선택 ablation (A)·가우스점 수 (B)·칸 크기 (C)·재질 일반성 (D)·서브스텝 강인성 (E, 미완) (사용자 11-15 요청) -- 가지 k1new, 새 파일만 (lib/anchorflow/fem_q27b.py 4$^3$ 점, exe/q27b_wrap.py, exe/abl_gen.py·abl_an.py·abl_worker.sh·abl_jobs.py·abl_table.py·abl_video.sh·abl_compose.py·vast_abl.sh), vast.ai RTX A6000 (E 는 A100), 결과 R2 lbours/ablation/runs/<장면>_<판>_r<반복> (metrics.json), 표 논문 폴더 ablation_1115.tex
+- 확인: 1 점은 ficus 3.76 -> 16.37 %·bread 2.01 -> 5.01 %, 영 모드 크게 증가. 2 점 이상 사이 차이는 장면마다 부호가 갈림 (ficus 줄고 bread 늘고 wolf·pillow2sofa 거의 같음, 최대 1.3 %p). rho_inf=0 은 HHT 에서 분모 0 이라 일반화-alpha (--ga ga) 로 대체, ficus 2.68 % 로 기본보다 낮음. rho_inf=1 은 wolf 20 프레임 발산.
+- 확인: vasedeck·plane 은 회전 구동기 경계 미구현으로 예측이 정지 (판 무관 같은 오차) -> 결론 제외. toast 는 기본 판이 f1 GPU 메모리 부족 (A100 80 GB 도), sand_castle 은 재질 판 assert (구속 상자). A1 입자 적분점 (절 AK) 은 다른 실행기라 단일 차이 아님, ficus 0.59 %·bread 13.43 %.
+- 미완: E (서브스텝) 는 bread·wolf N<=4 일부만. wolf 는 A6000 48 GB 에서 간헐 메모리 부족·비결정.
