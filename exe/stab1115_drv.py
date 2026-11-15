@@ -140,8 +140,24 @@ def run(m, n, rep):
         break
 
 
+def stale_fin(fin, log):
+    """[stabfinal] 옛 실행 환경 오류의 .fin 위에 다시 돌린 판이 중간에 끊긴 경우 (로그가 .fin 보다 1 분 넘게 새것) -> 이 인스턴스의 .fin 을 치우고 다시 돌림."""
+    try:
+        return os.path.exists(fin) and os.path.getmtime(log) > os.path.getmtime(fin) + 60
+    except OSError:
+        return False
+
+
 def run1(m, n, rep):
     """한 실행 (있으면 건너뜀). 결과는 L.load(S, m, n, rep)."""
+    if m == "ours":
+        d0 = L.hex_dir(S, n, rep) + a.hextag
+        if stale_fin(f"{d0}/FIN", f"{d0}/log.txt"):
+            say("끊긴 판 다시", S, m, n, rep); os.remove(f"{d0}/FIN")
+    else:
+        o0 = f"{L.res_dir(S, rep)}/{m}_N{n}"
+        if stale_fin(o0 + ".fin", o0 + ".log"):
+            say("끊긴 판 다시", S, m, n, rep); os.remove(o0 + ".fin")
     if m == "ours":
         d = L.hex_dir(S, n, rep) + a.hextag
         if os.path.exists(f"{d}/FIN"):
