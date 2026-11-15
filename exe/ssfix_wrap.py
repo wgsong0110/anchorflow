@@ -11,6 +11,7 @@
   --ssf_det 1     (기본 1) 프레임 끝 입자 det F <= 0 도 무너진 프레임으로 (뒤집힌 상태는 풀이 실패의 확실한 표지)
   --ssf_bec 1     매 걸음 끝 갱신을 국소 후퇴 오일러 (--ue be --ue_loc 비트 와 같이; HHT 는 자유 노드만) -- 접촉 노드의 HHT 가속도 외삽이 큰 N 발산의 원인 (절 CM186)
   --ssf_tolp 1    PCG 허용치 tolP 에도 1/N 곱함 (선택)
+  --ssf_tsum 1    (wolffix 11-15) 다시 푼 프레임의 시간 s.last_ms = 버린 시도들 + 마지막 시도 합 (실시간 판정용; 0 = 마지막 시도만, 옛 동작)
 사용: python exe/ssfix_wrap.py --ssf_tol 1 exe/stabhex_wrap.py ... exe/fem_an_rt_sim.py ... (바깥 첫 감싸개로)
 """
 import os
@@ -20,7 +21,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 argv = sys.argv[1:]
-C = dict(tol="0", tolp="0", kex="0", split="0", bigT="1.0", wrx="1", dumpfail="", det="1", bec="0")
+C = dict(tol="0", tolp="0", kex="0", split="0", bigT="1.0", wrx="1", dumpfail="", det="1", bec="0", tsum="0")
 while argv and argv[0].startswith("--ssf_"):
     C[argv[0][6:]] = argv[1]; del argv[:2]
 _orig = runpy.run_path; _done = [False]
@@ -84,8 +85,9 @@ def _install():
                 redo = ostep(s, t)
             except torch.OutOfMemoryError:                                              # 발산한 입자가 노드 상자를 키워 용량 다시 할당이 메모리 초과 -> 무너진 프레임으로 취급
                 oom = True; redo = False
-            dp = 0
+            dp = 0; tw = 0.0
             while dp < D and (oom or collapsed(s, int(s.K))):
+                tw += float(getattr(s, "last_ms", 0.0) or 0.0) if not oom else 0.0
                 dp += 1; ST["retry"] += 1
                 if oom:
                     torch.cuda.empty_cache()
@@ -106,6 +108,8 @@ def _install():
                 torch.save(dict(bk=[q.cpu() for q in bk], t=float(t), K0=K0, fi=ST["frames"] - 1), C["dumpfail"])
                 print(f"[substep_fix] 끝까지 무너진 프레임 시작 상태 저장 {C['dumpfail']} (프레임 {ST['frames'] - 1})", flush=True)
             ST["hist"][dp] = ST["hist"].get(dp, 0) + 1
+            if dp and float(C["tsum"]) != 0:
+                s.last_ms = float(s.last_ms) + tw
             if dp:
                 print(f"[substep_fix] 프레임 t={t:.4f} 무너짐 -> K {K0} 에서 {K0 << dp} 로 다시 풂 (깊이 {dp}; 끝 판정 무너짐 {oom or collapsed(s, int(s.K))})", flush=True)
                 ART.set_K_an(s, K0, h)
