@@ -1,0 +1,186 @@
+"""표현력 비교 결과 하나에 대한 추가 측정: EMD(전체 점, 정확) · 물리 지표 · 시각 품질.
+
+  python exe/rep_metrics.py --res repflow/r9/wolf_ours.npz --flow repflow/gflow_wolf.npz \
+      --video repflow/r9/wolf_ours.mp4 --target_video repflow/r9/wolf_target.mp4 --out ....json
+
+- EMD: rep_track2 가 10 프레임마다 저장한 위치에서 같은 번호 8192 점 정확해 (헝가리안).
+- 물리 지표: 같은 질량 1/N 입자의 운동에너지 KE, 선운동량 P, 각운동량 Lang (프레임 차분 속도),
+  부피비 mean det F. 목표 흐름에서 같은 식으로 잰 값과의 차이를 고정 상수로 나눈다
+  (목표 값의 프레임 평균 크기 -- 자기 자신으로 나누지 않는다).
+- 시각 품질: 같은 카메라로 그린 목표 영상 대비 프레임별 PSNR · SSIM · LPIPS(alex), 프레임 집합 FID.
+"""
+import argparse
+import json
+import os
+import sys
+
+import numpy as np
+import torch
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gauss_flow as gf                                            # noqa: E402
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--res", required=True)
+ap.add_argument("--flow", default="", help="A: 목표 흐름 (gauss_flow npz)")
+ap.add_argument("--sim", default="", help="B: 기준 시뮬 h5 프레임 폴더 (GF: 부피비는 f_tensor 의 det)")
+ap.add_argument("--cfg", default="", help="B: 기준 시뮬 설정 json")
+ap.add_argument("--video", default="")
+ap.add_argument("--target_video", default="")
+ap.add_argument("--out", required=True)
+ap.add_argument("--fps", type=float, default=30.0)
+ap.add_argument("--emd_n", type=int, default=8192, help="EMD 를 잴 같은 번호 점 수")
+a = ap.parse_args()
+dev = "cuda"
+Z = np.load(a.res, allow_pickle=True)
+L = float(Z["L"])
+out = {"res": a.res}
+_M = Z["metrics"]                                                   # t, RMSE, CD, EMD, det 최소, 뒤집힘 비율
+out["summary"] = dict(rmse=100 * float(np.nanmean(_M[:, 1])), cd=100 * float(np.nanmean(_M[:, 2])),
+                      det_min=float(np.nanmin(_M[:, 4])), inv_max=100 * float(np.nanmax(_M[:, 5])),
+                      dof=float(np.mean(Z["dof"])) if "dof" in Z else None, frames=int(_M.shape[0]))
+
+# ---------------- EMD: 같은 번호 8192 점에서 정확해 (헝가리안)
+# 13.9 만 점 전체의 정확해는 계산이 감당되지 않고, 시험한 근사(자체 Sinkhorn, geomloss 다중 해상도,
+# kNN 희소 매칭, 경매)는 오차가 크거나(−3~−15%) 끝나지 않았다 (doc/repflow_todo.md). 그래서 프로젝트
+# 규약대로 모든 방법·프레임에 **같은 번호** 부분집합을 쓴다 (따로 뽑으면 표본 바닥이 오차를 덮는다).
+from scipy.optimize import linear_sum_assignment                   # noqa: E402
+ev = []
+_ec = a.out + ".emd.json"                                          # 다시 돌릴 때 EMD 를 다시 풀지 않게
+_cache = json.load(open(_ec)) if os.path.exists(_ec) else {}
+for t, y, g in zip(Z["emd_t"], Z["emd_y"], Z["emd_tgt"]):
+    if str(int(t)) in _cache:
+        ev.append(tuple(_cache[str(int(t))])); continue
+    n_ = y.shape[0]
+    EI = np.sort(np.random.default_rng(0).choice(n_, min(a.emd_n, n_), replace=False))
+    C = torch.cdist(torch.as_tensor(y[EI], device=dev).double(),
+                    torch.as_tensor(g[EI], device=dev).double()).cpu().numpy()
+    r_, c_ = linear_sum_assignment(C)
+    v = float(C[r_, c_].mean())
+    ev.append((int(t), v / L, int(len(EI))))
+    _cache[str(int(t))] = ev[-1]; json.dump(_cache, open(_ec, "w"))
+    print(f"  EMD t={int(t):3d} {100 * v / L:.3f}%  ({len(EI)} 점)", flush=True)
+out["emd_frames"] = ev
+out["EMD_pct"] = 100 * float(np.mean([e[1] for e in ev]))
+
+# ---------------- 물리 지표: 기준(A 목표 흐름 / B 기준 시뮬)에서 같은 식
+T = int(Z["metrics"].shape[0])
+tp = []
+if a.flow and a.sim:
+    # GF 정답 (rep_metrics_gf.py 추가): 기준 = 정규화된 정답 궤적 (흐름 파일 traj) 의 프레임 차분 -- 같은 질량 1/N, 속도 = 차분 x fps (추적기와 같은 식); 부피비 = h5 f_tensor 의 det 평균
+    import glob as _g, h5py
+    D = np.load(a.flow); fs = sorted(_g.glob(os.path.join(a.sim, "sim_*.h5")))
+    for t in range(1, T + 1):
+        x = torch.as_tensor(D["traj"][t], dtype=torch.float64, device=dev); xp = torch.as_tensor(D["traj"][t - 1], dtype=torch.float64, device=dev)
+        vel = (x - xp) * a.fps
+        com = x.mean(0)
+        with h5py.File(fs[t], "r") as f_:
+            Fh = np.array(f_["f_tensor"]).T.reshape(-1, 3, 3)
+        Jd = torch.linalg.det(torch.as_tensor(Fh, dtype=torch.float64, device=dev)); Jd = torch.where(torch.isfinite(Jd), Jd, torch.ones_like(Jd))
+        tp.append((t, float(0.5 * (vel * vel).sum(1).mean()), *vel.mean(0).tolist(),
+                   *torch.cross(x - com, vel, dim=-1).mean(0).tolist(), float(Jd.mean())))
+elif a.flow:
+    D = np.load(a.flow)
+    field = D["field"]
+    period = 10
+    x = torch.as_tensor(D["traj"][0], dtype=torch.float64, device=dev)
+    F = torch.eye(3, dtype=torch.float64, device=dev).expand(x.shape[0], 3, 3).clone()
+    xp = x.clone()
+    for t in range(T):
+        f = torch.as_tensor(field[t // period], dtype=torch.float64, device=dev)
+        x, F, _, _ = gf.advance(x, F, f, 1.0 / a.fps, 0.5)
+        vel = (x - xp) * a.fps
+        com = x.mean(0)
+        tp.append((t + 1, float(0.5 * (vel * vel).sum(1).mean()), *vel.mean(0).tolist(),
+                   *torch.cross(x - com, vel, dim=-1).mean(0).tolist(), float(torch.linalg.det(F).mean())))
+        xp = x.clone()
+else:
+    # B: rep_ip 와 같은 정의 -- 질량가중 합 (질량은 셀마다 세는 시뮬레이터 정의), 부피비는 Σ V det F / Σ V
+    import glob as _g, h5py, json as _j
+    cfg = _j.load(open(a.cfg))
+    fs = sorted(_g.glob(os.path.join(a.sim, "sim_*.h5")))
+
+    def _rd(p_, k):
+        with h5py.File(p_, "r") as f_:
+            if k not in f_:
+                return None
+            v_ = np.array(f_[k])
+        return v_.T if (v_.ndim == 2 and v_.shape[0] in (3, 9) and v_.shape[0] != v_.shape[-1]) else v_
+    X0 = torch.as_tensor(_rd(fs[0], "x"), dtype=torch.float64, device=dev)
+    ng, gl = int(cfg.get("n_grid", 100)), float(cfg.get("grid_lim", 2.0))
+    dx = gl / ng
+    cell = torch.floor(X0 / dx).long()
+    key = (cell[:, 0] * (ng + 8) + cell[:, 1]) * (ng + 8) + cell[:, 2]
+    _, inv, cnt = torch.unique(key, return_inverse=True, return_counts=True)
+    VOL = dx ** 3 / cnt[inv].double(); MASS = float(cfg["density"]) * VOL; MS = float(MASS.sum())
+    h_ = float(cfg["frame_dt"])
+    xp = X0.clone()
+    for t in range(1, T + 1):
+        x = torch.as_tensor(_rd(fs[t], "x"), dtype=torch.float64, device=dev)
+        ok = torch.isfinite(x).all(1)
+        vel = torch.where(ok[:, None], (x - xp) / h_, torch.zeros_like(x))
+        xs = torch.where(ok[:, None], x, xp)
+        com = (MASS[:, None] * xs).sum(0) / MS
+        Fh = _rd(fs[t], "F")
+        Jd = torch.ones_like(VOL) if Fh is None else torch.linalg.det(
+            torch.as_tensor(Fh.reshape(-1, 3, 3), dtype=torch.float64, device=dev))
+        Jd = torch.where(torch.isfinite(Jd), Jd, torch.ones_like(Jd))
+        tp.append((t, float(0.5 * (MASS * (vel * vel).sum(1)).sum()), *(MASS[:, None] * vel).sum(0).tolist(),
+                   *(MASS[:, None] * torch.cross(xs - com, vel, dim=-1)).sum(0).tolist(),
+                   float((VOL * Jd).sum() / VOL.sum())))
+        xp = xs
+    if "ip" in Z:
+        out["IP_mean"] = float(np.mean(Z["ip"][:, 1]))
+tp = np.array(tp)
+mp = Z["phys"]
+n = min(len(tp), len(mp))
+tp, mp = tp[:n], mp[:n]
+ke_s = np.abs(tp[:, 1]).mean()
+p_s = np.linalg.norm(tp[:, 2:5], axis=1).mean() + 1e-12
+l_s = np.linalg.norm(tp[:, 5:8], axis=1).mean() + 1e-12
+out["phys"] = {
+    "KE_err_pct": 100 * float(np.abs(mp[:, 1] - tp[:, 1]).mean() / ke_s),
+    "P_err_pct": 100 * float(np.linalg.norm(mp[:, 2:5] - tp[:, 2:5], axis=1).mean() / p_s),
+    "Lang_err_pct": 100 * float(np.linalg.norm(mp[:, 5:8] - tp[:, 5:8], axis=1).mean() / l_s),
+    "vol_err_pct": 100 * float(np.abs(mp[:, 8] - tp[:, 8]).mean()),          # 부피비(질량 밀도 역수) 차
+    "KE_drift_pct": 100 * float(np.abs(np.diff(mp[:, 1])).mean() / ke_s),    # 프레임간 에너지 요동
+}
+print("  물리", out["phys"], flush=True)
+
+# ---------------- 시각 품질
+if a.video and a.target_video and os.path.exists(a.video) and os.path.exists(a.target_video):
+    import imageio.v2 as imageio
+    from torchmetrics.image import (PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure)
+    from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+    from torchmetrics.image.fid import FrechetInceptionDistance
+    # 영상을 통째로 올리면 여러 개를 동시에 돌릴 때 메모리가 모자란다 -> 프레임 단위로 흘려 읽는다
+    psnr = PeakSignalNoiseRatio(data_range=1.0).to(dev)
+    ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(dev)
+    vis = {"PSNR": [], "SSIM": [], "LPIPS": []}
+    try:
+        lp = LearnedPerceptualImagePatchSimilarity(net_type="alex", normalize=True).to(dev)
+    except Exception as ex:
+        lp = None
+        print("  LPIPS 불가:", ex, flush=True)
+    try:
+        fid = FrechetInceptionDistance(feature=2048, normalize=True).to(dev)
+    except Exception as ex:
+        fid = None
+        print("  FID 불가:", ex, flush=True)
+    for fa, fb in zip(imageio.get_reader(a.video), imageio.get_reader(a.target_video)):
+        A1 = torch.as_tensor(np.asarray(fa)).permute(2, 0, 1)[None].float().div(255).to(dev)
+        B1 = torch.as_tensor(np.asarray(fb)).permute(2, 0, 1)[None].float().div(255).to(dev)
+        vis["PSNR"].append(float(psnr(A1, B1)))
+        vis["SSIM"].append(float(ssim(A1, B1)))
+        if lp is not None:
+            vis["LPIPS"].append(float(lp(A1.clamp(0, 1), B1.clamp(0, 1))))
+        if fid is not None:
+            fid.update(B1, real=True)
+            fid.update(A1, real=False)
+    out["visual"] = {k: float(np.mean(v)) for k, v in vis.items() if v}
+    if fid is not None:
+        out["visual"]["FID"] = float(fid.compute())
+    print("  시각", out["visual"], flush=True)
+
+json.dump(out, open(a.out, "w"), indent=1)
+print(f"[측정] {a.out}", flush=True)
