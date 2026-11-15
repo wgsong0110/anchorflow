@@ -1,14 +1,14 @@
 #!/bin/bash
-# elastic_new 진단: 기준 명령 ($W/ours/<SC>_K1/cmd.txt = 공통 수정 판) 에 변형을 얹어 덤프 없이 다시 돌리고 프레임별 뉴턴 요약 (K·덜 풀림·보폭 최소·‖g‖²/F²·det F) 을 남김.
+# elastic_new 진단 (EN_BASE 로 기준 명령 파일 지정, 감싸개는 맨 앞): 기준 명령 ($W/ours/<SC>_K1/cmd.txt = 공통 수정 판) 에 변형을 얹어 덤프 없이 다시 돌리고 프레임별 뉴턴 요약 (K·덜 풀림·보폭 최소·‖g‖²/F²·det F) 을 남김.
 #   en_try.sh SC NAME "SSF 추가 인자" "앞 감싸개 (ssfix 다음)" "실행기 추가 플래그"
 set -u
 SC=$1; NAME=$2; SSF=${3:-}; WR=${4:-}; EX=${5:-}
 W=/home/dkta/work; AF=${EN_AF:-/root/sv/af_$SC}; D=$W/try/${SC}_$NAME; mkdir -p $D; RX=r2:storage/result/anchorflow/lbours/elastic_new/try
-C=$(cat $W/ours/${SC}_K1/cmd.txt)
+C=$(cat ${EN_BASE:-$W/ours/${SC}_K1/cmd.txt})
 C=${C/ --dump --dump_F/}
 C=$(sed -E "s# --out \S+\$##" <<< "$C")
 [ -n "$SSF" ] && C=${C/exe\/ssfix_wrap.py /exe\/ssfix_wrap.py $SSF }
-[ -n "$WR" ] && C=${C/ exe\/startpt_wrap.py/ $WR exe\/startpt_wrap.py}
+[ -n "$WR" ] && C=$(sed "s#python -u exe/#python -u $WR exe/#" <<< "$C")      # 감싸개 맨 앞 (ptan·bloc 은 import 전에 env)
 C="$C $EX --out $D"
 echo "$C" > $D/cmd.txt
 cd $AF; t0=$(date +%s)
