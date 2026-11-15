@@ -147,7 +147,7 @@ def run1(m, n, rep):
         if os.path.exists(f"{d}/FIN"):
             return
         os.makedirs(d, exist_ok=True)
-        with SEM, OSEM:                                  # 우리 판은 카드 메모리를 크게 써서 (플레인 17 GB) 한 번에 하나
+        with OSEM, SEM:                                  # [stabfinal] OSEM 먼저 (SEM 을 쥔 채 OSEM 을 기다리면 다른 방법이 굶음) -- 우리 판은 카드 메모리를 크게 써서 (플레인 17 GB) 한 번에 하나
             t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, direct=True)}", f"{d}/log.txt")
         open(f"{d}/FIN", "w").write(f"rc={rc} {time.time() - t0:.0f}s")
         shutil.rmtree(f"{d}/pred.pt", ignore_errors=True)

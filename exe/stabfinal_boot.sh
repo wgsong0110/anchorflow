@@ -60,7 +60,7 @@ rclone copyto $MI/stab/ficus/config.json $W/assets_cfg/ficus_drop_config.json -q
 D=/root/sf/code/$H; mkdir -p $D; rclone cat $RX/code/sf_$H.tar | tar -x -C $D
 wait
 cd $D || exit 1
-export PYTHONUTF8=1 OMP_NUM_THREADS=8 CUPY_CACHE_DIR=/dev/shm/dkta/cache/cupy_sf XDG_CACHE_HOME=/dev/shm/dkta/cache TORCH_EXTENSIONS_DIR=/dev/shm/dkta/cache/torch_ext TMPDIR=/dev/shm/dkta/tmp S1115_TAG=$TAG
+export PYTHONUTF8=1 OMP_NUM_THREADS=8 CUPY_CACHE_DIR=/dev/shm/dkta/cache/cupy_sf XDG_CACHE_HOME=/dev/shm/dkta/cache TORCH_EXTENSIONS_DIR=/dev/shm/dkta/cache/torch_ext TMPDIR=/dev/shm/dkta/tmp S1115_TAG=$TAG S1115_OPAR=${SF_OPAR:-2}
 mkdir -p $CUPY_CACHE_DIR $TMPDIR
 sed -i 's/MODEL = {"lego"/MODEL = {"vasedeck": "vasedeck_whitebg-trained", "lego"/' exe/rep_ip.py
 python exe/stab1115_patch_models.py
