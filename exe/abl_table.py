@@ -53,14 +53,20 @@ def tex_detail(scenes, vars_, names):
     t.append("\\bottomrule\\end{tabular}\\end{center}")
     return "\n".join(t)
 N = {"def": "기본 (2$^3$ 점, HHT $\\rho_\\infty{=}0.8$)", "q1": "가우스 1$^3$ 점", "q27": "가우스 3$^3$ 점 (27)", "q64": "가우스 4$^3$ 점 (64)",
-     "rho0": "$\\rho_\\infty{=}0$ (일반화-$\\alpha$)", "rho1": "$\\rho_\\infty{=}1$ (중점)", "c075": "칸 $\\times$0.75", "c15": "칸 $\\times$1.5", "c20": "칸 $\\times$2"}
-SA = ["ficus", "pillow2sofa", "bread", "toast", "sand_castle"]; SB = ["ficus", "bread", "wolf", "pillow2sofa"]; SD = ["ficus", "vasedeck", "plane", "wolf", "bread", "pillow2sofa"]
+     "rho0": "$\\rho_\\infty{=}0$ (일반화-$\\alpha$)", "rho1": "$\\rho_\\infty{=}1$ (중점)", "ak": "입자 적분점 (절 AK, 다른 실행기)", "c075": "칸 $\\times$0.75", "c15": "칸 $\\times$1.5", "c20": "칸 $\\times$2"}
+SA = ["ficus", "pillow2sofa", "bread", "wolf", "toast", "sand_castle"]; SB = ["ficus", "bread", "wolf", "pillow2sofa"]; SD = ["ficus", "vasedeck", "plane", "wolf", "bread", "pillow2sofa"]
 out = []
 out.append("% 자동 생성 (exe/abl_table.py)")
-out.append("\\subsection*{A. 설계 선택 ablation}\n" + tex_table("A", SA, ["def", "q1", "rho0", "rho1"], N) + "\n" + tex_detail(SA, ["def", "q1", "rho0", "rho1"], N))
+out.append("\\subsection*{A. 설계 선택 ablation}\n" + tex_table("A", SA, ["def", "q1", "rho0", "rho1", "ak"], N) + "\n" + tex_detail(SA, ["def", "q1", "rho0", "rho1", "ak"], N))
 out.append("\\subsection*{B. 가우스점 수}\n" + tex_table("B", SB, ["q1", "def", "q27", "q64"], N, bc=True) + "\n" + tex_detail(SB, ["q1", "def", "q27", "q64"], N))
 out.append("\\subsection*{C. 칸 크기}\n" + tex_table("C", SB, ["c075", "def", "c15", "c20"], N, bc=True) + "\n" + tex_detail(SB, ["c075", "def", "c15", "c20"], N))
 out.append("\\subsection*{D. 재질 일반성}\n" + tex_table("D", SD, ["def"], N))
+DX = {"ficus": (0.04, 0.04), "bread": (0.01333, 0.01333), "wolf": (0.02, 0.01), "pillow2sofa": (0.02, 0.02)}
+t = ["\\begin{center}\\small\\begin{tabular}{lrrrrr}\\toprule", "장면 & 정답 MPM 격자 간격 (m) & 기본 칸 (m) & $\\times$0.75 & $\\times$1.5 & $\\times$2 \\\\\\midrule"]
+for sc_, (cell_, dx_) in DX.items():
+    t.append("%s & %.4g & %.4g & %.4g & %.4g & %.4g\\\\" % (sc_, dx_, cell_, 0.75 * cell_, 1.5 * cell_, 2 * cell_))
+t.append("\\bottomrule\\end{tabular}\\end{center}")
+out.append("\\subsection*{C. 칸 크기 (절대 값)}\n" + "\n".join(t))
 open(f"{OUT}/ablation_1115_tables.tex", "w").write("\n\n".join(out))
 # 그림: B (가우스점 수 대 오차) · C (칸 배수 대 오차·시간)
 try:

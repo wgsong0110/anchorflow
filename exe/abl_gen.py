@@ -78,9 +78,15 @@ if m:
     base = [float(x) for x in re.findall(r"--cell (\S+)", c)][-1]
     c = re.sub(r" --cell \S+", "", c)
     c = c.replace(" --mg_levels ", f" --cell {base * mult:g} --mg_levels ", 1)
-m = re.match(r"ss(\d+)$", var)
+m = re.match(r"(ssf?)(\d+)$", var)
 if m:
-    c = c.replace(" --K 1 ", f" --K {m.group(1)} ", 1)
+    # CM183 E (서브스텝 강인성): ssN = 서브스텝 N (--K N), ssfN = 같은 N + 다른 에이전트 수정 (exe/ssfix_wrap.py --ssf_tol 1: 뉴턴 허용치 tolN/N, 절 CM184), 50 프레임
+    c = c.replace(" --K 1 ", f" --K {m.group(2)} ", 1)
+    if int(m.group(2)) >= 2:   # 적응 쪼개기 (--ksplit 3 --ks_big) 는 N 을 바꾸므로 N>=2 에서는 뺌 (paper_remeasure 의 파레토 K>=2 판과 같은 규칙)
+        c = c.replace(" --ksplit 3", "").replace(" --ks_big", "")
+    c = re.sub(r"--frames \d+", "--frames 50", c); c = re.sub(r"AF_SP_FR=1,\d+", "AF_SP_FR=1,50", c)
+    if m.group(1) == "ssf":
+        c = c.replace("-u exe/", "-u exe/ssfix_wrap.py --ssf_tol 1 exe/", 1)
 if rep == 1:
     c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1) if "--dump" not in c else c
 c = re.sub(r"--out \S+$", f"--out {out}", c)
