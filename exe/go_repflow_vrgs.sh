@@ -35,9 +35,7 @@ run() { local D=$1 s=$2 nf=$3 e=$4 eta=$5 vid=$6; shift 6; local n=${s}_vrgsx c 
   [ $nf != 0 ] && c="$c --frames $nf"
   if [ $vid = 1 ]; then
     c="$c --save_traj"
-    if [ $s = ship ]; then   # ship 3DGS 모델 (R2 에 없으면 클러스터에서 올릴 때까지 최대 45 분 기다림, 그래도 없으면 영상 없이)
-      for i in $(seq 1 45); do [ -d /home/dkta/work/pgmodel/ship_whitebg-trained/point_cloud ] && break
-        rclone copy $R/pgmodel/ship_whitebg-trained /home/dkta/work/pgmodel/ship_whitebg-trained -q 2>/dev/null; sleep 60; done
+    if [ $s = ship ]; then   # ship 3DGS 모델은 R2 에 없고 클러스터에만 있다 (올릴 방법 없음, 사용자 11-15) -> 영상·시각 지표 없이 (논문 표 각주)
       [ -d /home/dkta/work/pgmodel/ship_whitebg-trained/point_cloud ] && c="$c --video $D/$n.mp4" || say "ship 3DGS 모델 없음 -> 영상·시각 지표 없이"
     else c="$c --video $D/$n.mp4"; fi
   fi

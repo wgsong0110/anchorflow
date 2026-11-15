@@ -5,6 +5,7 @@
 set -u
 H=${XS_COMMIT:?}; STG=${XS_STG:-s0,tune,main}
 R=r2:storage/result/anchorflow; RX=$R/lbours/repflow_vrgs
+[ -n "${XS_COMMIT_FILE:-}" ] || H=$(rclone cat $RX/code/commit.txt 2>/dev/null || echo $H)   # 코드 커밋 = R2 commit.txt (있으면)
 mkdir -p /workspace/shm /workspace/tmpd /root/sv
 LOG=/root/sv/vast.log
 say() { echo "[vast $(date '+%F %T')] $*" | tee -a $LOG; command -v rclone >/dev/null && rclone copyto $LOG $RX/vast.log -q 2>/dev/null; }
