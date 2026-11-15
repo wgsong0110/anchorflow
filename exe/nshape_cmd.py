@@ -14,6 +14,9 @@ c = re.sub(r"--rr_shape \S+", f"--rr_shape {tag}", c); c = re.sub(r"--rr_traj \S
 c = re.sub(r"--data \S+", f"--data {data}", c); c = re.sub(r"--frames \d+", f"--frames {fr}", c); c = re.sub(r"--tag \S+", f"--tag {tag}", c)
 assert "--floor none" in c; c = c.replace("--floor none", "--floor vel --fl_bar --fl_bst 1 --y0eb --hgt --bar_cnt")
 c = re.sub(r"--K \d+", f"--K {int(K)}", c)
+if os.environ.get("NS_CG4", "1") == "1":                                         # 절 CM189 기본 판: 걸음마다 PCG 2 -> 4 (레고 세팅 chair 다시 풀기 71 -> 0·25.2 -> 10.3 ms; 레고·wolf·plane·vasedeck·pillow2sofa 회귀 없음); NS_CG4=0 이면 옛 판
+    assert re.search(r"--cg \d+", c), "BA_1 명령에 --cg 없음"
+    c = re.sub(r"--cg \d+", "--cg 4", c)
 if int(K) > 1:
     c = c.replace(" --ksplit 3", "").replace(" --ks_big", "")
 for f in os.environ.get("NS_DROP", "").split():
