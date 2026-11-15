@@ -18,8 +18,8 @@ ON, TAU, LM, KF, MT = None, 0.0, 0, 1, (2,)
 while argv and argv[0] in ("--hff", "--hff_tau", "--hff_lmix", "--hff_kfe", "--hff_skip"):
     if argv[0] == "--hff":
         ON = int(float(argv[1]))
-    elif argv[0] == "--hff_skip":            # 쉼표 재질 번호 (기본 7 = GF NACC), all = 모든 재질 (탄성 실행기 포함)
-        MT = None if argv[1] == "all" else tuple(int(q) for q in argv[1].split(","))
+    elif argv[0] == "--hff_skip":            # 뺄 재질 번호 쉼표 (기본 2 = 모래), none = 안 뺌
+        MT = () if argv[1] == "none" else tuple(int(q) for q in argv[1].split(","))
     elif argv[0] == "--hff_kfe":
         KF = int(float(argv[1]))
     elif argv[0] == "--hff_lmix":
