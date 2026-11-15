@@ -35,5 +35,7 @@ for _f in _drop:
     c = re.sub(r"(^| )" + re.escape(_f) + r"( (?!--)\S+)?(?= |$)", " ", c)
 _ca = __import__("os").environ.get("GFS_CAUTO", "40000")      # 절 CM185 (공통 규칙): 점유 칸 수 상한 40000 (통과 장면 최대 bread 34969 보다 큼 -> PG 장면 불변); 0 = 끔
 if float(_ca) > 0: extra = ["--cell_auto", _ca] + list(extra)
+_ba = __import__("os").environ.get("GFS_BAUTO", "600000")      # 절 CM185 (공통 규칙): 노드 상자 상한 60 만 (통과 장면 최대 plane 53.7 만 -> PG 장면 불변); 0 = 끔
+if float(_ba) > 0: extra = ["--box_auto", _ba] + list(extra)
 c = re.sub(r"--out \S+$", "", c).strip() + " --dump --dump_F --dump_part " + " ".join(extra) + f" --out {out}"
 print(c)
