@@ -25,7 +25,7 @@ a = ap.parse_args()
 S = a.scene; ST = L.ST; W = os.path.dirname(ST); PY = sys.executable
 PG = f"{W}/i-physgaussian"
 CAP = {kv.split(":")[0]: int(kv.split(":")[1]) for kv in a.cap.split(",")}
-SEM = threading.BoundedSemaphore(a.par); GSEM = threading.BoundedSemaphore(2); OSEM = threading.BoundedSemaphore(1)
+SEM = threading.BoundedSemaphore(a.par); GSEM = threading.BoundedSemaphore(2); OSEM = threading.BoundedSemaphore(int(os.environ.get("S1115_OPAR", "1")))  # [stab4] 우리 판 동시 수 (메모리 크면 1)
 os.makedirs(f"{ST}/{S}", exist_ok=True)
 LOGF = open(f"{ST}/{S}/drv.log", "a"); LK = threading.Lock()
 FR = 60
