@@ -80,6 +80,9 @@ def oom_artifact(log):
         return False
     if not re.search(r"out of memory|OutOfMemory|MemoryError", t, re.I):
         return False
+    fr = [int(x) for x in re.findall(r"프레임 (\d+)/60", t)]
+    if fr and max(fr) >= 5:                          # 몇 프레임 진행한 뒤 메모리가 커져 터짐 = 노드 상자 폭증 (발산), 시작 때 부족과 다름
+        return False
     big = [float(x) for x in re.findall(r"Tried to allocate ([0-9.]+) GiB", t)]
     return not (big and max(big) >= 20)
 
