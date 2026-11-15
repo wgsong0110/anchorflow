@@ -46,6 +46,8 @@ if rclone lsf $DS/model/$OBJ/point_cloud/iteration_30000/ 2>/dev/null | grep -q 
   rclone copy $DS/model/$OBJ $MD --transfers 16 -q; say "[3DGS] R2 에 있음 -> 받음"
 else
   rclone copy r2:storage/datasets/nerf_synthetic/$OBJ $W/data/$OBJ --transfers 32 -q
+  # 3DGS 2023 판 dataset_readers 는 np.byte (int8) 로 PIL 에 넘김 -- 새 PIL 이 거부 (TypeError (1,1,3) |i1). 같은 바이트인 uint8 로 (값 불변, 호환 고침만)
+  sed -i 's/dtype=np.byte), "RGB"/dtype=np.uint8), "RGB"/' $GF/gaussian-splatting/scene/dataset_readers.py
   t0=$(date +%s)
   (cd $GF/gaussian-splatting && python -u train.py -s $W/data/$OBJ -m $MD -w --eval < /dev/null > $W/train_$OBJ.log 2>&1); rc=$?
   say "[3DGS] 학습 rc=$rc $(( $(date +%s) - t0 )) 초 $(grep -a 'Evaluating test\|Evaluating train' $W/train_$OBJ.log | tail -2 | tr '\n' ' ' | cut -c1-300) $(grep -a 'rror' $W/train_$OBJ.log | tail -1 | cut -c1-200)"
