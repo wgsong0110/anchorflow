@@ -24,3 +24,20 @@ new = '''    _XR = gs.get_xyz[KIDX] @ RT.T if ROT else gs.get_xyz[KIDX]
 '''
 if old in s and "_XR" not in s:
     open(f, "w").write(s.replace(old, new, 1)); print("패치 sim_area", f)
+
+# 다시점 렌더 (stab_mv_render.py, Spring-Gaus 준비 판) 도 같은 sim_area 자르기 (vasedeck·plane)
+f = "exe/stab_mv_render.py"
+s = open(f).read()
+old = '''TP, SO, MEAN = transform2origin(gs.get_xyz[KIDX] @ _RT.T if ROT else gs.get_xyz[KIDX], float(cfg.get("scale", 1.0)))\n'''
+new = '''_XR = gs.get_xyz[KIDX] @ _RT.T if ROT else gs.get_xyz[KIDX]
+if a.shape in ("vasedeck", "plane") and cfg.get("sim_area") is not None:                     # PG 전처리 sim_area 자르기 (paper_remeasure2)
+    _b = cfg["sim_area"]
+    _m = torch.ones(_XR.shape[0], dtype=torch.bool, device=_XR.device)
+    for _i in range(3):
+        _m = _m & (_XR[:, _i] > _b[2 * _i]) & (_XR[:, _i] < _b[2 * _i + 1])
+    KIDX = KIDX[_m]
+    _XR = _XR[_m]
+TP, SO, MEAN = transform2origin(_XR, float(cfg.get("scale", 1.0)))
+'''
+if old in s and "_XR" not in s:
+    open(f, "w").write(s.replace(old, new, 1)); print("패치 sim_area", f)
