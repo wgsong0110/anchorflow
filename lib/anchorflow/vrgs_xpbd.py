@@ -50,6 +50,12 @@ __global__ void vg_predict(int n, float* x, float* xp, float* v, const float* w,
   x[3*i] = a + vx*dt; x[3*i+1] = b + vy*dt; x[3*i+2] = c + vz*dt;
 }
 
+// [paper_remeasure2] 구동 정점 (PG enforce_particle_velocity_rotation): 질량 무한 (w = 0) 정점을 프레임 속도 vd 로 움직임
+__global__ void vg_kin(int n, float* x, const float* vd, const unsigned char* kin, float dt) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x; if (i >= n || !kin[i]) return;
+  x[3*i] += vd[3*i]*dt; x[3*i+1] += vd[3*i+1]*dt; x[3*i+2] += vd[3*i+2]*dt;
+}
+
 __global__ void vg_zero(int n, float* lam) {
   int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < n) lam[i] = 0.f;
 }
@@ -258,7 +264,7 @@ class VRGS:
     """케이지 XPBD. x0 [Np,3] 입자 rest, v0 [Np,3], m [Np] 입자 질량, rho_p [Np] 입자 밀도."""
 
     def __init__(s, x0, v0, m, rho_p, E, nu, g, frame_dt, N, iters, vmax=30000, floor_z=None, fix_boxes=(), damp_scale=1.0, damp_dt=None,
-                 h=None, nrot=5):
+                 h=None, nrot=5, rot_bcs=()):
         dev = "cuda"
         s.Np = x0.shape[0]
         x0 = x0.to(dev).double()
@@ -288,7 +294,20 @@ class VRGS:
         s.fixed = torch.zeros(s.nv, dtype=torch.bool, device=dev)
         for (pt, sz) in fix_boxes:
             s.fixed |= ((V - torch.tensor(pt, device=dev, dtype=torch.float64)).abs() < torch.tensor(sz, device=dev, dtype=torch.float64)).all(-1)
+        # 회전 구동기 (rot_bcs = [(점, 단위 법선, 반 높이, 반지름, [(회전 몫, 이동 몫, 시작, 끝), ..]), ..]): 처음 위치가 원기둥 안인 정점은 질량 무한 + 프레임 속도 구동
+        s.rotg = list(rot_bcs)
+        s.kin = torch.zeros(s.nv, dtype=torch.bool, device=dev)
+        s.kin_g = []
+        for (pt, nv_, hh, rr, wins) in s.rotg:
+            pt_ = torch.tensor(pt, device=dev, dtype=torch.float64); n_ = torch.tensor(nv_, device=dev, dtype=torch.float64)
+            off = V - pt_; ax = off @ n_; rp = off - ax[:, None] * n_
+            msk = (ax.abs() < hh) & (rp.norm(dim=-1) < rr)
+            s.kin_g.append(msk); s.kin |= msk
+        s.fixed |= s.kin
         w[s.fixed] = 0.0
+        s.fr = 0
+        s.vd = torch.zeros(s.nv, 3, device=dev, dtype=torch.float32)
+        s.kin_u8 = s.kin.to(torch.uint8).contiguous()
         s.mass_cage = float(Mv.sum()); s.mass_part = float(m.sum())
         # 초기 속도: 입자 속도의 질량·무게중심 (음수는 0) 가중 평균
         m_ = m.to(dev).double(); v0 = v0.to(dev).double()
@@ -327,16 +346,19 @@ class VRGS:
         s.aV.copy_((1.0 / (la * s.vol) / dt2).float())
 
     def reset(s):
+        s.fr = 0
         s.x.copy_(s.X0); s.xp.copy_(s.X0); s.v.copy_(s.V0); s.q.zero_(); s.q[:, 3] = 1.0
 
     def _rec_sub(s):
         M = _mod()
-        f_pred, f_zero, f_solve, f_floor, f_vel = (M.get_function(k) for k in ("vg_predict", "vg_zero", "vg_solve", "vg_floor", "vg_vel"))
+        f_pred, f_zero, f_solve, f_floor, f_vel, f_kin = (M.get_function(k) for k in ("vg_predict", "vg_zero", "vg_solve", "vg_floor", "vg_vel", "vg_kin"))
         B = 128
         gv = ((s.nv + B - 1) // B,)
         i32, f32 = np.int32, np.float32
         with RTC._Stream():
             f_pred(gv, (B,), (i32(s.nv), _P(s.x), _P(s.xp), _P(s.v), _P(s.w), f32(s.g[0]), f32(s.g[1]), f32(s.g[2]), f32(s.dt), f32(s.damp)))
+            if s.rotg:
+                f_kin(gv, (B,), (i32(s.nv), _P(s.x), _P(s.vd), _P(s.kin_u8), f32(s.dt)))
             f_zero(((2 * s.nt + B - 1) // B,), (B,), (i32(2 * s.nt), _P(s.lam)))
             for _ in range(s.iters):
                 for (o, c) in s.colors:
@@ -369,6 +391,8 @@ class VRGS:
         """한 프레임 (N 서브스텝 + 가우시안 중심 갱신). 돌려줌: GPU 시간 ms (CUDA 이벤트), 입자 위치 s.xo."""
         if s.g_sub is None:
             s.capture()
+        if s.rotg:
+            s._drive()
         e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         e0.record()
         for _ in range(s.N):
@@ -376,7 +400,24 @@ class VRGS:
         s.g_skin.replay()
         e1.record()
         torch.cuda.synchronize()
+        s.fr += 1
         return e0.elapsed_time(e1)
+
+    def _drive(s):
+        """프레임 시각 [t, t+h) 와 겹친 몫 f 만큼 곱한 회전 구동 속도 (PG: 시각 start <= t < end, v = rs (r_perp x n) + ts n, r 은 현재 위치) 를 구동 정점에."""
+        t = s.fr * s.frame_dt
+        vd = torch.zeros(s.nv, 3, device=s.x.device, dtype=torch.float32)
+        for (pt, nv_, hh, rr, wins), msk in zip(s.rotg, s.kin_g):
+            rs = ts = 0.0
+            for (r_, t_, t0, t1) in wins:
+                f = max(0.0, min(t + s.frame_dt, t1) - max(t, t0)) / s.frame_dt
+                rs += r_ * f; ts += t_ * f
+            n_ = torch.tensor(nv_, device=s.x.device, dtype=torch.float32)
+            off = s.x - torch.tensor(pt, device=s.x.device, dtype=torch.float32)
+            rp = off - (off @ n_)[:, None] * n_
+            v = rs * torch.cross(rp, n_.expand_as(rp), dim=-1) + ts * n_
+            vd[msk] = v[msk]
+        s.vd.copy_(vd)
 
     def F_part(s):
         """입자 (가우시안) 마다 결속 사면체의 변형 기울기 F = Ds Dm^-1 [Np,3,3] (렌더 공분산 F Σ0 Fᵀ, 논문 그대로; 시간 밖)."""

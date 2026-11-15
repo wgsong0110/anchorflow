@@ -463,6 +463,7 @@ for _t, _s in NS.items():
     GT[_t] = (f"{NW}/{_t}_h5", f"{NW}/{_t}_config.json", _t)
     import re as _re
     _c = TMPL[_s["base"]]["cmd"]
+    _c = _c.replace("exe/startpt_wrap.py --sp 1", "exe/rotbc_wrap.py --rot_bc 1 exe/startpt_wrap.py --sp 1", 1)             # 회전 구동기·정지 영역 구속 (exe/rotbc_wrap.py; 이 두 구속이 없는 씬은 결과 불변)
     _c = _re.sub(r"AF_SP_FR=1,\d+", f"AF_SP_FR=1,{_s['fr']}", _c)
     _c = _re.sub(r"--rr_shape \S+", f"--rr_shape {_t}", _c)
     _c = _re.sub(r"--rr_traj \S+", f"--rr_traj {NW}/gt_{_t}", _c)

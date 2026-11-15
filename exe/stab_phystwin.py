@@ -100,10 +100,18 @@ for i, k in enumerate(map(tuple, key.tolist())):                # data_process_s
         seen.add(k); first.append(i)
 psel = sel[torch.as_tensor(first)]
 ctrl = C.in_boxes(x0[psel], S["BOX"]) if S["BOX"] else torch.zeros(len(psel), dtype=torch.bool)
+RMASK = C.rot_membership(x0[psel], S["ROT"]) if S["ROT"] else []                # paper_remeasure2: 회전 구동 영역 입자도 조작점 (프레임마다 구동 위치)
+for _m in RMASK:
+    ctrl = ctrl | _m
 REAL = bool(ctrl.any())
 obj_idx, ctl_idx = psel[~ctrl], psel[ctrl]
 B = to_pt(S["X"][:, obj_idx])                                  # [L+1, M, 3]
-CP = to_pt(x0[ctl_idx])                                        # [Nc, 3] 고정
+CP = to_pt(x0[ctl_idx])                                        # [Nc, 3] 처음 위치
+if RMASK:
+    _xc = C.rot_traj(x0[ctl_idx], S["ROT"], [m_[ctrl].clone() for m_ in RMASK], L, S["frame_dt"])   # [L+1, Nc, 3] 시뮬 좌표의 구동 궤적
+    CPT = to_pt(_xc)                                                                          # [L+1, Nc, 3]
+else:
+    CPT = CP[None].repeat(L + 1, 1, 1)
 vel = S["v0"][obj_idx] * (K / c)
 print(f"[PhysTwin] {a.tag} 입자 {P}, 질량점 {B.shape[1]} + 조작점 {CP.shape[0]} ({'real' if REAL else 'synthetic'} 경로), K {K:.4g} 시간 {c:.4g} 배, "
       f"프레임 {FDT:.5g} s (PhysTwin 단위) N0 {N0}, 바닥 z {Z0:.4g}, 초기 속력 최대 {float(vel.norm(dim=1).max()):.3g}", flush=True)
@@ -117,7 +125,7 @@ if a.mode == "fit":
         T1, M = B.shape[0], B.shape[1]
         pickle.dump(dict(object_points=B.float().numpy(), object_colors=np.ones((T1, M, 3), np.float32),
                          object_visibilities=np.ones((T1, M), bool), object_motions_valid=np.ones((T1, M), bool),
-                         controller_points=CP[None].repeat(T1, 1, 1).float().numpy(), surface_points=np.zeros((0, 3)),
+                         controller_points=CPT.float().numpy(), surface_points=np.zeros((0, 3)),
                          interior_points=np.zeros((0, 3))), open(DP, "wb"))
     else:
         np.save(DP, B.float().numpy())
@@ -255,9 +263,9 @@ set_vel(sim)
 dev = "cuda"
 xyz = to_pt(x0).float().to(dev)                                 # 전 입자 (공식 데모의 가우시안 자리)
 quat = torch.zeros(P, 4, device=dev); quat[:, 0] = 1
-CPd = CP.float().to(dev)
+CPd = CPT.float().to(dev)                                       # [L+1, Nc, 3]
 sim.set_init_state(sim.wp_init_vertices, sim.wp_init_velocities)
-prev = torch.cat([wp.to_torch(sim.wp_states[0].wp_x, requires_grad=False).clone(), CPd])
+prev = torch.cat([wp.to_torch(sim.wp_states[0].wp_x, requires_grad=False).clone(), CPd[0]])
 rel = DU.get_topk_indices(prev, K=a.knn)
 widx = torch.cat([DU.knn_weights_sparse(prev, xyz[i:i + 4000], K=a.knn)[1] for i in range(0, P, 4000)])   # 공식 knn_weights_sparse 를 나눠서 (CPU 메모리)
 R = C.Roll(a, S, N, extra=dict(method="phystwin", N0=N0, dt=cfg.dt, real=REAL, n_mass=int(B.shape[1]), n_ctrl=int(CP.shape[0])))
@@ -269,7 +277,7 @@ for f in range(1, L + 1):
     if sim.object_collision_flag:
         sim.update_collision_graph()
     wp.capture_launch(sim.forward_graph)
-    x = torch.cat([wp.to_torch(sim.wp_states[-1].wp_x, requires_grad=False), CPd])
+    x = torch.cat([wp.to_torch(sim.wp_states[-1].wp_x, requires_grad=False), CPd[f]])
     sim.set_init_state(sim.wp_states[-1].wp_x, sim.wp_states[-1].wp_v)
     if not torch.isfinite(x).all():
         R.fail(f, "질량점 비유한"); break

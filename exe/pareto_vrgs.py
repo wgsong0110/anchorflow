@@ -62,6 +62,23 @@ if a.cfg_bc:
         if bc.get("type") == "cuboid":
             assert max(abs(float(q)) for q in bc["velocity"]) == 0.0
             BOX.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]]))
+        elif bc.get("type") == "enforce_particle_translation":                          # paper_remeasure2: 정지 영역 (속도 0) 도 고정 정점으로 (vasedeck 윗부분·pillow2sofa 소파)
+            assert max(abs(float(q)) for q in bc["velocity"]) == 0.0 and float(bc.get("start_time", 0.0)) == 0.0 and float(bc.get("end_time", 1e3)) >= 1e3 * 0.0 + 0.9, "시간 구간이 있는 translation 은 미지원"
+            BOX.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]]))
+ROT = {}
+if a.cfg_bc:                                                                             # paper_remeasure2: PG enforce_particle_velocity_rotation -> 구동 정점 (lib/anchorflow/vrgs_xpbd.py rot_bcs)
+    import numpy as _np
+    for bc in (cfg.get("boundary_conditions") or []):
+        if bc.get("type") == "enforce_particle_velocity_rotation":
+            nv_ = _np.asarray(bc["normal"], dtype=_np.float64); nv_ = nv_ / _np.linalg.norm(nv_)
+            k_ = (tuple(float(q) for q in bc["point"]), tuple(nv_.tolist()), float(bc["half_height_and_radius"][0]), float(bc["half_height_and_radius"][1]))
+            ROT.setdefault(k_, []).append((float(bc["rotation_scale"]), float(bc["translation_scale"]), float(bc.get("start_time", 0.0)), float(bc.get("end_time", 1e3))))
+    ROT = [(k_[0], list(k_[1]), k_[2], k_[3], w_) for k_, w_ in ROT.items()]
+    for _g in ROT:                                                                       # 구동 구간이 시간 전체를 덮어야 질량 무한 정점이 맞음 (vasedeck 은 0 ~ 100 s)
+        _w = sorted(_g[4], key=lambda q: q[2])
+        assert _w[0][2] == 0.0 and all(abs(_w[i][3] - _w[i + 1][2]) < 1e-9 for i in range(len(_w) - 1)) and _w[-1][3] >= 1.0, "회전 구동 구간이 시간을 덮지 않음"
+else:
+    ROT = []
 DSC = float(cfg.get("grid_v_damping_scale", 1.0)) if a.pg_vdamp else 1.0
 E_GT, NU = float(cfg["E"]), float(cfg["nu"])
 GT = d["x"][1:L + 1].float()                                                          # CPU
@@ -75,7 +92,7 @@ def parse(sv):
 
 SETS = [parse(q) for q in a.set]
 S = VG.VRGS(x0, d["v"][0], m, rho_p, E_GT, NU, cfg["g"], float(cfg["frame_dt"]), SETS[0][0], SETS[0][1], vmax=a.vmax, floor_z=FZ, fix_boxes=BOX,
-            damp_scale=DSC, damp_dt=float(cfg["substep_dt"]))
+            damp_scale=DSC, damp_dt=float(cfg["substep_dt"]), rot_bcs=ROT)
 INFO = S.info()
 print(f"[VR-GS] {a.tag} 입자 {S.Np}, 케이지 정점 {S.nv} 사면체 {S.nt} 칸 {S.h:.5f} 색 {len(S.colors)} 고정 정점 {INFO['nfixed']}, 질량 케이지 {S.mass_cage:.4g} / 입자 {S.mass_part:.4g}, "
       f"결속 무게중심 최소 {S.bind_min:.2e}, 바닥 {FZ}, 감쇠 {DSC}, 정답 E {E_GT:g} ν {NU}, 프레임 {L}, EXT {EXT:.5f}", flush=True)
@@ -169,7 +186,7 @@ else:                                                                           
     PAPER = [("Horse", 10611, 1295223, 5, 115.4), ("Bear", 19472, 2525891, 5, 76.9), ("Fox", 28205, 304875, 1, 161.2)]
     out = []
     for (nm, nv, ng, it_p, fps) in PAPER:
-        T = VG.VRGS(x0, d["v"][0], m, rho_p, E_GT, NU, cfg["g"], float(cfg["frame_dt"]), 1, 1, vmax=nv, floor_z=FZ, fix_boxes=BOX,
+        T = VG.VRGS(x0, d["v"][0], m, rho_p, E_GT, NU, cfg["g"], float(cfg["frame_dt"]), 1, 1, vmax=nv, floor_z=FZ, fix_boxes=BOX, rot_bcs=ROT,
                     damp_scale=DSC, damp_dt=float(cfg["substep_dt"]))
         rep = (ng + T.Np - 1) // T.Np                                                 # 가우시안 수를 맞추려고 결속을 겹쳐 씀 (갱신 비용만 잼)
         T.tid = T.tid.repeat(rep)[:ng].contiguous(); T.bw = T.bw.repeat(rep, 1)[:ng].contiguous(); T.Np = ng
