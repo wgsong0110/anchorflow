@@ -164,6 +164,8 @@ def run1(m, n, rep):
             return
         os.makedirs(d, exist_ok=True)
         with OSEM, SEM:                                  # [stabfinal] OSEM 먼저 (SEM 을 쥔 채 OSEM 을 기다리면 다른 방법이 굶음) -- 우리 판은 카드 메모리를 크게 써서 (플레인 17 GB) 한 번에 하나
+            if os.path.exists(f"{d}/FIN"):                # 기다리는 동안 다른 인스턴스가 끝낸 판 (R2 에서 받아 옴)
+                return
             t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, direct=True)}", f"{d}/log.txt")
         open(f"{d}/FIN", "w").write(f"rc={rc} {time.time() - t0:.0f}s")
         shutil.rmtree(f"{d}/pred.pt", ignore_errors=True)
@@ -239,8 +241,9 @@ def method_main(m):
 
 def stage_main():
     ms = a.methods.split(",")
-    for kv in [x for x in a.extra_runs.split(",") if x]:
-        run(kv.split(":")[0], int(kv.split(":")[1]), "a")
+    ex = [x.split(":") for x in a.extra_runs.split(",") if x]          # [stabfinal] 방법:N[:판] -- 다른 인스턴스의 사다리를 나눠 맡을 때 (동시에)
+    pmap(lambda kv: run(kv[0], int(kv[1]), kv[2] if len(kv) > 2 else "a"), ex)
+    ms = [m for m in ms if m in CAP]                                   # --methods none = 나눠 맡은 판만
     ts = {m: threading.Thread(target=method_main, args=(m,)) for m in ms if m != "gf"}
     [t.start() for t in ts.values()]
     if "gf" in ms:                                   # GF 는 taichi 가 GPU 메모리를 크게 잡아 (우리 판·PG 가 끝난 뒤) 따로 -- 동시 실행은 메모리 부족 (ficus 시험)
