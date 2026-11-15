@@ -89,9 +89,16 @@ e=s.get('err_mean_done'); print('%.2f' % (100*e) if e is not None else 'nan', '%
 say "  [$SC] 오차 $ERR % 단독 $MS ms 발산 $(python -c "import json;print(json.load(open('$D/summary.json')).get('diverged'))")"
 # ---- (5) 렌더
 CB=${NS_CAMBACK:-1.6}; EL=${NS_ELEV:-40}; B2=${NS_BACK2:-1.1}
+UP=$(python -c "
+import json,math,numpy as np
+c=json.load(open('$CFG')); R=np.eye(3)
+for dg,ax in zip(c['rotation_degree'],c['rotation_axis']):
+    cs,sn=math.cos(dg/180*3.1415926),math.sin(dg/180*3.1415926)
+    R=np.array({0:[[1,0,0],[0,cs,-sn],[0,sn,cs]],1:[[cs,0,sn],[0,1,0],[-sn,0,cs]],2:[[cs,-sn,0],[sn,cs,0],[0,0,1]]}[ax])@R
+print(','.join('%.6f'%q for q in R[2]))")      # 렌더러는 회전 전 모델 좌표로 그림 -> 세계 위 (중력 반대) = R 셋째 행
 python -u exe/lb_roll_to_h5.py --dump $D/pred.pt --traj $AG/gt_$SC --out $D/h5_ours > $D/h5.log 2>&1
-CUDA_VISIBLE_DEVICES=0 python -u exe/lb_render.py --sim $AG/gt_$SC --config $CFG --shape $SC --out $D/gt.mp4 --cam_back $CB --elev $EL --back2 $B2 --png $D/gt_png < /dev/null > $D/r_gt.log 2>&1
-CUDA_VISIBLE_DEVICES=0 python -u exe/lb_render.py --sim $D/h5_ours --config $CFG --shape $SC --out $D/ours.mp4 --cam_back $CB --elev $EL --back2 $B2 --png $D/ours_png < /dev/null > $D/r_ours.log 2>&1
+CUDA_VISIBLE_DEVICES=0 python -u exe/lb_render.py --sim $AG/gt_$SC --config $CFG --shape $SC --out $D/gt.mp4 --cam_back $CB --elev $EL --up $UP --back2 $B2 --png $D/gt_png < /dev/null > $D/r_gt.log 2>&1
+CUDA_VISIBLE_DEVICES=0 python -u exe/lb_render.py --sim $D/h5_ours --config $CFG --shape $SC --out $D/ours.mp4 --cam_back $CB --elev $EL --up $UP --back2 $B2 --png $D/ours_png < /dev/null > $D/r_ours.log 2>&1
 python -u exe/gfs_post.py vid --gt_label "$GTL" --our_label "우리 K=1  오차 ${ERR}%  ${MS} ms" --gt_png $D/gt_png --our_png $D/ours_png --out_json $D/visual.json --out_mp4 $D/cmp_raw.mp4 --font $W/font.otf --fps $(python -c "import json;print(round(1/json.load(open('$CFG'))['frame_dt']))") > $D/vid.log 2>&1
 V=$D/${SC}_K1_cmp.mp4
 ffmpeg -y -loglevel error -i $D/cmp_raw.mp4 -vf "scale='min(2400,iw)':-2,format=yuv420p" -c:v libx264 -crf 18 -movflags +faststart $V
