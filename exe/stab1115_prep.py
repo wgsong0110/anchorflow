@@ -8,7 +8,7 @@ base = json.load(open(sys.argv[1])); off, h5r, out = sys.argv[2], sys.argv[3], s
 KEEP = ("rotation_degree", "rotation_axis", "sim_area", "scale", "opacity_threshold", "particle_filling", "mpm_space_vertical_upward_axis",
         "mpm_space_viewpoint_center", "default_camera_index", "init_azimuthm", "init_elevation", "init_radius", "move_camera", "delta_a", "delta_e", "delta_r", "show_hint")
 for s in sys.argv[5:]:
-    if s == "ficus":
+    if s in ("ficus", "lego"):                       # lego = 기존 stab (11-12 표) 과 같은 낙하 config (물리·회전 0 동일)
         c = copy.deepcopy(base)
     else:
         o = json.load(open(f"{off}/{s}_config.json")); c = copy.deepcopy(base)

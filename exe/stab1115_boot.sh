@@ -39,11 +39,11 @@ SCS=$(echo "$JOBS" | tr ';' '\n' | cut -d: -f1 | sort -u | tr '\n' ' ')
 [ -d $W/OmniPhysGS ] || (git clone -q https://github.com/wgsxm/OmniPhysGS $W/OmniPhysGS && git -C $W/OmniPhysGS checkout -q 5ab915b014467b911581b0c6df351713d3114a08) &
 rclone copy $MI/i-physgaussian $W/i-physgaussian --transfers 16 -q &
 for s in $SCS; do
-  case $s in ficus) mdl=ficus_whitebg-trained;; vasedeck) mdl=vasedeck_whitebg-trained;; plane) mdl=plane-trained;; pillow2sofa) mdl=pillow2sofa_whitebg-trained;; esac
-  if [ $s = ficus ]; then rclone copy $MI/pgmodel/$mdl $W/pgmodel/$mdl --transfers 16 -q &
+  case $s in ficus) mdl=ficus_whitebg-trained;; lego) mdl=lego_whitebg-trained;; vasedeck) mdl=vasedeck_whitebg-trained;; plane) mdl=plane-trained;; pillow2sofa) mdl=pillow2sofa_whitebg-trained;; esac
+  if [ $s = ficus ] || [ $s = lego ]; then rclone copy $MI/pgmodel/$mdl $W/pgmodel/$mdl --transfers 16 -q &
   else (rclone copyto $PRX/assets/$mdl.zip /root/s1/$mdl.zip -q && unzip -q -o /root/s1/$mdl.zip -d $W/pgmodel) & fi
   mkdir -p $HS/$s/init
-  if [ $s = ficus ]; then rclone copyto $MI/stab/ficus/init/sim_0000000000.h5 $HS/$s/init/sim_0000000000.h5 -q &
+  if [ $s = ficus ] || [ $s = lego ]; then rclone copyto $MI/stab/$s/init/sim_0000000000.h5 $HS/$s/init/sim_0000000000.h5 -q &
   else rclone copyto $PRX/scenes/$s/h5/simulation_ply/sim_0000000000.h5 $HS/$s/init/sim_0000000000.h5 -q & fi
 done
 mkdir -p $W/assets_cfg; rclone copy $PRX/assets $W/assets_cfg -q --include "*_config.json" &
@@ -61,12 +61,18 @@ OK=1; for s in $SCS; do [ -s $W/stab/$s/init/sim_0000000000.h5 ] && [ -s $W/stab
 echo "[ok] $(date)" | rclone rcat $MK/setup.done
 say "[준비 끝] 입자 $(for s in $SCS; do echo -n "$s:"; python -c "import h5py;print(h5py.File('$W/stab/$s/init/sim_0000000000.h5')['x'].shape)"; done | tr '\n' ' ')"
 OUT=$W/stab
+# [stab4] 이어 돌리기: R2 에 있는 결과를 먼저 받음 (S1115_FETCH_EXCL = 받지 않을 패턴, 공백 구분; 예 plane 의 실패한 gf_*)
+FX=""; for x in ${S1115_FETCH_EXCL:-}; do FX="$FX --exclude $x"; done
+for s in $SCS; do rclone copy $RX/res/$s $OUT/$s -q --transfers 16 --exclude "drv.log" --exclude "DRV_DONE_*" --exclude "config.json" --exclude "init/**" $FX; done
+say "[이어 받기 끝] $(for s in $SCS; do echo -n "$s:$(find $OUT/$s -name '*.fin' -o -name FIN | wc -l) "; done)"
 ( while true; do sleep 240; rclone copy $OUT $RX/res -q --transfers 8 --exclude "**/vis/dump_*/**" --exclude "**/vis/hexdump_*/**" --exclude "hex_in.pt" --exclude "**/pred.pt" --exclude "**/*_tmp*" --exclude "**/*.ckpt.pt*" --exclude "**/vis/png_*/**" 2>/dev/null
   rclone copy /root/s1 $MK/logs -q --include "*.log" 2>/dev/null; done ) & SY=$!
 for job in $(echo "$JOBS" | tr ';' ' '); do
   s=${job%%:*}; stg=${job#*:}
   say "[작업] $s $stg"
-  python -u exe/stab1115_drv.py --scene $s --par $PAR --stages $stg ${S1115_EXTRA:-} >> /root/s1/drv_$s.log 2>&1
+  EXTRA=$(rclone cat $RX/code/extra_$TAG.txt 2>/dev/null | head -1)        # [stab4] 드라이버 추가 인자 (따옴표 포함 가능) -- env 로는 공백을 못 넘겨 R2 파일로
+  say "[인자] $EXTRA"
+  eval python -u exe/stab1115_drv.py --scene $s --par $PAR --stages $stg ${S1115_EXTRA:-} $EXTRA >> /root/s1/drv_$s.log 2>&1
   say "[작업 끝] $s $stg rc=$? $(tail -1 /root/s1/drv_$s.log | cut -c1-200)"
 done
 kill $SY 2>/dev/null

@@ -17,6 +17,8 @@ ap.add_argument("--methods", default="pg,ipg,gf,omni,ours")
 ap.add_argument("--cap", default="pg:1024,ipg:16,gf:512,omni:256,ours:256", help="방법별 사다리 상한 N")
 ap.add_argument("--hexfix", default="", help="우리 판 추가 플래그 (발산 수정 플래그가 나오면)")
 ap.add_argument("--hextag", default="", help="우리 결과 폴더 접미 (수정판 구분)")
+ap.add_argument("--hexpre", default="", help="우리 판 바깥 감싸개 (stabhex_wrap 앞; 예 'exe/ssfix_wrap.py --ssf_bec 1 ...' 는 'python -u' 뒤에 그대로 끼움)")
+ap.add_argument("--extra_runs", default="", help="main 단계에서 사다리 없이 돌릴 판 (예 pg:1024 = 기준 궤적만)")
 ap.add_argument("--tifrac", type=float, default=0.2)
 ap.add_argument("--timeout", type=int, default=10800)
 a = ap.parse_args()
@@ -69,6 +71,8 @@ def hex_cmd(n, d, dump=False, stats=1, direct=None, frames=FR):
     for k, v in (("@ENV@", env), ("@OUT@", d), ("@ST@", str(stats)), ("@DATA@", f"{ST}/{S}/hex_in.pt"), ("@FR@", str(frames)), ("@TAG@", f"{S}_N{n}"),
                  ("@N@", str(n)), ("@S@", S), ("@RR@", f"{ST}/{S}/rr"), ("@CFG@", f"{ST}/{S}/config.json"), ("@DUMP@", du), ("@DIR@", str(dr))):
         base = base.replace(k, v)
+    if a.hexpre:
+        base = base.replace("python -u exe/stabhex_wrap.py", f"python -u {a.hexpre} exe/stabhex_wrap.py", 1)
     return f"cd {WT} && {base} {a.hexfix}"
 
 
@@ -138,7 +142,7 @@ def pmap(fn, items):
 
 
 def plan_path(m):
-    return f"{ST}/{S}/plan_{m}{a.hextag}.json"
+    return f"{ST}/{S}/plan_{m}{a.hextag if m == 'ours' else ''}.json"
 
 
 def method_main(m):
@@ -172,6 +176,8 @@ def method_main(m):
 
 def stage_main():
     ms = a.methods.split(",")
+    for kv in [x for x in a.extra_runs.split(",") if x]:
+        run(kv.split(":")[0], int(kv.split(":")[1]), "a")
     ts = {m: threading.Thread(target=method_main, args=(m,)) for m in ms if m != "gf"}
     [t.start() for t in ts.values()]
     if "gf" in ms:                                   # GF 는 taichi 가 GPU 메모리를 크게 잡아 (우리 판·PG 가 끝난 뒤) 따로 -- 동시 실행은 메모리 부족 (ficus 시험)
@@ -219,7 +225,7 @@ def stage_vis():
         if os.path.exists(plan_path(m)):
             nm = json.load(open(plan_path(m)))["N_min"]
             if nm:
-                items.append((f"{m}_N{nm}", m, nm))
+                items.append((f"{m}{a.hextag if m == 'ours' else ''}_N{nm}", m, nm))
     for nm, m, n in items:                                    # 직렬 (렌더가 GPU 메모리 큼)
         vis_one(nm, m, n)
     ref = f"{V}/png_pg_N1024"
@@ -233,7 +239,7 @@ def stage_vis():
 def stage_speed():
     SP = f"{ST}/{S}/speed"; os.makedirs(SP, exist_ok=True)
     for n in (1, 2, 4, 8, 16):
-        d = f"{SP}/t_N{n}"
+        d = f"{SP}/t_N{n}{a.hextag}"
         if os.path.exists(f"{d}/FIN"):
             continue
         os.makedirs(d, exist_ok=True)
@@ -241,6 +247,10 @@ def stage_speed():
         out = subprocess.run("nvidia-smi --query-compute-apps=pid --format=csv,noheader", shell=True, capture_output=True, text=True).stdout.strip()
         open(f"{d}/apps_at_start.txt", "w").write(out)
         cmd = hex_cmd(n, d, stats=0).replace("AF_SP_FR=1,60 AF_E1_DG=1 AF_G1_DG=1 ", "")
+        if os.path.exists(plan_path("ours")):                          # 사다리에서 발산한 N 은 시간 안 잼
+            lad = json.load(open(plan_path("ours"))).get("ladder", {})
+            if lad.get(str(n)) is False:
+                open(f"{d}/FIN", "w").write("skip=발산"); continue
         rc = sh(f"CUDA_VISIBLE_DEVICES=0 {cmd}", f"{d}/log.txt")
         open(f"{d}/FIN", "w").write(f"rc={rc}")
         say("단독 시간", S, n, "rc", rc)
