@@ -30,7 +30,7 @@ waitpar() { while [ $(ls $SLOT | wc -l) -ge $PAR ]; do sleep 5; done; }
 # 판 하나: run <폴더> <형상> <프레임 0=전부> <ε> <η> <영상 1/0> [추가]
 run() { local D=$1 s=$2 nf=$3 e=$4 eta=$5 vid=$6; shift 6; local n=${s}_vrgsx c g
   mkdir -p $D; [ -f $D/$n.npz ] && return 0
-  g=$(( $(date +%s%N) % NG ))
+  g=${GPU_FOR:-$(( $(date +%s%N) % NG ))}
   c="$TR --flow $IN/gflow_$s.npz --aux $IN/aux_$s.npz --riem_eps $e --riem_lr $eta --out $D/$n.npz --resume $*"
   [ $nf != 0 ] && c="$c --frames $nf"
   if [ $vid = 1 ]; then
@@ -47,7 +47,7 @@ run() { local D=$1 s=$2 nf=$3 e=$4 eta=$5 vid=$6; shift 6; local n=${s}_vrgsx c 
 up() { rclone copy $1 $R/$2 -q --transfers 8 --exclude "*.frames/**"; }
 metrics() { local D=$1 s=$2
   mkdir -p $D/metrics; [ -f $D/metrics/${s}_vrgsx.json ] && return 0
-  CUDA_VISIBLE_DEVICES=0 $PY -u exe/rep_metrics.py --res $D/${s}_vrgsx.npz --flow $IN/gflow_$s.npz --video $D/${s}_vrgsx.mp4 \
+  CUDA_VISIBLE_DEVICES=${GPU_FOR:-0} $PY -u exe/rep_metrics.py --res $D/${s}_vrgsx.npz --flow $IN/gflow_$s.npz --video $D/${s}_vrgsx.mp4 \
     --target_video $IN/${s}_target.mp4 --out $D/metrics/${s}_vrgsx.json < /dev/null > $D/metrics/${s}_vrgsx.log 2>&1
   say "지표 $s rc=$? $(grep -a '측정\|rror' $D/metrics/${s}_vrgsx.log | tail -2 | tr '\n' ' ')"; }
 for STG in ${STGS//,/ }; do
@@ -61,11 +61,11 @@ s0)
 tune)
   D=$O/tune; mkdir -p $D
   ( while :; do sleep 300; up $D tune; done ) & SYNC=$!
-  P=""
+  P=""; NJ=0
   for e in 1e-3 1e-2 1e-1 1; do for eta in 0.1 0.5 1 10 100; do
     waitpar
-    ( f=$SLOT/$BASHPID; touch $f; run $D/e${e}_l${eta} wolf 3 $e $eta 0; up $D/e${e}_l${eta} tune/e${e}_l${eta}; rm -f $f ) &
-    P="$P $!"; sleep 3
+    ( f=$SLOT/$BASHPID; touch $f; GPU_FOR=$(( NJ % NG )) run $D/e${e}_l${eta} wolf 3 $e $eta 0; up $D/e${e}_l${eta} tune/e${e}_l${eta}; rm -f $f ) &
+    P="$P $!"; NJ=$((NJ + 1)); sleep 3
   done; done
   wait $P
   kill $SYNC 2>/dev/null
@@ -94,7 +94,7 @@ main)
   [ -n "$ETA" ] || { say "tune 결과 없음 -> main 안 함"; exit 1; }
   say "main ε $E η $ETA"
   ( while :; do sleep 600; up $D main; done ) & SYNC=$!
-  P=""; for s in wolf bread ship; do ( run $D $s 0 $E $ETA 1 && { up $D main; metrics $D $s; up $D main; } ) & P="$P $!"; sleep 5; done
+  P=""; NJ=0; for s in wolf bread ship; do ( GPU_FOR=$(( NJ % NG )) run $D $s 0 $E $ETA 1 && { up $D main; GPU_FOR=$(( (NJ + 3) % NG )) metrics $D $s; up $D main; } ) & P="$P $!"; NJ=$((NJ + 1)); sleep 5; done
   wait $P
   kill $SYNC 2>/dev/null
   up $D main; say "main 끝"
