@@ -3,7 +3,7 @@
 #   S1115_JOBS = "씬:단계[,단계];씬:단계" (예: ficus:main,vis;plane:main) 순서대로 직렬, S1115_TAG = 인스턴스 이름 (표식 marks/<TAG>), S1115_PAR = 동시 판 수 (기본 4), S1115_EXTRA = 드라이버 추가 인자
 #   끝나면 R2 대조 차이 0 이면 스스로 destroy (CONTAINER_ID·CONTAINER_API_KEY).
 set -u
-H=${S1115_COMMIT:?}; JOBS=${S1115_JOBS:?}; TAG=${S1115_TAG:?}; PAR=${S1115_PAR:-4}
+H=${S1115_COMMIT:?}; JOBS=${S1115_JOBS:?}; JOBS=${JOBS//+/;}; TAG=${S1115_TAG:?}; PAR=${S1115_PAR:-4}
 R=r2:storage/result/anchorflow; RX=$R/lbours/stab1115; MK=$RX/marks/$TAG
 mkdir -p /workspace/shm /workspace/tmpd /root/s1
 LOG=/root/s1/vast.log
