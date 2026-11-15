@@ -30,7 +30,7 @@ def _install():
                     d0, d1 = D[2 * (k * nt + it)], D[2 * (k * nt + it) + 1]
                     if d0[1] == 0 and d1[14] == 0:
                         break
-                    its.append([float(d0[1]), float(d1[14]), float(d1[9]), float(d1[20] + d1[10]), [float(d1[21 + j]) for j in range(10)], [float(d1[40 + j]) for j in range(10)], [float(x) for x in d0[5:9]]])
+                    its.append([float(d0[1]), float(d1[14]), float(d1[9]), float(d1[20] + d1[10]), [float(d1[21 + j]) for j in range(19)], [float(d1[40 + j]) for j in range(19)], [float(x) for x in d0[5:9]]])
                 rows.append(dict(k=k, y0k=int(Y[k, 0]), its=its, pen=(s.sspen[k].tolist() if hasattr(s, "sspen") else None)))
             LOG.write(json.dumps(dict(f=n[0], K=K, rows=rows)) + "\n"); LOG.flush()
         return o
