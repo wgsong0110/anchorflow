@@ -18,6 +18,7 @@ W̄ (--e3w g): 표본점 이동을 그 팔분 칸 입자들의 G2P 이동의 질
 G (--e3g 1, 새 실행기): 절 CM43 후보 G (옛 실행기 fem_escape2 --e2g) 와 같은 정의를 새 실행기 G2P 커널 (rt_g2p_ga 탄성 판, 재질 판 aq_g2p·ao_g2p·ao_g2p_a) 에:
     v_p = Σ w m_n v_n / Σ w m_n, Δx_p = Σ w m_n U_n / Σ w m_n, a_p = Σ w m_n a_n / Σ w m_n.  입자 F 누적 (A) 은 그대로 (--fp_interp 가 가우스 점 값으로 덮어씀).
 """
+import os
 import re
 
 import numpy as np
@@ -171,7 +172,7 @@ def _bind(s):
     except Exception:
         return                                                                           # 고치지 않은 모듈 (장벽 없는 판의 첫 모듈 등)
     ART.cp.ndarray((1,), dtype=ART.cp.uint64, memptr=g)[0] = int(s.e3wq.data_ptr())
-    ART.cp.ndarray((1,), dtype=ART.cp.int32, memptr=s.mod.get_global("AF_WQN"))[0] = int(s.e3wq.numel() // 27)
+    ART.cp.ndarray((1,), dtype=ART.cp.int32, memptr=s.mod.get_global("AF_WQN"))[0] = int(s.e3wq.numel() // int(os.environ.get('AF_E3K', '27')))
     s._e3bound = (id(s.mod), int(s.e3wq.data_ptr()))
 
 
@@ -221,9 +222,9 @@ def install(w=0, g=0, newg=False):
                     s._e3in = True
                     try:
                         i32 = np.int32
-                        _ok(s, "e3_wqz", s.capQc * 8 * 27, (P(s.IP),), 256)
+                        _ok(s, "e3_wqz", s.capQc * 8 * int(os.environ.get("AF_E3K", "27")), (P(s.IP),), 256)
                         _ok(s, "e3_wq", s.N, (i32(s.N), P(s.IP), P(s.Np), P(s.fx), P(s.m), P(s.pcd), P(s.cidx), P(s.mn), i32(ST["w"])))
-                        _ok(s, "e3_wqn", s.capQc * 8 * 27, (P(s.IP),), 256)
+                        _ok(s, "e3_wqn", s.capQc * 8 * int(os.environ.get("AF_E3K", "27")), (P(s.IP),), 256)
                     finally:
                         s._e3in = False
                     s._e3done = True
@@ -236,7 +237,7 @@ def install(w=0, g=0, newg=False):
 
         def alloc(s, need):
             r = _oa(s, need)
-            s.e3wq = torch.zeros(s.capQc * 8 * 27, device=s.dev, dtype=torch.float32)
+            s.e3wq = torch.zeros(s.capQc * 8 * int(os.environ.get('AF_E3K', '27')), device=s.dev, dtype=torch.float32)
             _bind(s)
             return r
         cls.alloc = alloc

@@ -44,6 +44,11 @@ __device__ __forceinline__ float af_tc(int t, int ax) {                         
     return (ax == p0) ? 0.75f : ((ax == p1) ? 0.5f : 0.25f);
 }
 #define AF_TVW(o) (((o) < 6) ? (1.f/6.f) : 0.f)
+// 절 CM180 --tmx 3: 바닥 표본점 노드 64 (사면체 칸 -1 .. +2, 번호 ((a*4+b)*4+c)); 칸 base cb 는 상자 최솟값을 1 낮췄으므로 cb - 1 >= 0
+__device__ __forceinline__ void qnodes64(int q, const int* IP, const int* cb, int* ids) {
+    int c = q >> 3; int nb1 = IP[7], nb2 = IP[8];
+    for (int o=0;o<64;o++) { int i = o/16, j = (o/4)%4, k = o%4; ids[o] = ((cb[c*3]-1+i)*nb1 + (cb[c*3+1]-1+j))*nb2 + (cb[c*3+2]-1+k); }
+}
 __device__ __forceinline__ void af_tw27(const float* f, float* TW, float* TG) {
     for (int o=0;o<27;o++) { TW[o] = 0.f; TG[o*3] = 0.f; TG[o*3+1] = 0.f; TG[o*3+2] = 0.f; }
     int pr[3]; float sv[3]; af_perm(f, pr, sv);
@@ -159,12 +164,19 @@ def transform(src, mix=False):
     for name, a, b in reversed(_bodies(s)):
         body = s[a:b]
         n1 = n2 = 0
-        if mix and not (mix == 2 and name.startswith("rt_g2p")):                       # --tmx 2: G2P 커널 (rt_g2p*) 은 사면체 그대로, P2G·S_구속 노드 몫만 B-스플라인
+        # --tmx 2: G2P 커널 (rt_g2p*) 은 사면체 그대로. e3_wq (--e3w 장벽 표본점 W̄ = 칸 안 입자 G2P 기저 평균, 표 번호 = 사면체 칸 27 노드) 는 --tmx 1·2 에서 사면체 그대로
+        # (바닥 처리 사면체), --tmx 3 에서만 B-스플라인 64 노드 판으로 따로 (아래).
+        if mix and not (mix == 2 and name.startswith("rt_g2p")) and not (name == "e3_wq" and mix != 3):
             body, n1 = R_BWF.subn(_mix_bwf, body)
             body, n2 = R_BWF3.subn(_mix_bwf, body)
             if not (n1 or n2):
                 continue
             body, n3 = R_PBN.subn(_mix_pb, body)
+            if name == "e3_wq":                                                         # 표 번호 o (사면체 칸 기준 27) -> B-스플라인 stencil 의 64 (4x4x4, 사면체 칸 -1 .. +2) 번호
+                old_ = "atomicAdd(&E3W(q, o), ww[o]*sc);"
+                assert body.count(old_) == 1, "e3_wq 쓰기 줄"
+                body = body.replace(old_, "{ int i_ = o/9, j_ = (o/3)%3, k_ = o%3; atomicAdd(&E3W(q, ((i_+sh_[0]+1)*4 + (j_+sh_[1]+1))*4 + (k_+sh_[2]+1)), ww[o]*sc); }")
+                cnt["e3wq64"] = 1
             cnt["mixbwf"] = cnt.get("mixbwf", 0) + n1 + n2
             cnt["mixpb"] = cnt.get("mixpb", 0) + n3
             if n3 != 3 or re.search(r"pb\[p\*3[^\]]*\]\+[ijk]\b", body) or re.search(r"bwf\(fx\[p\*3\+a\], ", body):
@@ -183,6 +195,23 @@ def transform(src, mix=False):
         if "bwf(fx" in body or re.search(r"(?<![\w])(w|wx)\[[012]\]\[[ijk]\]", body) or re.search(r"(?<![\w])dw\[[012]\]", body):
             left.append(name)
         s = s[:a] + body + s[b:]
+    if mix == 3:                                                                         # 바닥 (장벽 표본점·접선 고착) 을 B-스플라인 W̄ 64 노드로
+        for name, a, b in reversed(_bodies(s)):
+            body = s[a:b]
+            if name in ("e3_wqz", "e3_wqn"):
+                body = body.replace("nq*27", "nq*64"); cnt["e3z64"] = cnt.get("e3z64", 0) + 1
+            elif ("E3W(" in body or "E3_FLW(" in body) and not name.startswith("e3_"):
+                qv = "qq" if re.search(r"\bint\s+qq\b", body) else "q"
+                body = body.replace("ids[27]", "ids[64]").replace("qnodes(", "qnodes64(").replace("o<27", "o<64").replace("BW[oc*27+o]", "E3W(%s, o)" % qv)
+                if "ids[27]" in body or "o<27" in body or "BW[" in body:
+                    left.append(name + "(floor64)")
+                cnt["floor64"] = cnt.get("floor64", 0) + 1
+            else:
+                continue
+            s = s[:a] + body + s[b:]
+        s = s.replace("BW[(oc)*27+(o)]", "0.f")
+        if not cnt.get("floor64") and "E3W(" in s:
+            left.append("floor64 없음")
     s, n = R_OC.subn(lambda m_: "af_tt(fx + (size_t)(" + m_.group(1) + "))", s)
     if n:
         cnt["oc"] = n
@@ -294,6 +323,8 @@ def install(out, mode, mix=0):
     import cupy as cp
     OUT[0] = out
     MIX[0] = int(mix)
+    if int(mix) == 3:
+        os.environ["AF_E3K"] = "64"                                                  # fem_escape3: W̄ 표 노드 수 (기본 27)
     INFO["mix"] = int(mix)
     INFO["mode"] = int(mode)
     base = cp.RawModule

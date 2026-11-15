@@ -1,5 +1,5 @@
 #!/bin/bash
-# 절 CM180: 혼합 판을 카드 하나에서 돌리고 R2 lbours/tethex/<판> 로 올림 (아무것도 안 지움). 사용: bash exe/go_tethex.sh <카드> <판 이름들 쉼표>
+# 절 CM180: 혼합 판을 카드 하나에서 돌리고 R2 lbours/tethex/<판> 로 올림 (아무것도 안 지움). 사용: bash exe/go_tethex.sh <카드> <판 이름들 쉼표>   (이름 첫 글자: A = --tmx 1 · B = --tmx 2 · C = --tmx 3 · 그 밖 (M·P: 앞 실행, e3_wq 표 번호 오류판) = 1·2)
 export PATH=/home/dkta/bin:$PATH
 G=$1; NAMES=$2
 R=r2:storage/result/anchorflow/lbours/tethex
@@ -11,7 +11,7 @@ source exe/tethex_gen.sh
 rclone cat r2:storage/result/anchorflow/lbours/tetfix/TC+ff3/cmd.txt > $O/tc.txt
 [ $(wc -c < $O/tc.txt) -gt 100 ] || { say "TC+ff3 명령 못 읽음"; exit 1; }
 for n in ${NAMES//,/ }; do
-  mkdir -p $O/$n; th_cmd $O/tc.txt $O/$n $([ ${n:0:1} = P ] && echo 2 || echo 1) > $O/$n/cmd.txt
+  mkdir -p $O/$n; th_cmd $O/tc.txt $O/$n $(case ${n:0:1} in B) echo 2;; C) echo 3;; *) echo 1;; esac) > $O/$n/cmd.txt
   grep -q -- "--out $O/$n *\$\|--out $O/$n " $O/$n/cmd.txt || { say "$n 명령 확인 실패"; exit 1; }
   rclone copyto $O/$n/cmd.txt $R/$n/cmd.txt -q
   say "$n 명령: $(grep -o 'tetfix_wrap.py\|tetc_wrap.py\|--tmx [0-9]\|--tet [0-9]\|--frames [0-9]*\|--gq_mass\|--gq_oct [0-9.]*\|--tff [0-9]\|--K [0-9]*' $O/$n/cmd.txt | tr '\n' ' ')"
