@@ -18,8 +18,9 @@ mkdir -p ~/.config/rclone
 printf '[r2]\ntype = s3\nprovider = Cloudflare\naccess_key_id = %s\nsecret_access_key = %s\nendpoint = %s\nacl = private\nno_check_bucket = true\n' "$R2_ACCESS_KEY" "$R2_SECRET" "$R2_ENDPOINT" > ~/.config/rclone/rclone.conf
 say "[시작] 커밋 $H 단계 $STG $(hostname) 인스턴스 ${CONTAINER_ID:-?}"
 nvidia-smi --query-gpu=index,name,power.limit,power.default_limit,clocks.max.sm,memory.total --format=csv | tee -a $LOG
-PL=$(nvidia-smi --query-gpu=power.limit --format=csv,noheader,nounits | cut -d. -f1 | sort -n | head -1); PD=$(nvidia-smi --query-gpu=power.default_limit --format=csv,noheader,nounits | cut -d. -f1 | sort -n | tail -1)
-if [ -n "$PL" ] && [ -n "$PD" ] && [ "$PL" -lt "$PD" ]; then
+CAP=$(nvidia-smi --query-gpu=index,power.limit,power.default_limit --format=csv,noheader,nounits | awk -F', ' '$2+0 < $3-1 {print $1":"$2"<"$3}' | tr '\n' ' ')   # 카드마다 (한 인스턴스에 기종이 섞여도 오탐 없게)
+if [ -n "$CAP" ]; then PL=$CAP; PD=x; else PL=1; PD=1; fi
+if [ -n "$CAP" ]; then
   echo "전력 제한 $PL < 기본 $PD $(date)" | rclone rcat $RX/POWERCAP_$SC; say "[전력 제한] $PL W < 기본 $PD W -- 일 안 함 (로컬이 destroy·blocklist)"; exit 1
 fi
 mkdir -p /home/dkta/work /home/dkta/.conda/envs/af/bin /home/dkta/bin
