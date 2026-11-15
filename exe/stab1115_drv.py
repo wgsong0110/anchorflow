@@ -132,7 +132,8 @@ def run1(m, n, rep):
 
 
 def stable(m, n, rep):
-    ok, mt = L.judge(L.load(S, m, n, rep), S)
+    r = L.hex_load(L.hex_dir(S, n, rep) + a.hextag) if m == "ours" else L.load(S, m, n, rep)     # [stab4] 우리 판은 hextag 폴더 (L.load 는 접미 없이 읽어 판정이 None 이 됐음)
+    ok, mt = L.judge(r, S)
     return ok
 
 
@@ -146,8 +147,8 @@ def plan_path(m):
 
 
 def method_main(m):
-    if os.path.exists(plan_path(m)):
-        return
+    if os.path.exists(plan_path(m)) and json.load(open(plan_path(m))).get("N_min") is not None:
+        return                                       # [stab4] N_min 없는 계획은 다시 판정 (있는 판은 건너뛰므로 싸다)
     cap = CAP[m]; pows = [p for p in L.POW if p <= cap]
     pmap(lambda n: run(m, n, "a"), sorted(pows, reverse=True))                   # 큰 N 먼저 (긴 것부터)
     st = {n: stable(m, n, "a") for n in pows}
