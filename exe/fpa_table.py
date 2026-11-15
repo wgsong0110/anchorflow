@@ -11,9 +11,14 @@ MAT = dict(L000="탄성 (jelly), 바닥 충돌", pillow2sofa="탄성 (jelly), �
 FR = dict(L000=80, pillow2sofa=300, bread=300, wolf=50)
 
 
+EXCL = {"bread_k4_r3": "같은 카드에서 영상 렌더가 겹쳐 돌아 시간 무효 -> r4 로 다시 잼"}
+
+
 def runs(s, v):
     out = []
-    for r in (1, 2, 3):
+    for r in (1, 2, 3, 4):
+        if f"{s}_{v}_r{r}" in EXCL:
+            continue
         f = f"{C}/runs/{s}_{v}_r{r}/metrics.json"
         if os.path.exists(f):
             m = json.load(open(f)); m["rep"] = r; out.append(m)
