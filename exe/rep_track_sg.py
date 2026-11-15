@@ -118,6 +118,13 @@ ap.add_argument("--save_F", type=int, default=0, help="앞 K 점 (GF: 가우시�
 ap.add_argument("--traj32", action="store_true", help="--save_traj 를 float32 로 (위상 지표용; 기본 float16)")
 ap.add_argument("--save_traj", action="store_true",
                 help="모든 프레임의 가우시안 위치(float16)를 저장 (물리 지표·EMD 재측정용)")
+ap.add_argument("--hex_pbar", action="store_true",
+                help="hex (rep4 11-15): 계량에 입자 (가우시안) 위치 det 로그 장벽 log det F_p (가중 1/√N) 을 가우스 점 장벽과 함께 넣는다")
+ap.add_argument("--feas", action="store_true",
+                help="riem (rep4 11-15): Armijo 되돌림이 로그 장벽의 정의역을 지킨다 -- 시도 보폭에서 입자 증분 det F_p > 0 "
+                     "(그리고 hex 는 가우스 점 det > 0) 일 때만 받아들인다 (아니면 반으로)")
+ap.add_argument("--hex_diag", action="store_true",
+                help="hex: 프레임 끝마다 입자 증분 det<=0 수, 그 중 자기 칸 가우스 점 8 개가 모두 > 0 인 수, 가우스 점 det<=0 수를 찍는다")
 ap.add_argument("--ls_max", type=int, default=30, help="riem: Armijo 되돌림 최대 횟수 (0 이면 고정 보폭)")
 ap.add_argument("--riem_k", type=float, default=1.0,
                 help="riem: 탄성 강성 배수 k (G = k·JᵀJ + ε·λmax(k=1)·I -- ε 는 k=1 기준으로 고정)")
@@ -238,6 +245,15 @@ def res_hex_lb(x, cn, BGn):
     return torch.log(J.clamp_min(1e-6)) * (J.shape[0] ** -0.5)
 
 
+def res_hex_lb_p(x, cn, BGn, rows, G27):
+    """hex --hex_pbar: 가우스 점 장벽 (가중 1/√Q) + 입자 위치 장벽 log det F_p, F_p = I + Σ u_o ⊗ ∇w_o(X_p) (가중 1/√N)."""
+    u = x.reshape(-1, 3)
+    Jq = det3(hex_gauss_F(u, cn, BGn))
+    Jp = det3(eye_plus(outer_sum(u[rows], G27)))
+    return torch.cat([torch.log(Jq.clamp_min(1e-6)) * (Jq.shape[0] ** -0.5),
+                      torch.log(Jp.clamp_min(1e-6)) * (Jp.shape[0] ** -0.5)])
+
+
 def res_spring(x, B, rel, L0):
     Bn = B + x.reshape(-1, 3)
     return ((Bn[rel] - Bn[:, None]).norm(dim=-1) - L0).reshape(-1)
@@ -267,6 +283,8 @@ def _gn_prod(fn, th, u, *args):
 
 
 GN_PROD = None
+NFEAS = [0]          # --feas: 정의역 밖이라 되돌린 시도 수 (프레임마다 0 으로)
+HDIAG = []           # --hex_diag: (t, 입자 증분 det<=0 수, 그 중 칸 가우스 점 모두 >0 인 수, 가우스 점 det<=0 수, 입자 증분 det 최소, 가우스 점 det 최소, 정의역 되돌림 수)
 
 
 # ============================================================== 표현들
@@ -869,7 +887,7 @@ class Hex(torch.nn.Module):
         M = uk.numel()
         ni = torch.stack([uk // (ext[1] * ext[2]), (uk // ext[2]) % ext[1], uk % ext[2]], 1) + mn
         self.Xn = (((ni.double() @ self.A64.T) - self.lo64) / self.S + self.off64).to(DT)   # 노드 자리 (정규화)
-        cb = torch.unique(bi, dim=0)                                    # 점유 칸 (base)
+        cb, self.pcell = torch.unique(bi, dim=0, return_inverse=True)   # 점유 칸 (base), 입자 -> 칸 번호
         cnk = cb[:, None, :] + self.O[None]
         ckey = ((cnk[..., 0] - mn[0]) * ext[1] + (cnk[..., 1] - mn[1])) * ext[2] + (cnk[..., 2] - mn[2])
         self.cn = torch.searchsorted(uk, ckey.reshape(-1)).reshape(-1, 27)
@@ -1136,6 +1154,7 @@ if CK is not None:
     (rows, CURVE, DOFS, STOP, EMDP, PHYS, TRAJS, YPREV) = [CK["L"][k] for k in (
         "rows", "CURVE", "DOFS", "STOP", "EMDP", "PHYS", "TRAJS", "YPREV")]
     FSAVE = CK["L"].get("FS", [])
+    HDIAG[:] = CK["L"].get("HD", [])
     torch.set_rng_state(CK["rng"].cpu()); torch.cuda.set_rng_state(CK["cuda_rng"].cpu())
     T_START = CK["t"] + 1
     t0 -= CK["elapsed"]
@@ -1245,6 +1264,8 @@ for t in range(T_START, T + 1):
         PURE = None                                         # (순수 잔차, 인자) -- 컴파일 경로
         if a.riem_energy == "logbarrier" and a.method in ("ours", "tet"):
             PURE = (res_lattice_lb, (rep.Xn, rep.cells, rep.cD0i))
+        elif a.riem_energy == "logbarrier" and a.method == "hex" and a.hex_pbar:
+            PURE = (res_hex_lb_p, (rep.cn, rep.BGn, rep.rows[FI], rep.G27[FI]))
         elif a.riem_energy == "logbarrier" and a.method == "hex":
             PURE = (res_hex_lb, (rep.cn, rep.BGn))
         elif a.riem_energy == "logbarrier" and a.method == "vrgsx":
@@ -1394,8 +1415,16 @@ for t in range(T_START, T + 1):
                 for _bt in range(a.ls_max):
                     for q, q0, dq in zip(PL, unflat(theta), unflat(x)):
                         q.copy_(q0 - stp * dq)
-                    dyt, _ = YJ(X_, FI)
+                    dyt, Jt_ = YJ(X_, FI)
                     ft = float(((RES0 + dyt) ** 2).sum(1).mean())
+                    if a.feas and ft == ft:
+                        # 로그 장벽 정의역: 이 프레임 증분 det 가 입자 (와 hex 가우스 점) 모두에서 > 0 (누적 det 부호 유지)
+                        ok_ = bool(det3(Jt_).min() > 0)
+                        if ok_ and a.method == "hex":
+                            ok_ = bool(rep.cellJ(PL[0].detach())[0].min() > 0)
+                        if not ok_:
+                            NFEAS[0] += 1
+                            ft = float("nan")
                     if ft == ft and ft <= f0 - 1e-4 * stp * sl:
                         break
                     stp *= 0.5; nbt += 1
@@ -1475,6 +1504,17 @@ for t in range(T_START, T + 1):
         for _ in range(a.max_iter):
             opt.step(closure)
         STOP.append((t, a.max_iter, a.max_iter, float("nan"), float("nan"), "gd"))
+    if a.method == "hex" and (a.hex_diag or a.feas):
+        with torch.no_grad():
+            _, Jinc = YJ(Pref[FI], FI)
+            jp = det3(Jinc); jq = rep.cellJ(rep.u.detach())[0].reshape(-1, 8)
+            badp = jp <= 0; qpos = (jq > 0).all(1)[rep.pcell[FI]]
+            HDIAG.append((t, int(badp.sum()), int((badp & qpos).sum()), int((jq <= 0).sum()), float(jp.min()), float(jq.min()), NFEAS[0]))
+        if t % 10 == 0 or t == 1 or HDIAG[-1][1] > 0:
+            print(f"  [진단 t={t:3d}] 입자 증분 det<=0 {HDIAG[-1][1]} (그 중 칸 가우스 점 8 개 모두 >0: {HDIAG[-1][2]})  "
+                  f"가우스 점 det<=0 {HDIAG[-1][3]}/{jq.numel()}  입자 증분 det 최소 {HDIAG[-1][4]:.3g}  가우스 점 최소 {HDIAG[-1][5]:.3g}  "
+                  f"정의역 되돌림 {NFEAS[0]}", flush=True)
+    NFEAS[0] = 0
     yall, Fall, Rall = eval_all(Pref, Fcum)
     with torch.no_grad():
         y = yall[FI]
@@ -1523,7 +1563,7 @@ for t in range(T_START, T + 1):
     if a.ckpt_every > 0 and t % a.ckpt_every == 0 and t < T:
         if RENDER and FR:
             _fc = os.path.join(FRD, f"f{t:03d}.npy"); np.save(_fc, np.stack(FR)); FCHUNKS.append(_fc); FR = []
-        _L = dict(rows=rows, CURVE=CURVE, DOFS=DOFS, STOP=STOP, EMDP=EMDP, PHYS=PHYS, TRAJS=TRAJS, YPREV=YPREV, FS=FSAVE)
+        _L = dict(rows=rows, CURVE=CURVE, DOFS=DOFS, STOP=STOP, EMDP=EMDP, PHYS=PHYS, TRAJS=TRAJS, YPREV=YPREV, FS=FSAVE, HD=HDIAG)
         torch.save(dict(t=t, Pref=Pref, Fcum=Fcum, Rcum=Rcum, L=_L, fchunks=FCHUNKS, elapsed=time.time() - t0,
                         rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state()), CKPT + ".tmp")
         os.replace(CKPT + ".tmp", CKPT)
@@ -1557,6 +1597,7 @@ np.savez_compressed(a.out, metrics=R, dof=np.array(DOFS), L=L,
                     phys=np.array(PHYS, dtype=np.float64),     # t, KE, P(3), Lang(3), mean detF
                     **({"traj": np.stack(TRAJS)} if TRAJS else {}),
                     **({"Fs": np.stack(FSAVE)} if FSAVE else {}),
+                    **({"hex_diag": np.array(HDIAG, dtype=np.float64)} if HDIAG else {}),
                     **({"hex_edge_sim": rep.edge_sim, "hex_edge_norm": rep.h, "hex_dx": a.hex_dx, "hex_cell": a.hex_cell,
                         "gauss_note": "det 는 칸당 2x2x2 가우스 점에서만 장벽; 칸 안 모든 점 det>0 보장 아님"}
                        if a.method == "hex" else {}))
