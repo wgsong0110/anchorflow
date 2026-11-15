@@ -21,5 +21,8 @@ if kind == "B":
         c = re.sub(r"--mlow \S+", "--mlow 1e-20", c)
     else:
         c = c.replace(" --cell 1 ", " --mlow 1e-20 --cell 1 ", 1)
+if __import__("os").environ.get("CM157_HFF", "0") == "1":   # 절 CM184 검증 (기본 0 = 기존 그대로): hexff 감싸개 (exe/hexff_wrap.py --hff 1) 를 nlwhy 바로 앞에 (exe/gfs_cmd.py 와 같은 자리)
+    assert c.count("exe/nlwhy_wrap.py") == 1
+    c = c.replace("exe/nlwhy_wrap.py", "exe/hexff_wrap.py --hff 1 exe/nlwhy_wrap.py")
 c = re.sub(r"--out \S+$", f"--out {out}", c)
 print(c)
