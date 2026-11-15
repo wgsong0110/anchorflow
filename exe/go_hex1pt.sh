@@ -27,7 +27,7 @@ runone() { local n=$1 s=${1:0:1} m=${1:1:1} GT CFG SH Q
     CUDA_VISIBLE_DEVICES=$G $PY -u exe/lb_render.py --sim $HD/h5 --config $CFG --shape $SH --out $O/$n/fem_$SH.mp4 --frame_label 0 --caption " " < /dev/null > $O/$n/r.log 2>&1
     say "$n 영상 $(stat -c %s $O/$n/fem_$SH.mp4 2>&1) $(tail -1 $O/$n/r.log | cut -c1-160)"
     rm -rf $HD
-    [ -f $O/$n/q27solver.pt ] && CUDA_VISIBLE_DEVICES=$G timeout 1500 $PY -u exe/q27_eig.py --pred $O/$n/pred.pt --solver $O/$n/q27solver.pt --frames 0,c --q $Q --out $O/$n/eig.json > $O/$n/eig.log 2>&1
+    [ -f $O/$n/q27solver.pt ] && CUDA_VISIBLE_DEVICES=$G timeout 1500 $PY -u exe/q27_eig.py --pred $O/$n/pred.pt --solver $O/$n/q27solver.pt --frames 0,c --q $Q --kb $([ $s = B ] && echo 800 || echo 2400) --out $O/$n/eig.json > $O/$n/eig.log 2>&1
     say "$n eig rc=$? $(tail -2 $O/$n/eig.log | cut -c1-300 | tr '\n' ' ')"
   fi
   rclone copy $O/$n $R/$n -q --transfers 8; say "$n R2 올림"; return 0; }
