@@ -16,6 +16,7 @@ import sys
 W = "/home/dkta/work"
 MODEL = {"lego": "lego_whitebg-trained", "mic": "mic_whitebg-trained", "ficus": "ficus_whitebg-trained",
          "hotdog": "hotdog_whitebg-trained", "wolf": "wolf_whitebg-trained", "bread": "bread-trained"}          # 절 AG: PG 소성 씬
+MODEL.update({"chair_plasticine": "chair", "drums_foam": "drums", "materials_sand": "materials", "ball_metal": "ball"})      # 절 CM186 새 형상 (pgmodel/<물체>, 직접 학습한 3DGS·DreamPhysics ball)
 ap = argparse.ArgumentParser()
 ap.add_argument("--sim", required=True)
 ap.add_argument("--config", required=True)

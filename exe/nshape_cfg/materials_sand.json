@@ -80,5 +80,5 @@
  "delta_e": 0.0,
  "delta_r": 0.0,
  "friction_angle": 30,
- "_nshape_changes": "PG wolf_config \uae30\uc900. \ubc14\uafbc \uac83: release_particles_sequentially \ube8c, sticky \ubc14\ub2e5 z 0.48->0.2 (0.3 m \ub099\ud558), n_grid 200->100, \uc7ac\uc9c8 \ud0a4, \uce74\uba54\ub77c(\ub80c\ub354\ub9cc)"
+ "_nshape_changes": "PG \uacf5\uc2dd wolf_config \uae30\uc900. \ubc14\uafbc \uac83: release_particles_sequentially \ube8c, sticky \ubc14\ub2e5 z 0.48->0.2 (0.3 m \ub099\ud558), n_grid 200->100, \uc7ac\uc9c8 \ud0a4, \uce74\uba54\ub77c(\ub80c\ub354\ub9cc). \uc7ac\uc9c8: sand = wolf_config \uc7ac\uc9c8 \uac12 \uadf8\ub300\ub85c (E 5e7, nu 0.3, friction_angle 30, density 2000, substep_dt 2e-5)"
 }
