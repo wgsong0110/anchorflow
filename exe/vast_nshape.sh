@@ -83,7 +83,7 @@ KOK=""
 for K in 1 2 4 8; do last=""; [ $K = 8 ] && last=1
   XS_SWEEP=1 XS_SWEEP_LAST=$last XS_SFX=_K$K bash $AF/exe/gfs_ours.sh $SC $OBJ $SC.json $NF "--K=$K"; rc=$?
   say "  [$SC] K=$K rc=$rc"; [ $rc = 3 ] && continue
-  KOK=$K; break
+  [ $rc = 0 ] && KOK=$K; break      # rc 0 이 아니면 (실행 오류) 시간 판 없이 끝
 done
 # ---- (4) 단독 시간 판: 같은 명령에서 진단 플래그만 뺌 (절 CM185 와 같은 목록), 카드에 이 판 하나
 if [ -n "$KOK" ]; then

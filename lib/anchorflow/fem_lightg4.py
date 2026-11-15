@@ -38,7 +38,7 @@ def kappa_of(s):
     inf = float("inf")
     if m is None or m == 0:
         return 1.0, dict(mat=m, name=MATN.get(m), rule="항복 없음 -> σ ↦ −σ 대칭", st="∞", sc="∞")
-    if m in (1, 5):
+    if m in (1, 3, 5):      # 절 CM186: 재질 3 (foam, PG viscoplasticity_return_mapping_with_StVK) 도 von Mises 항복 (압력 무관) -> 1·5 와 같은 대칭 규칙
         ys = None
         if getattr(s, "ysp", None) is not None and s.ysp.numel():
             ys = float(s.ysp[0])
