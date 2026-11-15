@@ -9,6 +9,7 @@
   --ssf_tol 1     뉴턴 허용치 tolN 에 1/N 을 곱함 (실행기 RTSolver 생성 직후, N = K)
   --ssf_split D   프레임에서 무너진 걸음 (덜 풀림 ∧ 끝 잔차 ‖g‖²/F² > --ssf_bigT (기본 1 = 잔차가 힘 크기 자체보다 큼), 또는 비유한·메모리 초과) 이 있으면 입자 상태를 되돌려 걸음 수 K 를 두 배로 다시 풂 (최대 2^D 배; 실행기 --ksplit 을 K>1 기준으로 일반화)
   --ssf_det 1     (기본 1) 프레임 끝 입자 det F <= 0 도 무너진 프레임으로 (뒤집힌 상태는 풀이 실패의 확실한 표지)
+  --ssf_bec 1     매 걸음 끝 갱신을 국소 후퇴 오일러 (--ue be --ue_loc 비트 와 같이; HHT 는 자유 노드만) -- 접촉 노드의 HHT 가속도 외삽이 큰 N 발산의 원인 (절 CM186)
   --ssf_tolp 1    PCG 허용치 tolP 에도 1/N 곱함 (선택)
 사용: python exe/ssfix_wrap.py --ssf_tol 1 exe/stabhex_wrap.py ... exe/fem_an_rt_sim.py ... (바깥 첫 감싸개로)
 """
@@ -19,7 +20,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 argv = sys.argv[1:]
-C = dict(tol="0", tolp="0", kex="0", split="0", bigT="1.0", wrx="1", dumpfail="", det="1")
+C = dict(tol="0", tolp="0", kex="0", split="0", bigT="1.0", wrx="1", dumpfail="", det="1", bec="0")
 while argv and argv[0].startswith("--ssf_"):
     C[argv[0][6:]] = argv[1]; del argv[:2]
 _orig = runpy.run_path; _done = [False]
@@ -40,6 +41,18 @@ def _install():
             s.floor["KEX"] = s.floor["KEX"] * float(C["kex"])
         print(f"[substep_fix] KEX {getattr(s, 'floor', None) and s.floor['KEX']} tolN {s.tolN:.4g} tolP {s.tolP:.4g} (K {K}, ssf_tol {C['tol']}, ssf_tolp {C['tolp']})", flush=True)
     ART.RTSolver.__init__ = init
+    if float(C["bec"]) != 0:                                                           # --ssf_bec 1: 걸음 끝 갱신 선택자 cjl 을 매 걸음 1 로 -> --ue be --ue_loc <비트> 의 국소 후퇴 오일러 (L-안정) 가 덜 풀린 걸음뿐 아니라 매 걸음 그 노드 집합 (장벽 걸린 표본점 노드 등) 에
+        okc = ART.RTSolver.k; BS = dict(k=0)
+
+        def kc(s, name, n, args, b=128):
+            r = okc(s, name, n, args, b)
+            if name == "rt_reset":
+                BS["k"] = 0
+            if name == "cj_end":
+                s.cjl[BS["k"]: BS["k"] + 1].fill_(1)
+                BS["k"] += 1
+            return r
+        ART.RTSolver.k = kc
     D = int(float(C["split"]))
     if D > 0 or C["dumpfail"]:                                                                          # --ssf_split D: 프레임 단위 걸음 수 두 배 다시 풀기 (최대 2^D 배), 기준 K = 실행기 --K
         import torch
@@ -110,7 +123,7 @@ def _install():
 def run_path(path, *a, **kw):
     if not _done[0] and os.path.basename(path) == "fem_an_rt_sim.py":
         _done[0] = True
-        if float(C["tol"]) != 0 or float(C["tolp"]) != 0 or float(C["kex"]) != 0 or float(C["split"]) != 0 or C["dumpfail"]:
+        if float(C["tol"]) != 0 or float(C["tolp"]) != 0 or float(C["kex"]) != 0 or float(C["split"]) != 0 or C["dumpfail"] or float(C["bec"]) != 0:
             _install()
     return _orig(path, *a, **kw)
 
