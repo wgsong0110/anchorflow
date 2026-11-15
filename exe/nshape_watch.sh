@@ -21,12 +21,13 @@ for k,v in (('machines',$mid),('hosts',$hid)):
     if v not in b[k]: b[k].append(v)
 b['notes']['2026-11-15 nshape']='machine $mid host $hid power limit below default (CM186)'; json.dump(b,open(f,'w'),indent=1)"
       rclone moveto $RX/$lb.POWERCAP $RX/old/$lb.POWERCAP.$id -q
-    elif echo "$END" | grep -q "^$lb.END$"; then
+    elif echo "$END" | grep -q "^$lb.END$" && [ -f /tmp/nshape/end_seen_$id ]; then      # 두 번 연속 보일 때만 (다시 돌리기가 END 를 옮길 틈)
       echo "$(date '+%F %T') $id $lb END -> destroy" >> $L; vastai destroy instance $id -y >> $L 2>&1
     elif [ "$st" != running ] && [ "$age" -gt 900 ]; then
       echo "$(date '+%F %T') $id $lb 상태 $st ${age}s -> destroy" >> $L; vastai destroy instance $id -y >> $L 2>&1
     fi
   done < /tmp/nshape/inst.txt
+  for x in $(awk '{print $1}' /tmp/nshape/inst.txt); do lb=$(awk -v i=$x '$1==i{print $2}' /tmp/nshape/inst.txt); echo "$END" | grep -q "^$lb.END$" && touch /tmp/nshape/end_seen_$x || rm -f /tmp/nshape/end_seen_$x; done
   echo "$(date '+%F %T') $(cat /tmp/nshape/inst.txt | tr '\n' '|')" >> $L
   sleep 120
 done
