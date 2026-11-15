@@ -15,6 +15,7 @@ for dg,ax in zip(c['rotation_degree'],c['rotation_axis']):
     R=np.array({0:[[1,0,0],[0,cs,-sn],[0,sn,cs]],1:[[cs,0,sn],[0,1,0],[-sn,0,cs]],2:[[cs,-sn,0],[sn,cs,0],[0,0,1]]}[ax])@R
 print(','.join('%.6f'%q for q in R[2]))")
 FPS=$($PY -c "import json;print(round(1/json.load(open('$CFG'))['frame_dt']))")
+for v in hex pt1 pt10 pt100 pt1000 vrgsx sg; do ls $O/$s/$v/${v}_$s.npz >/dev/null 2>&1 || rclone copy $R4/$s/$v $O/$s/$v -q --include "${v}_$s.npz" --include "${v}_$s.log"; done      # 다른 인스턴스에서 끝난 판은 R2 에서
 rm_of() { grep -a "\[요약\]" $O/$s/$1/$2_$s.log 2>/dev/null | tail -1 | sed -E 's/.*RMSE ([0-9.]+)%.*/\1/'; }
 PT=pt1; PB=999; for k in pt1 pt10 pt100 pt1000; do r=$(rm_of $k $k); [ -n "$r" ] && python3 -c "import sys; sys.exit(0 if $r < $PB else 1)" && { PT=$k; PB=$r; }; done
 say "장면 $s 위 방향 $UP fps $FPS PhysTwin 영상 판 $PT ($PB %)"
