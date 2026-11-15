@@ -5,7 +5,7 @@
   F_q = 몫 칸 입자 F 산술 평균 (빈 몫 칸은 칸 평균; 실행기는 회전·로그 신장 평균 -- 모드 수에는 영향 거의 없음). 벌점 항 (P1X·가벼움) 은 넣지 않음 (탄성 헤시안만).
 고유값: 야코비 배율 Â = D^-½ K D^-½ (지지 없는 자유도 뺌; 칸 81x81 강성을 모은 희소 행렬, cuSPARSE 곱), 체비쇼프 거름 부분공간 반복 (블록) + 레일리-리츠 (f64). λ̂ < 1e-5 λ̂_max = 영, < 1e-3 = 근사 영.
 자리: 영 모드 부분공간의 노드 몫 Σ|u_n|² (u = D^-½ z, 모드마다 단위) 을 노드 '지지 칸 점유 수' (노드를 27 노드 판에 넣는 칸 27 개 중 점유 칸 수) 구간별로.
-사용: python exe/q27_eig.py --pred pred.pt --solver q27solver.pt --frames 0,c --q 8|27 --out out.json [--kb 2400]
+사용: python exe/q27_eig.py --pred pred.pt --solver q27solver.pt --frames 0,c --q 1|8|27 --out out.json [--kb 2400]
 """
 import argparse
 import json
@@ -48,7 +48,9 @@ def contact_frame():
 
 
 def axis_tab(q):
-    if q == 8:
+    if q == 1:                                                                          # 절 CM179: 칸 가운데 1 점
+        d = [0.0]; w = [1.0]; edges = []
+    elif q == 8:
         d = [-0.5 / math.sqrt(3), 0.5 / math.sqrt(3)]; w = [0.5, 0.5]; edges = [1.0]
     else:
         s = 0.5 * math.sqrt(0.6); d = [-s, 0.0, s]; w = [5 / 18, 8 / 18, 5 / 18]; edges = [0.5 + 5 / 18, 0.5 + 13 / 18]

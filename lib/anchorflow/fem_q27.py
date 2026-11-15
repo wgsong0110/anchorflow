@@ -164,15 +164,28 @@ __device__ __forceinline__ void q27_ax(float f, int* lo, float* t) { float u = f
 def _w32():
     w = []
     for o in range(32):
-        if o < 27:
+        if ST["mode"] == 2:                                                          # 절 CM179: 1x1x1 = 칸 가운데 점 (o = 13) 하나, 무게 1 (칸 합)
+            w.append(1.0 if o == 13 else 0.0)
+        elif o < 27:
             w.append(W3[o // 9] * W3[(o // 3) % 3] * W3[o % 3])
         else:
             w.append(0.0)
     return w
 
 
+Q1_AX = r"""__device__ __forceinline__ int q27_i(float f) { return 1; }   // 절 CM179 1x1x1: 모든 입자 -> 가운데 점 (o = 13)"""
+Q1_AX2 = r"""__device__ __forceinline__ void q27_ax(float f, int* lo, float* t) { *lo = 1; *t = 0.f; }   // 절 CM179 1x1x1: 보간 = 가운데 점 값 하나"""
+
+
 def _help():
-    return Q27_HELP % ", ".join("%.17ef" % v for v in _w32())
+    h = Q27_HELP % ", ".join("%.17ef" % v for v in _w32())
+    if ST["mode"] == 2:                                                              # 절 CM179: 1x1x1 (대조군)
+        a = h.index("__device__ __forceinline__ int q27_i")
+        b = h.index("\n", a)
+        h = h[:a] + Q1_AX + h[b:]
+        a = h.index("__device__ __forceinline__ void q27_ax")
+        h = h[:a] + Q1_AX2 + "\n"
+    return h
 
 
 # 함수 이름 분류. COARSE = 거친 층·결정적 판 전용·노드 커널 (고치지 않음), SPECIAL = 아래 따로 고침 (+ 일반 규칙), 나머지 고운 층 = 일반 규칙.
