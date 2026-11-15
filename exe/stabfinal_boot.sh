@@ -30,7 +30,7 @@ mkdir -p /home/dkta/work /home/dkta/.conda/envs/af/bin /home/dkta/bin
 ln -sf $(command -v python) /home/dkta/.conda/envs/af/bin/python
 ln -sf /usr/local/bin/rclone /home/dkta/bin/rclone
 export HOME=/root PATH=/home/dkta/.conda/envs/af/bin:/home/dkta/bin:$PATH
-if ! python -c "import torch, warp, cupy, h5py, lpips, taichi, diff_gaussian_rasterization, simple_knn, mcubes, skimage, imageio_ffmpeg" 2>/dev/null; then
+if ! python -c "import torch, warp, cupy, h5py, lpips, taichi, diff_gaussian_rasterization, simple_knn, mcubes, skimage, imageio_ffmpeg, omegaconf, einops" 2>/dev/null; then
   pip install -q "numpy<2" "warp-lang==0.10.1" "taichi==1.6.0" h5py scikit-image lpips cupy-cuda12x tqdm plyfile scipy imageio imageio-ffmpeg av opencv-python-headless matplotlib vastai pymcubes einops omegaconf 2>&1 | tail -2 | tee -a $LOG
   cd /tmp && for f in diff_gaussian_rasterization-0.0.0-cp311-cp311-linux_x86_64.whl simple_knn-0.0.0-cp311-cp311-linux_x86_64.whl; do
     curl -sL -o $f "https://github.com/wgsong0110/anchorflow/releases/download/cuda-3dgs-torch251/$f"; done
@@ -82,7 +82,7 @@ FX=""; FI=$(rclone cat $RX/code/fetch_$TAG.txt 2>/dev/null | head -1)          #
 for x in $FI; do FX="$FX --include $x"; done
 for s in $SCS; do rclone copy $RX/res/$s $OUT/$s -q --transfers 16 --exclude "drv*.log" --exclude "DRV_DONE_*" --exclude "config.json" --exclude "init/**" --exclude "gt/**" $FX; done
 say "[이어 받기 끝] $(for s in $SCS; do echo -n "$s:$(find $OUT/$s -name '*.fin' -o -name FIN | wc -l) "; done)"
-( while true; do sleep 240; rclone copy $OUT $RX/res -q --transfers 8 "${EXC[@]}" 2>/dev/null
+( while true; do sleep 240; rclone copy $OUT $RX/res -q --update --transfers 8 "${EXC[@]}" 2>/dev/null
   rclone copy /root/sf $MK/logs -q --include "*.log" 2>/dev/null; done ) & SY=$!
 EXTRA=$(rclone cat $RX/code/extra_$TAG.txt 2>/dev/null | head -1)        # 드라이버 추가 인자 (따옴표 포함 가능)
 say "[인자] $EXTRA"
@@ -96,7 +96,7 @@ for job in $(echo "$JOBS" | tr ';' ' '); do
       miss=""; for p in $NEED; do rclone lsf $RX/res/$s/$p >/dev/null 2>&1 && [ -n "$(rclone lsf $RX/res/$s/$p 2>/dev/null)" ] || miss="$miss $p"; done
       [ -z "$miss" ] && break; [ $((w % 6)) = 1 ] && say "[기다림] $s 없음:$miss"; sleep 300
     done
-    rclone copy $OUT $RX/res -q --transfers 8 "${EXC[@]}"
+    rclone copy $OUT $RX/res -q --update --transfers 8 "${EXC[@]}"
     rclone copy $RX/res/$s $OUT/$s -q --transfers 16 --exclude "drv*.log" --exclude "DRV_DONE_*" --exclude "config.json" --exclude "init/**" --exclude "gt/**"
     EXF=$(echo "$EXTRA" | sed -E "s/--methods [^ ]+//"); eval python -u exe/stab1115_drv.py --scene $s --par $PAR --stages vis $EXF --methods pg,ipg,omni,ours >> /root/sf/drv_$s.log 2>&1
     python -u exe/stab1115_an.py --scene $s --out $OUT/$s/an.json --hextag _f5 > /root/sf/an_$s.log 2>&1
@@ -115,7 +115,7 @@ for job in $(echo "$JOBS" | tr ';' ' '); do
   say "[작업 끝] $s $stg $(tail -1 /root/sf/drv_$s.log | cut -c1-200)"
 done
 kill $SY 2>/dev/null
-rclone copy $OUT $RX/res -q --transfers 8 "${EXC[@]}"
+rclone copy $OUT $RX/res -q --update --transfers 8 "${EXC[@]}"
 rclone copy /root/sf $MK/logs -q --include "*.log"
 if rclone check $OUT $RX/res --one-way --size-only -q "${EXC[@]}" --exclude "drv*.log" 2>/root/sf/check.txt; then
   say "[R2 확인 차이 0] -> destroy"; echo "$(date)" | rclone rcat $MK/ALL_DONE

@@ -52,12 +52,13 @@ def sh(cmd, log, timeout=None):
 
 
 def old_cmd(m, n, out, dump=""):
+    """[stabfinal] i-PG 통합 커널 (AF_IPG_FUSED, 같은 식의 가속) 은 탄성 재질 0 만 -> 새 형상 (plasticine·metal) 은 끔."""
     c = f"{ST}/{S}"
     if m == "omni":
         c2 = (f"cd {WT} && {PY} -u exe/stab_omni.py --repo {W}/OmniPhysGS --h5 {c}/init/sim_0000000000.h5 --config {c}/config.json --substeps {n} --out {out}.npz")
         return c2 + (f" --dump {dump}" if dump else "")
     if m in ("pg", "ipg"):
-        c2 = (f"cd {PG} && AF_IPG_FUSED=1 OMP_NUM_THREADS=2 {PY} -u {WT}/exe/stab_mpm.py --method {m} --h5 {c}/init/sim_0000000000.h5 --config {c}/config.json "
+        c2 = (f"cd {PG} && AF_IPG_FUSED={0 if NS else 1} OMP_NUM_THREADS=2 {PY} -u {WT}/exe/stab_mpm.py --method {m} --h5 {c}/init/sim_0000000000.h5 --config {c}/config.json "
               f"--substeps {n} --out {out}.npz --ckpt_every 0")
         return c2 + (f" --dump {dump}" if dump else "")
     c2 = (f"cd {WT} && {PY} -u exe/gf_mpm.py --config {c}/config.json --h5 {c}/init/sim_0000000000.h5 "
@@ -112,6 +113,18 @@ def oom_artifact(log):
     return not (big and max(big) >= 20)
 
 
+SETUP_ERR = re.compile(r"ModuleNotFoundError|ImportError|Failed to find forward kernel|Failed to load CUDA module|통합 커널은 탄성")
+
+
+def setup_error(log):
+    """[stabfinal] 실행 환경 오류 (모듈 없음·warp 커널 캐시 동시 컴파일 경합·재질 가드) 로 첫 프레임 전에 죽은 판 = 발산 아님 -> 다시."""
+    try:
+        t = open(log, errors="ignore").read()
+    except Exception:
+        return False
+    return bool(SETUP_ERR.search(t)) and not re.search(r"\| *[1-9]\d*/\d+ \[", t)
+
+
 def run(m, n, rep):
     for k in range(4):
         run1(m, n, rep)
@@ -119,6 +132,11 @@ def run(m, n, rep):
         fin = (L.hex_dir(S, n, rep) + a.hextag + "/FIN") if m == "ours" else f"{L.res_dir(S, rep)}/{m}_N{n}.fin"
         if os.path.exists(fin) and oom_artifact(lg) and "rc=0" not in open(fin).read():
             say("메모리 부족 (다른 프로세스와 카드 공유) 다시", S, m, n, rep, k); os.remove(fin); time.sleep(40); continue
+        if os.path.exists(fin) and "rc=0" not in open(fin).read() and setup_error(lg):
+            say("실행 환경 오류 (발산 아님) 다시", S, m, n, rep, k); os.remove(fin)
+            for q in (f"{L.res_dir(S, rep)}/{m}_N{n}.npz",):
+                os.path.exists(q) and m != "ours" and os.remove(q)
+            time.sleep(20 + 10 * k); continue
         break
 
 
