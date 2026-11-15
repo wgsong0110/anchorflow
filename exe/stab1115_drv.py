@@ -147,8 +147,13 @@ def method_main(m):
 
 def stage_main():
     ms = a.methods.split(",")
-    ts = [threading.Thread(target=method_main, args=(m,)) for m in ms]
-    [t.start() for t in ts]; [t.join() for t in ts]
+    ts = {m: threading.Thread(target=method_main, args=(m,)) for m in ms if m != "gf"}
+    [t.start() for t in ts.values()]
+    if "gf" in ms:                                   # GF 는 taichi 가 GPU 메모리를 크게 잡아 (우리 판·PG 가 끝난 뒤) 따로 -- 동시 실행은 메모리 부족 (ficus 시험)
+        for m in ("ours", "pg"):
+            if m in ts: ts[m].join()
+        method_main("gf")
+    [t.join() for t in ts.values()]
 
 
 # --------------------------------------------------------------------------------------------- 시각 지표
