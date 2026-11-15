@@ -1003,8 +1003,40 @@ __global__ void aq_vbar(const int* IP, const float* cm, float* vm) {
     float c = cm[n*3];
     for (int a=0;a<3;a++) vm[n*3+a] = (c > 0.f) ? vm[n*3+a]/c : 0.f;
 }
+#if AF_BLOC
+// 절 CM189 --bloc: 장벽 실현 가능 보폭 노드별. 표본점 q 의 d 는 노드 위치에 선형: d(β) = d0 + Σ_n w_n β_n s_n (s_n = thinv (y1 − y0)_n·n̂).
+// 관통 쪽 몫만 모은 S⁻ = Σ_n w_n min(s_n, 0) 으로 d0 + 2^-k S⁻ > 0 인 가장 작은 k_q (보수적: 노드 β_n ≤ 2^-k_q 이면 어떤 섞임에서도 d > 0) -> 그 점이 걸친 노드 (w ≠ 0) 에 원자 최대.
+__global__ void __launch_bounds__(128) bl_kq(const int* IP, const int* cb, const float* BW, const float* y0, const float* y1, const float* U, float thinv,
+                         float n0, float n1, float n2, float pn, int* kn) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= IP[12]) return;
+    float bm = AF_BX[q*4+3];
+    if (!(bm > 0.f) || !AF_BACT[q]) return;
+    int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
+    float xa[3], sm = 0.f;
+    for (int a=0;a<3;a++) xa[a] = AF_BX[q*4+a]/bm;
+    for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o];
+        for (int a=0;a<3;a++) xa[a] += w*(U[id*3+a] + thinv*(y0[id*3+a] - U[id*3+a]));
+        float sn = thinv*((y1[id*3]-y0[id*3])*n0 + (y1[id*3+1]-y0[id*3+1])*n1 + (y1[id*3+2]-y0[id*3+2])*n2);
+        sm += w*fminf(sn, 0.f); }
+    float d0 = xa[0]*n0 + xa[1]*n1 + xa[2]*n2 - pn;
+    if (d0 + sm > 0.f) return;
+    int k = 0; float c = 1.f;
+    while (true) { c *= 0.5f; k++; if (c == 0.f) break; if (d0 + c*sm > 0.f) break; }
+    for (int o=0;o<27;o++) if (BW[oc*27+o] != 0.f) atomicMax(&kn[ids[o]], k);
+}
+__global__ void bl_lsup(const int* IP, const double* SC, const float* sk, const int* pm, float n0, float n1, float n2, const float* yh, float* eta, const float* dl, float* y, const int* kn) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float st = fminf((float)SC[14], ldexpf(1.f, -kn[n]));
+    float e[3]; for (int a=0;a<3;a++) { e[a] = eta[n*3+a] + st*dl[n*3+a]; eta[n*3+a] = e[a]; }
+    float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, e, t);
+    for (int a=0;a<3;a++) y[n*3+a] = yh[n*3+a] + t[a];
+}
+#endif
 '''
 AO_SRC = "#define AF_CTAN_MODE %d\n" % int(os.environ.get("AF_CTAN", "0")) + AO_SRC
+AO_SRC = "#define AF_BLOC %d\n" % int(os.environ.get("AF_BLOC", "0")) + AO_SRC                 # 절 CM189 --bloc (exe/bloc_wrap.py)
 AO_SRC = "#define AF_PTAN %d\n" % int(os.environ.get("AF_PTAN", "0")) + AO_SRC                 # 절 CM189 --ptan (exe/ptan_wrap.py; 0 = 옛 판, 소스 전처리 결과 같음)
 AO_SRC = "#define AF_AO_RMPOS %d\n" % int(os.environ.get("AF_AO_RMPOS", "0")) + AO_SRC       # wolffix 11-15: 모래 반환 사상 특이값 부호 (PG 공식), 기본 0 = 옛 판
 

@@ -2051,6 +2051,15 @@ __global__ void __launch_bounds__(128) yl_kq(const int* IP, const int* cb, const
     for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o];
         for (int a=0;a<3;a++) { xa[a] += w*(U[id*3+a] + thinv*(y0[id*3+a] - U[id*3+a])); xb[a] += w*(U[id*3+a] + thinv*(y1[id*3+a] - U[id*3+a])); } }
     float d0 = xa[0]*n0 + xa[1]*n1 + xa[2]*n2 - pn, d1 = xb[0]*n0 + xb[1]*n1 + xb[2]*n2 - pn;
+#if AF_BLOC >= 2
+    // 절 CM189 --bloc 2: 관통 쪽 몫만 S⁻ = Σ_n w_n min(s_n, 0) (s_n = thinv (ŷ − y_U)_n·n̂) -> 노드 β_n ≤ 2^-k_q 이면 어떤 섞임에서도 d ≥ d0 + 2^-k_q S⁻
+    // (실현 가능·장벽 에너지 둘 다 이 하한으로 판정 -> 섞은 뒤 어긴 점 없음, 몸 전체 되돌림 (yl_fb) 이 안 걸림)
+    { float sm = 0.f;
+      for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o];
+          float sn = thinv*((y1[id*3]-y0[id*3])*n0 + (y1[id*3+1]-y0[id*3+1])*n1 + (y1[id*3+2]-y0[id*3+2])*n2);
+          sm += w*fminf(sn, 0.f); }
+      d1 = d0 + sm; }
+#endif
     int k = 0;
     if (!(d1 > 0.f)) { float c = 1.f; while (true) { c *= 0.5f; k++; if (c == 0.f) break; if (d0 + c*(d1 - d0) > 0.f) break; } }
     if (eb) {                                                                    // --y0eb 를 이 점 하나에: E_q(2^-(k+i)) ≤ E_q(0) 인 첫 i, 없으면 β 0
@@ -2731,6 +2740,8 @@ class RTSolver(MG2.MG2Mixin):
         s.p0 = Z(s.capN, 3)
         s.ma = Z(s.capN, 3); s.ak = Z(s.capN, 3)
         s.eS = Z(s.capN, 3); s.ySv = Z(s.capN, 3); s.kk = torch.zeros(4, device=dev, dtype=torch.int32)        # 절 CM2 시작점·장벽 걸음
+        s.bloc = int(os.environ.get("AF_BLOC", "0")) >= 1                                   # 절 CM189 --bloc 1 (exe/bloc_wrap.py): 장벽 실현 가능 보폭 노드별 (재질 판만; 끄면 버퍼·커널 없음)
+        s.bkn = torch.zeros(s.capN, device=dev, dtype=torch.int32) if s.bloc else None
         if not hasattr(s, "pa"):
             s.pa = torch.zeros(s.N, 3, device=dev, dtype=torch.float32)
         s.meff = Z(s.capN); s.U0 = Z(s.capN, 3); s.v0 = Z(s.capN, 3); s.wb = Z(s.capN, 3); s.wvb = Z(s.capN, 3)
@@ -3149,7 +3160,7 @@ class RTSolver(MG2.MG2Mixin):
                     s.dcopy(s.Y0K[kstep], s.kk)                                        # 진단: 걸음별 시작점 k
                     if getattr(s, "y0loc", 0):                                         # 절 CM27 (c): 노드별 β (전역 kk 는 진단·되돌림용으로만)
                         assert not s.bnode, "--y0loc 는 표본점 장벽 판만"
-                        R_ = s.y0loc
+                        R_ = 0 if int(os.environ.get("AF_BLOC", "0")) >= 2 else s.y0loc   # 절 CM189 --bloc 2: 보수적 k_q 라 고침 라운드 필요 없음 (확인·되돌림 한 번은 그대로)
                         YM = (P(IP), P(s.ykn), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.ylE), P(s.eS), P(s.eta), P(s.y))
                         YC = lambda r_: (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.ykn), P(s.ykn2), P(s.yfl[r_:]))
                         s.dcopy(s.ylU, s.y); s.dcopy(s.ylE, s.eta)
@@ -3356,13 +3367,20 @@ class RTSolver(MG2.MG2Mixin):
                 if fbar:
                     s.k("rt_ytry", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.yc)), b=256)
                     s.zf(s.kk)
-                    if not getattr(s, "nobk", False):                                  # 절 CM25 대조 (진단 전용 --bar_nostep): 장벽 실현 가능 보폭 자름 끔 (보폭 1)
+                    if getattr(s, "bloc", False):                                      # 절 CM189 --bloc: 몸 전체 스칼라 장벽 보폭 대신 노드별 -- kk 에는 장벽 몫 없이 (평면 −∞) 가우스 점 뒤집힘 보폭 (hexff hf_kfe 훅) 만,
+                        s.zf(s.bkn)                                                    # 표본점마다 관통 쪽 몫만으로 보수적 k_q -> 그 27 노드에 원자 최대 (bl_kq), 갱신은 노드마다 min(전역, 2^-k_n) (bl_lsup)
+                        s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.yc), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(-1e30), P(s.kk)))
+                        s.k("bl_kq", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.yc), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.bkn)))
+                    elif not getattr(s, "nobk", False):                                # 절 CM25 대조 (진단 전용 --bar_nostep): 장벽 실현 가능 보폭 자름 끔 (보폭 1)
                         s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.yc), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.kk)))
                     if s.bnode:                                                        # 절 CM14: 노드도 d > 0 유지
                         s.k("rt_barn_kfe", capN, (P(IP), P(s.y), P(s.yc), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.kk)), b=256)
                     s.k("rt_kstep", 1, (P(s.kk), P(s.SC)), b=1)
                     s.dcopy(s.BSK[kstep * s.nt + it], s.kk)                           # 절 CM6 진단: 반복별 보폭 k
-                s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if (s.ls or fbar) else 1)), b=256)
+                if fbar and getattr(s, "bloc", False):                                 # 절 CM189 --bloc: 노드별 보폭
+                    s.k("bl_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), P(s.bkn)), b=256)
+                else:
+                    s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if (s.ls or fbar) else 1)), b=256)
                 if s.cjj and (s.ls or fbar):                                           # 절 CM24: 이 반복 보폭 (선탐색·장벽 보폭 SC[14]) 을 걸음 최소에
                     s.k("cj_min", 1, (P(s.SC), P(s.cjs), i32(kstep)), b=1)
                 if getattr(s, "ncl", False):                                           # 절 CM16: 활성 집합 넣기 (갱신 뒤 (y − U)·n < 0 인 자유 후보를 투영)
