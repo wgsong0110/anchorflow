@@ -67,12 +67,19 @@ for r in AJ:
     if r["method"] == "mpm" and (r["scene"], r["N"]) in (("wolf", 1999), ("bread", 100), ("pillow2sofa", 200)):
         P.append(dict(r, setting=f"서브스텝 {r['N']} (공식)", src="paper_remeasure2/final2/all.json"))
 NA = {}
-if os.path.exists(f"{C}/pareto_bl.json"):
-    for r in json.load(open(f"{C}/pareto_bl.json")):
+BLF = f"{C}/pareto_bl.json" if os.path.exists(f"{C}/pareto_bl.json") else f"{C}/pareto_bl_partial.json"
+if os.path.exists(BLF):
+    for r in json.load(open(BLF)):
+        if r.get("N") is None:                                                 # 해당 없음 (탄성 전용) -- 표에서 따로 적음
+            continue
         if r.get("err") is None or not r.get("ms"):
             NA[(r["method"], r["scene"])] = r.get("note") or "실패"
         P.append(dict(r, src="final_pa/bl/pareto_bl.json"))
 json.dump(dict(pareto=P, na={f"{k[0]}:{k[1]}": v for k, v in NA.items()}), open(f"{C}/fpa_summary.json", "w"), ensure_ascii=False, indent=1)
+SHORT = dict(ours="K={N}", mpm="서브스텝 {N} (공식)", vrgs="서브스텝 {N} $\\times$ 반복 11", phystwin="서브스텝 $N_0$={N}", springgaus="학습 n\\_step {N}")
+for p in P:
+    if p.get("N") is not None:
+        p["setting"] = SHORT[p["method"]].format(N=p["N"])
 LAB = dict(ours="우리", mpm="정답 MPM (PhysGaussian)", vrgs="VR-GS", phystwin="PhysTwin", springgaus="Spring-Gaus")
 L = ["% 자동 생성 (exe/fpa_table.py)", r"\begin{center}\small\begin{tabular}{llllrrr}\toprule",
      r"장면 & 방법 & 설정 & 완주/회 & 오차 \% (3 회) & ms (3 회 중앙값) & ms 3 회 \\\midrule"]
@@ -87,8 +94,8 @@ for s, nm in SC:
             if p.get("err") is None:
                 L.append(f"{nm} & {LAB[m]} & {p.get('setting', p['N'])} & {p.get('ok', 0)}/{p.get('reps', 0)} & \\multicolumn{{3}}{{l}}{{{p.get('note') or '발산'}}}\\\\")
                 continue
-            ea = ", ".join("%.2f" % e for e in p["err_all"]) if p.get("err_all") else ""
-            ma = ", ".join("%.1f" % e for e in p["ms_all"]) if p.get("ms_all") else ""
+            ea = ", ".join("%.2f" % e for e in p["err_all"]) if p.get("err_all") else "%.2f" % p["err"]
+            ma = ", ".join("%.1f" % e for e in p["ms_all"]) if p.get("ms_all") else "%.1f" % p["ms"]
             L.append(f"{nm} & {LAB[m]} & {p.get('setting', p['N'])} & {p.get('ok')}/{p.get('reps')} & {p['err']:.2f} ({ea}) & {p['ms']:.1f} & {ma}\\\\")
     L.append(r"\midrule")
 L[-1] = r"\bottomrule\end{tabular}\end{center}"
