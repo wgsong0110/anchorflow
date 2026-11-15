@@ -63,6 +63,8 @@ say "[준비 끝] 입자 $(for s in $SCS; do echo -n "$s:"; python -c "import h5
 OUT=$W/stab
 # [stab4] 이어 돌리기: R2 에 있는 결과를 먼저 받음 (S1115_FETCH_EXCL = 받지 않을 패턴, 공백 구분; 예 plane 의 실패한 gf_*)
 FX=""; for x in ${S1115_FETCH_EXCL:-}; do FX="$FX --exclude $x"; done
+FI=$(rclone cat $RX/code/fetch_$TAG.txt 2>/dev/null | head -1)          # 받을 것만 (공백 구분 패턴; 없으면 전부) -- 여러 인스턴스가 한 장면을 나눠 돌릴 때 남의 결과를 옛 판으로 덮지 않게
+for x in $FI; do FX="$FX --include $x"; done
 for s in $SCS; do rclone copy $RX/res/$s $OUT/$s -q --transfers 16 --exclude "drv.log" --exclude "DRV_DONE_*" --exclude "config.json" --exclude "init/**" $FX; done
 say "[이어 받기 끝] $(for s in $SCS; do echo -n "$s:$(find $OUT/$s -name '*.fin' -o -name FIN | wc -l) "; done)"
 ( while true; do sleep 240; rclone copy $OUT $RX/res -q --transfers 8 --exclude "**/vis/dump_*/**" --exclude "**/vis/hexdump_*/**" --exclude "hex_in.pt" --exclude "**/pred.pt" --exclude "**/*_tmp*" --exclude "**/*.ckpt.pt*" --exclude "**/vis/png_*/**" 2>/dev/null
@@ -78,7 +80,7 @@ done
 kill $SY 2>/dev/null
 rclone copy $OUT $RX/res -q --transfers 8 --exclude "**/vis/dump_*/**" --exclude "**/vis/hexdump_*/**" --exclude "hex_in.pt" --exclude "**/pred.pt" --exclude "**/*_tmp*" --exclude "**/*.ckpt.pt*" --exclude "**/vis/png_*/**"
 rclone copy /root/s1 $MK/logs -q --include "*.log"
-if rclone check $OUT $RX/res --one-way --size-only -q --exclude "**/vis/dump_*/**" --exclude "**/vis/hexdump_*/**" --exclude "hex_in.pt" --exclude "**/pred.pt" --exclude "**/*_tmp*" --exclude "**/*.ckpt.pt*" --exclude "**/vis/png_*/**" 2>/root/s1/check.txt; then
+if rclone check $OUT $RX/res --one-way --size-only -q --exclude "**/vis/dump_*/**" --exclude "**/vis/hexdump_*/**" --exclude "hex_in.pt" --exclude "**/pred.pt" --exclude "**/*_tmp*" --exclude "**/*.ckpt.pt*" --exclude "**/vis/png_*/**" --exclude "drv.log" 2>/root/s1/check.txt; then
   say "[R2 확인 차이 0] -> destroy"; echo "$(date)" | rclone rcat $MK/ALL_DONE
   vastai destroy instance ${CONTAINER_ID:-0} -y --api-key ${CONTAINER_API_KEY:-x} 2>&1 | tee -a $LOG
 else
