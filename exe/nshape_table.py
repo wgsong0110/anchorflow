@@ -4,8 +4,8 @@
 통과 = 완주 & 오차 < 10 % & 단독 시간 판 ms_mean <= 16.7."""
 import json, subprocess, sys
 R = "r2:storage/result/anchorflow/lbours/nshape/ours"
-SC = [("chair_paste", "chair", "페이스트 (PG plasticine: $E$ 2e5, $\\sigma_y$ 2e2)", "PG"),
-      ("hotdog_milk", "hotdog", "물 같은 유체 (GF milk: NACC, $E$ 1e3, $\\nu$ 0.49, $\\beta$ 0)", "GF"),
+SC = [("hotdog_metal", "hotdog", "저항복 소성 (PG metal: plane 공식 값 $E$ 1e5, $\\sigma_y$ 100)", "PG"),
+      ("chair_paste", "chair", "페이스트 (PG plasticine: $E$ 2e5, $\\sigma_y$ 2e2)", "PG"),
       ("drums_honey", "drums", "꿀 같은 점소성 (PG foam: $E$ 2e4, $\\sigma_y$ 50, $\\eta$ 200)", "PG"),
       ("chair_plast", "chair", "플라스티신 (PG plasticine: $E$ 2e5, $\\sigma_y$ 5e3)", "PG"),
       ("materials_sand", "materials", "모래 (PG sand: wolf 값)", "PG")]
