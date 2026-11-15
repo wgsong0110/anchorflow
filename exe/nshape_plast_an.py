@@ -35,10 +35,11 @@ def stats(x, F, xprev):
 
 fs = sorted(glob.glob(os.path.join(a.h5, "**", "sim_*.h5"), recursive=True))
 d = torch.load(a.pred, map_location="cpu", weights_only=False); P, PF = d["pred"], d["F"]
-T = min(len(fs), P.shape[0]); G, O = [], []
+off = len(fs) - P.shape[0]   # 절 CM189: pred[t] = 프레임 t+1 끝 (정답 h5 는 프레임 0 포함 51 개) -> 정답 fs[t + off]
+T = min(len(fs) - off, P.shape[0]); G, O = [], []
 xg_prev = xo_prev = None
 for t in range(T):
-    with h5py.File(fs[t]) as h:
+    with h5py.File(fs[t + off]) as h:
         x = np.array(h["x"]); x = x.T if x.shape[0] == 3 else x
         F = np.array(h["f_tensor"]); F = (F.T if F.shape[0] == 9 else F).reshape(-1, 3, 3)
     xg = torch.as_tensor(x).float(); G.append(stats(xg, torch.as_tensor(F).float(), xg_prev)); xg_prev = xg
