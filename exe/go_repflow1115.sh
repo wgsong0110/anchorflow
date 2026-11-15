@@ -48,7 +48,7 @@ prep)
   ;;
 cal)
   # bread 1 프레임: 기존 r10 첫 프레임 값 (PhysTwin k10 RMSE 0.325%, GS-Verse 0.324%, Simplicits 0.546%) 과 맞는 플래그를 찾는다
-  S=bread; fetch_model bread-trained
+  S0=$S; S=bread; fetch_model bread-trained
   for f in gflow_bread.npz aux_bread.npz simp_bread.pt; do [ -s $IN/$f ] || rclone copyto $RA/repflow/inputs/$f $IN/$f -q; done
   D=$O/cal; mkdir -p $D; i=0
   for v in "pt10:" "pt10:--pt_realtime" "gsverse:" "simp:"; do
@@ -68,7 +68,7 @@ x0 = torch.as_tensor(Z["X0"], dtype=torch.float64, device="cuda")
 tr, _, _ = gf.run_flow(x0, fld, 120, 10, 1 / 30.0, 0.5, keep_F=False)
 print("traj 최대 차", float((tr.cpu().numpy() - Z["traj"]).__abs__().max()), "X0 == aux G", float(np.abs(Z["X0"] - A["G"]).max()))
 PYEOF
-  say "흐름 대조 $(cat $D/flowcheck.txt | tr '\n' ' ' | cut -c1-300)"; rclone copy $D $R/cal -q; say "cal 끝"
+  say "흐름 대조 $(cat $D/flowcheck.txt | tr '\n' ' ' | cut -c1-300)"; rclone copy $D $R/cal -q; say "cal 끝"; S=$S0
   ;;
 main)
   fetch_model $MODEL
