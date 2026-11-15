@@ -47,7 +47,7 @@ export PYTHONUTF8=1 OMP_NUM_THREADS=8
 say "[자료] 렌더러 $(ls -d $W/i-physgaussian/gaussian-splatting 2>&1) 코드 $(ls $D/exe/go_repflow1115.sh 2>&1) pip $(ls /root/sv/pip.done 2>&1)"
 [ -f /root/sv/pip.done ] && [ -f $D/exe/go_repflow1115.sh ] && [ -d $W/i-physgaussian/gaussian-splatting ] || { say "[세팅 실패]"; echo "세팅 실패 $(date)" | rclone rcat $RX/setup_fail_$SC; exit 1; }
 say "[준비 끝] GPU 일 시작"
-export JOBS="${XS_JOBS:-}"; [ -n "$JOBS" ] || unset JOBS
+export JOBS="${XS_JOBS:-}"; [ -n "$JOBS" ] || unset JOBS; export GPUMAP="${XS_GPUMAP:-}"
 bash exe/go_repflow1115.sh $H $SC $STG < /dev/null >> $LOG 2>&1
 rclone copyto $LOG $RX/vast_$SC.log -q
 echo "끝 $(date)" | rclone rcat $RX/vast_$SC.END
