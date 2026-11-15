@@ -81,7 +81,7 @@ for p in P:
     if p.get("N") is not None:
         p["setting"] = SHORT[p["method"]].format(N=p["N"])
 LAB = dict(ours="우리", mpm="정답 MPM (PhysGaussian)", vrgs="VR-GS", phystwin="PhysTwin", springgaus="Spring-Gaus")
-L = ["% 자동 생성 (exe/fpa_table.py)", r"\begin{center}\small\begin{tabular}{llllrrr}\toprule",
+L = ["% 자동 생성 (exe/fpa_table.py)", r"\begin{center}\scriptsize\begin{tabular}{llllrrr}\toprule",
      r"장면 & 방법 & 설정 & 완주/회 & 오차 \% (3 회) & ms (3 회 중앙값) & ms 3 회 \\\midrule"]
 for s, nm in SC:
     for m in ("ours", "mpm", "vrgs", "phystwin", "springgaus"):
