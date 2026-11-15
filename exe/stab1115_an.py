@@ -14,7 +14,7 @@ ap = argparse.ArgumentParser(); ap.add_argument("--scene", required=True); ap.ad
 ap.add_argument("--tol", type=float, default=0.005); ap.add_argument("--hextag", default="")
 a = ap.parse_args()
 S = a.scene; ST = L.ST
-cfg, zf, g, dt, dxg = L.scene_consts(S)
+cfg, zf, g, dt, dxg = L.scene_consts(S); FR = L.nframes(S)
 with h5py.File(f"{ST}/{S}/init/sim_0000000000.h5") as h:
     x0 = np.array(h["x"]); x0 = x0.T if x0.shape[0] == 3 else x0
 sub = ss.subset(len(x0)); Lc = float(np.linalg.norm(x0[sub].max(0) - x0[sub].min(0)))
@@ -47,7 +47,7 @@ def all_ns(m):
 
 def loadrep(m, n, rep):
     if m == "ours":
-        return L.hex_load(L.hex_dir(S, n, rep) + a.hextag)
+        return L.hex_load(L.hex_dir(S, n, rep) + a.hextag, FR)
     return L.load(S, m, n, rep)
 
 
@@ -90,7 +90,7 @@ for m in ("pg", "ipg", "gf", "omni", "ours"):
     Ns = sorted(fin)
     for n in Ns:
         if 2 * n in fin:
-            d = float(rmse(fin[n], fin[2 * n])[1:61].mean()); M["ref_pairs"].append([n, 2 * n, d])
+            d = float(rmse(fin[n], fin[2 * n])[1:FR + 1].mean()); M["ref_pairs"].append([n, 2 * n, d])
             if M["ref"] is None and d < a.tol:
                 M["ref"] = 2 * n
     M["ref_converged"] = M["ref"] is not None
@@ -102,11 +102,11 @@ for m in ("pg", "ipg", "gf", "omni", "ours"):
     if M["ref"] is not None:
         XR = fin[M["ref"]]
         for n in Ns:
-            e = rmse(fin[n], XR); M["err"][n] = dict(mean=float(e[1:61].mean()), last=float(e[min(60, len(e) - 1)]))
+            e = rmse(fin[n], XR); M["err"][n] = dict(mean=float(e[1:FR + 1].mean()), last=float(e[min(FR, len(e) - 1)]))
     for n, lst in byN.items():                               # 재현성 바닥: 같은 N 의 끝난 두 판
         ok_ = [r for rep, r, rec in lst if r["status"] == "끝"]
         if len(ok_) >= 2:
-            e = rmse(ok_[0]["X"], ok_[1]["X"]); M["floor"][n] = dict(mean=float(e[1:61].mean()), max=float(e[1:61].max()))
+            e = rmse(ok_[0]["X"], ok_[1]["X"]); M["floor"][n] = dict(mean=float(e[1:FR + 1].mean()), max=float(e[1:FR + 1].max()))
     SO["methods"][m] = M
     print(S, m, "N_min", M["N_min"], "기준", M["ref"], "수렴" if M["ref_converged"] else "미수렴", flush=True)
 

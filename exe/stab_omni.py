@@ -2,6 +2,7 @@
 공식 코드는 영역 [0,1]^3 (num_grids 격자, 입자 부피 = prod(size)/N 균일) 이라 우리 장면 (영역 [0,2], 격자 100) 을 길이 s=0.5 배로 줄여 넣는다:
  x'=s x, v'=s v, g'=s g, E'=s^2 E (같은 밀도·시간) -> 궤적이 정확히 s 배 (num_grids=100 = 우리 격자 dx 0.02 의 s 배), 입자 부피 = size 의 곱 / N 을 우리 평균 입자 부피 x s^3 로.
 재질: 학습 단계 (신경 구성모델 선택) 는 쓰지 않고 정답과 같은 고정 공회전 탄성 (공식 CorotatedElasticity, E 1e6 nu 0.3) + 항등 소성으로 고정, MPM 솔버 부분만 쓴다.
+[stabfinal] config stab_official 장면은 PG 재질을 공식 물리 구성모델 목록으로 (metal = StVK + VonMises, plasticine = Corotated + VonMises).
 바닥 = 공식 surface_collider (sticky, 격자 노드), 상자 = 공식 clip_bound.
   python exe/stab_omni.py --repo <OmniPhysGS> --h5 init.h5 --config config.json --substeps N --out r.npz [--dump DIR] [--frames F]
 """
@@ -19,7 +20,7 @@ wp.init()
 from tqdm import tqdm
 from anchorflow import stabstat as ss
 from src.mpm_core import MPMModel, set_boundary_conditions
-from src.constitutive_models.physical_constitutive_models import CorotatedElasticity
+from src.constitutive_models.physical_constitutive_models import CorotatedElasticity, StVKElasticity, VonMisesPlasticity
 cfg = json.load(open(a.config)); S = 0.5
 GL = float(cfg["grid_lim"]); assert abs(GL * S - 1.0) < 1e-9
 n_grid = int(cfg["n_grid"]); dx = GL / n_grid
@@ -36,13 +37,26 @@ VOL = (dx ** 3 / cnt[inv].float()).contiguous(); MASS = VOL.double().cpu().numpy
 SUB = ss.subset(N)
 E, nu = float(cfg["E"]), float(cfg["nu"])
 vol_p = float(VOL.mean()) * S ** 3
-sim = {"num_grids": n_grid, "dt": dt, "gravity": [g * S for g in G], "clip_bound": 0.5, "damping": 1.0}
+# [stabfinal] 새 형상 장면 (config stab_official): PG 재질을 OmniPhysGS 공식 물리 구성모델 목록으로 -- metal = StVK + VonMises, plasticine = Corotated + VonMises
+# (OmniPhysGS 목록에 PG plasticine 의 연화 softening 이 없어 뺌), 항복 응력 σy' = s^2 σy (E 와 같은 단위 변환); 격자 감쇠 = config grid_v_damping_scale (PG 와 같이 걸음마다 격자 운동량에 곱함)
+MAT = cfg.get("material", "jelly") if cfg.get("stab_official") else "jelly"
+DAMP = float(cfg.get("grid_v_damping_scale", 1.0)) if cfg.get("stab_official") else 1.0
+DAMP = DAMP if DAMP < 1.0 else 1.0
+sim = {"num_grids": n_grid, "dt": dt, "gravity": [g * S for g in G], "clip_bound": 0.5, "damping": DAMP}
 mat = {"center": [0.5] * 3, "size": [vol_p * N, 1.0, 1.0], "rho": float(cfg["density"])}
 model = MPMModel(sim, mat, init_pos=X * S, enable_train=False, device=torch.device("cuda"))
 set_boundary_conditions(model, [{"type": "surface_collider", "point": [p * S for p in fl["point"]], "normal": fl["normal"], "surface": fl["surface"],
                                   "friction": float(fl.get("friction", 0.0)), "start_time": 0.0, "end_time": 1000.0}])
-elas = CorotatedElasticity().cuda()
+elas = (StVKElasticity() if MAT == "metal" else CorotatedElasticity()).cuda()
 elas.log_E = torch.tensor([E * S * S], device="cuda").log(); elas.nu = torch.tensor([nu], device="cuda")
+plas = None
+if MAT in ("metal", "plasticine"):
+    plas = VonMisesPlasticity().cuda()
+    plas.log_E = torch.tensor([E * S * S], device="cuda").log(); plas.nu = torch.tensor([nu], device="cuda")
+    plas.sigma_y = torch.tensor([float(cfg["yield_stress"]) * S * S], device="cuda")
+elif MAT != "jelly":
+    raise SystemExit(f"[omni] 재질 {MAT} 대응 없음")
+print(f"[omni] 재질 {MAT}: 탄성 {type(elas).__name__}, 소성 {type(plas).__name__ if plas is not None else '항등'}, 감쇠 {DAMP}", flush=True)
 xs = X * S; v = torch.zeros_like(xs); C = torch.zeros(N, 3, 3, device="cuda"); F = torch.eye(3, device="cuda").repeat(N, 1, 1)
 _EK = dict(vol=VOL.double().cpu().numpy(), E=E, nu=nu)
 rows = [ss.frame_stats(x, np.zeros_like(x), np.tile(np.eye(3), (N, 1, 1)), MASS, G, FZ, **_EK)]; XS = [x[SUB]]; T = []
@@ -58,6 +72,8 @@ for f in tqdm(range(1, NF + 1), desc=f"omni N{a.substeps}"):
             for s in range(a.substeps):
                 stress = elas(F)
                 xs, v, C, F = model(xs, v, C, F, stress)
+                if plas is not None:                                 # 공식 main.py 순서: 탄성 응력 -> MPM 걸음 -> 소성 되돌림
+                    F = plas(F)
         except Exception as e:                                   # 공식 구성모델의 유한성 단언 -> 발산
             print("  발산 (예외)", repr(e)[:120], flush=True); bad = True
     torch.cuda.synchronize(); T.append(time.time() - t0)

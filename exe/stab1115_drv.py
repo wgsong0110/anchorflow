@@ -27,8 +27,10 @@ PG = f"{W}/i-physgaussian"
 CAP = {kv.split(":")[0]: int(kv.split(":")[1]) for kv in a.cap.split(",")}
 SEM = threading.BoundedSemaphore(a.par); GSEM = threading.BoundedSemaphore(2); OSEM = threading.BoundedSemaphore(int(os.environ.get("S1115_OPAR", "1")))  # [stab4] 우리 판 동시 수 (메모리 크면 1)
 os.makedirs(f"{ST}/{S}", exist_ok=True)
-LOGF = open(f"{ST}/{S}/drv.log", "a"); LK = threading.Lock()
-FR = 60
+LOGF = open(f"{ST}/{S}/drv{('_' + os.environ['S1115_TAG']) if os.environ.get('S1115_TAG') else ''}.log", "a"); LK = threading.Lock()   # [stabfinal] 인스턴스별 로그 (한 장면을 여러 인스턴스가 나눠 돌릴 때 R2 에서 서로 안 덮게)
+FR = L.nframes(S)                                    # [stabfinal] config frame_num (낙하 장면 60, 새 형상 80)
+NS = S in L.NSHAPE                                   # [stabfinal] 새 형상 장면: 우리 판 명령 = exe/nshape_cmd.py (BA_1 사슬, --cg 4) + 같은 감싸개
+DIAG_DROP = "--pdiag --qjd --fhash --hgt --bar_cnt"  # 새 형상 단독 시간 판에서 빼는 진단 플래그 (vast_elastic_new.sh 시간 판과 같음)
 
 
 def say(*s):
@@ -63,7 +65,24 @@ def old_cmd(m, n, out, dump=""):
     return c2 + (f"--out {dump} --resume" if dump else f"--out {out}_tmp --stab_out {out}.npz")
 
 
-def hex_cmd(n, d, dump=False, stats=1, direct=None, frames=FR):
+def hex_cmd_ns(n, d, dump=False, stats=1, direct=None, frames=FR, speed=False):
+    """[stabfinal] 새 형상: nshape_cmd.py (BA_1 = 레고·wolf·bread 와 같은 H9 사슬, 장면 의존 부분만 바꿈, --cg 4) -> stabhex 기록 감싸개 + --hexpre 를 실행 사슬 맨 앞에."""
+    env = dict(os.environ, NS_NODUMP="0" if dump else "1", NS_DROP=DIAG_DROP if speed else "")
+    c = subprocess.run([PY, f"{HERE}/nshape_cmd.py", f"{W}/BA_1.txt", f"{ST}/{S}/hex_in.pt", str(frames), S, d, f"{ST}/{S}/gt", f"{ST}/{S}/gt/config.json", str(n)],
+                       env=env, capture_output=True, text=True, check=True).stdout.strip()
+    dr = 1 if (n >= 512 or direct) else 0
+    head, sep, tail = c.partition(" -u exe/startpt_wrap.py ")
+    assert sep, "nshape 명령에 startpt_wrap 이 없음"
+    pre = (a.hexpre + " ") if a.hexpre else ""
+    c = f"{head} -u {pre}exe/stabhex_wrap.py --sh_npz {d}/res.npz --sh_stats {stats} --sh_direct {dr} exe/startpt_wrap.py {tail}"
+    if speed:
+        c = re.sub(r"AF_SP_FR=\S+ |AF_E1_DG=1 |AF_G1_DG=1 ", "", c)
+    return f"cd {WT} && {c} {a.hexfix}"
+
+
+def hex_cmd(n, d, dump=False, stats=1, direct=None, frames=FR, speed=False):
+    if NS:
+        return hex_cmd_ns(n, d, dump=dump, stats=stats, direct=direct, frames=frames, speed=speed)
     base = open(f"{HERE}/stab1115_base.txt").read().strip()
     dr = 1 if (n >= 512 or direct) else 0
     du = "--dump --dump_F " if dump else ""
@@ -73,6 +92,8 @@ def hex_cmd(n, d, dump=False, stats=1, direct=None, frames=FR):
         base = base.replace(k, v)
     if a.hexpre:
         base = base.replace("python -u exe/stabhex_wrap.py", f"python -u {a.hexpre} exe/stabhex_wrap.py", 1)
+    if speed:
+        base = base.replace(env, "")
     return f"cd {WT} && {base} {a.hexfix}"
 
 
@@ -84,7 +105,7 @@ def oom_artifact(log):
         return False
     if not re.search(r"out of memory|OutOfMemory|MemoryError", t, re.I):
         return False
-    fr = [int(x) for x in re.findall(r"프레임 (\d+)/60", t)]
+    fr = [int(x) for x in re.findall(r"프레임 (\d+)/%d" % FR, t)]
     if fr and max(fr) >= 5:                          # 몇 프레임 진행한 뒤 메모리가 커져 터짐 = 노드 상자 폭증 (발산), 시작 때 부족과 다름
         return False
     big = [float(x) for x in re.findall(r"Tried to allocate ([0-9.]+) GiB", t)]
@@ -132,7 +153,7 @@ def run1(m, n, rep):
 
 
 def stable(m, n, rep):
-    r = L.hex_load(L.hex_dir(S, n, rep) + a.hextag) if m == "ours" else L.load(S, m, n, rep)     # [stab4] 우리 판은 hextag 폴더 (L.load 는 접미 없이 읽어 판정이 None 이 됐음)
+    r = L.hex_load(L.hex_dir(S, n, rep) + a.hextag, FR) if m == "ours" else L.load(S, m, n, rep)     # [stab4] 우리 판은 hextag 폴더 (L.load 는 접미 없이 읽어 판정이 None 이 됐음)
     ok, mt = L.judge(r, S)
     return ok
 
@@ -161,8 +182,15 @@ def method_main(m):
         if hi > 1:
             lo = hi // 2
             ints = list(range(lo + 1, hi))
-            pmap(lambda n: run(m, n, "a"), ints)
-            cand = [n for n in ints if stable(m, n, "a")] + [hi]
+            # [stabfinal] 아래부터 동시 수 (--par) 만큼씩 돌리고 안정한 정수가 나오면 멈춤 (처음 안정한 N 은 전부 돌린 판과 같음; 계산 줄이기)
+            st_i = []
+            for i in range(0, len(ints), max(a.par, 1)):
+                bt = ints[i:i + max(a.par, 1)]
+                pmap(lambda n: run(m, n, "a"), bt)
+                st_i = [n for n in bt if stable(m, n, "a")]
+                if st_i:
+                    break
+            cand = st_i + [hi]
         n = cand[0]; tried = []
         while n <= 2 * hi:
             pmap(lambda r: run(m, n, r), list(L.REPS))
@@ -189,29 +217,57 @@ def stage_main():
 
 
 # --------------------------------------------------------------------------------------------- 시각 지표
+def up_vec():
+    """렌더러는 회전 전 모델 좌표로 그림 -> 세계 위 (중력 반대) = config 회전 R 의 셋째 행 (vast_elastic_new.sh 와 같은 식; 회전 없는 장면은 0,0,1)."""
+    import math
+    import numpy as np
+    c = json.load(open(f"{ST}/{S}/config.json")); R = np.eye(3)
+    for dg, ax in zip(c.get("rotation_degree") or [], c.get("rotation_axis") or []):
+        cs, sn = math.cos(dg / 180 * 3.1415926), math.sin(dg / 180 * 3.1415926)
+        R = np.array({0: [[1, 0, 0], [0, cs, -sn], [0, sn, cs]], 1: [[cs, 0, sn], [0, 1, 0], [-sn, 0, cs]], 2: [[cs, -sn, 0], [sn, cs, 0], [0, 0, 1]]}[int(ax)]) @ R
+    return ",".join("%.6f" % q for q in R[2])
+
+
+def traj0():
+    """lb_render·lb_roll_to_h5 용 0 프레임 궤적 폴더 (meta.json: h5 = 처음 입자, R = I; sim_0 = 처음 x, F = I)."""
+    T0 = f"{ST}/{S}/traj0"
+    if not os.path.exists(f"{T0}/sim_0000000000.h5"):
+        os.makedirs(T0, exist_ok=True)
+        sh(f"""cd {WT} && {PY} - <<'PYEOF'
+import h5py, json, numpy as np
+with h5py.File('{ST}/{S}/init/sim_0000000000.h5') as h:
+    x = np.array(h['x']); x = x.T if x.shape[0] == 3 else x
+with h5py.File('{T0}/sim_0000000000.h5', 'w') as o:
+    o.create_dataset('x', data=x.astype(np.float32)); o.create_dataset('F', data=np.tile(np.eye(3, dtype=np.float32).reshape(1, 9), (len(x), 1)))
+json.dump(dict(h5='{ST}/{S}/init/sim_0000000000.h5', R=np.eye(3).tolist()), open('{T0}/meta.json', 'w'))
+PYEOF""", f"{ST}/{S}/traj0.log")
+    return T0
+
+
+# [stabfinal] 렌더 = lb_render.py (F 반영 3DGS, 네 장면 같은 렌더러), 위에서 내려다보는 카메라 (고도 40 도, 위 = 세계 위 -> 중력이 화면 아래), vast_elastic_new.sh 의 기본값
+CAM = "--cam_back 1.6 --elev 40 --back2 1.1"
+
+
 def vis_one(name, m, n):
     V = f"{ST}/{S}/vis"; os.makedirs(V, exist_ok=True)
     png = f"{V}/png_{name}"
     if os.path.exists(f"{png}/DONE"):
         return png
     dump = f"{V}/dump_{name}"; shutil.rmtree(dump, ignore_errors=True)
+    T0 = traj0(); rc = -1
     with SEM:
         if m == "ours":
             d = f"{V}/hexdump_{name}"; os.makedirs(d, exist_ok=True)
             sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, dump=True, stats=1, direct=True)}", f"{d}/log.txt")
-            sh(f"""cd {WT} && {PY} - <<'PYEOF'
-import torch, numpy as np
-q = torch.load('{d}/pred.pt', map_location='cpu', weights_only=False)
-np.savez('{V}/{name}_full.npz', traj_full=q['pred'].float().numpy(), F_full=q['F'].float().numpy())
-PYEOF""", f"{V}/{name}_conv.log")
-            rc = sh(f"cd {WT} && CUDA_VISIBLE_DEVICES=0 {PY} -u exe/rep_ip.py --sim {ST}/{S}/init --cfg {ST}/{S}/config.json --shape {S} --method ours --frames {FR} --no_ref "
-                    f"--render_npz {V}/{name}_full.npz --video {V}/{name}.mp4 --png_dir {png} --out {V}/{name}.r.npz", f"{V}/{name}_render.log")
-            shutil.rmtree(d, ignore_errors=True); os.path.exists(f"{V}/{name}_full.npz") and os.remove(f"{V}/{name}_full.npz")
+            sh(f"cd {WT} && {PY} -u exe/lb_roll_to_h5.py --dump {d}/pred.pt --traj {T0} --out {dump}", f"{V}/{name}_conv.log")
+            shutil.rmtree(d, ignore_errors=True)
         else:
             sh(f"CUDA_VISIBLE_DEVICES=0 AF_TI_MEM=0.5 {old_cmd(m, n, f'{V}/{name}', dump=dump)}", f"{V}/{name}_dump.log")
-            rc = sh(f"cd {WT} && CUDA_VISIBLE_DEVICES=0 {PY} -u exe/rep_ip.py --sim {dump} --cfg {ST}/{S}/config.json --shape {S} --method ours --frames {FR} --render_ref "
-                    f"--video {V}/{name}.mp4 --png_dir {png} --out {V}/{name}.r.npz", f"{V}/{name}_render.log")
-            shutil.rmtree(dump, ignore_errors=True)
+            shutil.copyfile(f"{T0}/meta.json", f"{dump}/meta.json") if os.path.isdir(dump) else None
+        if os.path.exists(f"{dump}/meta.json"):
+            rc = sh(f"cd {WT} && CUDA_VISIBLE_DEVICES=0 {PY} -u exe/lb_render.py --sim {dump} --config {ST}/{S}/config.json --shape {S} --out {V}/{name}.mp4 "
+                    f"--png {png} {CAM} --up {up_vec()} --fps 30", f"{V}/{name}_render.log")
+        shutil.rmtree(dump, ignore_errors=True)
     if os.path.isdir(png) and len(glob.glob(f"{png}/*.png")) >= FR:
         open(f"{png}/DONE", "w").write(str(rc))
     else:
@@ -239,15 +295,24 @@ def stage_vis():
 # --------------------------------------------------------------------------------------------- 단독 시간
 def stage_speed():
     SP = f"{ST}/{S}/speed"; os.makedirs(SP, exist_ok=True)
-    for n in (1, 2, 4, 8, 16):
+    ns = [1, 2, 4, 8, 16]
+    if os.path.exists(plan_path("ours")):                              # [stabfinal] 확정 N 도 (16 넘으면)
+        nm = json.load(open(plan_path("ours"))).get("N_min")
+        if nm and nm not in ns:
+            ns.append(int(nm))
+    for n in ns:
         d = f"{SP}/t_N{n}{a.hextag}"
         if os.path.exists(f"{d}/FIN"):
             continue
         os.makedirs(d, exist_ok=True)
-        # 단독: 이 카드에 다른 계산 프로세스 0 (이 드라이버는 직렬, 다른 단계는 끝난 뒤)
-        out = subprocess.run("nvidia-smi --query-compute-apps=pid --format=csv,noheader", shell=True, capture_output=True, text=True).stdout.strip()
+        # 단독: 이 카드에 다른 계산 프로세스 0 (이 드라이버는 직렬, 다른 단계는 끝난 뒤) -- [stabfinal] 다른 프로세스가 있으면 빌 때까지 기다림 (최대 2 시간)
+        for _w in range(240):
+            out = subprocess.run("nvidia-smi --query-compute-apps=pid --format=csv,noheader", shell=True, capture_output=True, text=True).stdout.strip()
+            if not out:
+                break
+            time.sleep(30)
         open(f"{d}/apps_at_start.txt", "w").write(out)
-        cmd = hex_cmd(n, d, stats=0).replace("AF_SP_FR=1,60 AF_E1_DG=1 AF_G1_DG=1 ", "")
+        cmd = hex_cmd(n, d, stats=0, speed=True)
         if os.path.exists(plan_path("ours")):                          # 사다리에서 발산한 N 은 시간 안 잼
             lad = json.load(open(plan_path("ours"))).get("ladder", {})
             if lad.get(str(n)) is False:
@@ -261,7 +326,8 @@ if "ours" in a.methods.split(",") or "speed" in a.stages:
     os.makedirs(f"{ST}/{S}/rr", exist_ok=True)
     json.dump({"h5": f"{ST}/{S}/init/sim_0000000000.h5", "R": [[1, 0, 0], [0, 1, 0], [0, 0, 1]]}, open(f"{ST}/{S}/rr/meta.json", "w"))
     if not os.path.exists(f"{ST}/{S}/hex_in.pt"):
-        subprocess.run([PY, f"{HERE}/stabhex_data.py", f"{ST}/{S}", f"{ST}/{S}/hex_in.pt", "60"], check=True)
+        assert not NS, "새 형상 장면의 hex_in.pt 는 부팅이 pg_h5_to_pt 로 만듦"
+        subprocess.run([PY, f"{HERE}/stabhex_data.py", f"{ST}/{S}", f"{ST}/{S}/hex_in.pt", str(FR)], check=True)
 for st in a.stages.split(","):
     {"main": stage_main, "vis": stage_vis, "speed": stage_speed}[st]()
 open(f"{ST}/{S}/DRV_DONE_{a.stages.replace(',', '_')}{a.hextag}", "w").write(time.strftime("%F %T"))
