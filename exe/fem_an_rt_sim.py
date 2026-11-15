@@ -22,6 +22,7 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--frames", type=int, default=80)
 ap.add_argument("--cell", type=float, default=1.0)
 ap.add_argument("--cell_auto", type=float, default=0.0, help="절 CM185 (공통 규칙, 기본 0 = 끔): 프레임 0 입자가 점유한 칸 수 (칸 = --cell 배) 가 N 을 넘으면 칸 배수를 (점유/N)^(1/3) 배로 키움 -- 실시간 해상도 상한. N 아래 장면은 그대로")
+ap.add_argument("--box_auto", type=float, default=0.0, help="절 CM185 (공통 규칙, 기본 0 = 끔): 프레임 0 노드 상자 (rt_box 와 같은 정의, Π(최대−최소+3)) 가 B 를 넘으면 칸 배수를 상자 ≤ B 가 될 때까지 키움 -- PCG·MG 커널이 상자 크기로 돈다 (절 CM185 프로파일)")
 ap.add_argument("--floor", choices=["vel", "none"], default="vel")
 ap.add_argument("--cfg_bc", action="store_true")
 ap.add_argument("--region_density", action="store_true")
@@ -169,15 +170,28 @@ DXG = float(cfg.get("grid_lim", 2.0)) / int(cfg.get("n_grid", 100))
 NODE_H = a.cell * DXG * math.sqrt(2.0)
 lat = SX.lattice(NODE_H, SX.HZ_CUBE * NODE_H, device=dev, dtype=torch.float64)
 CAUTO = None
-if a.cell_auto > 0:                                                                     # 절 CM185: 점유 칸 수 상한 (칸 정의 = 아래 _ncross 의 점유 칸과 같음)
+if a.cell_auto > 0 or a.box_auto > 0:                                                  # 절 CM185: 점유 칸 수 상한 (칸 정의 = 아래 _ncross 의 점유 칸과 같음)
     _x0c = d["x"][0].to(dev).double()
     _occ0 = int(torch.unique(torch.floor(_x0c @ lat.Ai.T - 0.5), dim=0).shape[0])
     CAUTO = dict(N=a.cell_auto, occ0=_occ0, cell0=a.cell)
-    if _occ0 > a.cell_auto:
+    if a.cell_auto > 0 and _occ0 > a.cell_auto:
         a.cell = a.cell * (_occ0 / a.cell_auto) ** (1.0 / 3.0)
         NODE_H = a.cell * DXG * math.sqrt(2.0)
         lat = SX.lattice(NODE_H, SX.HZ_CUBE * NODE_H, device=dev, dtype=torch.float64)
         CAUTO["occ1"] = int(torch.unique(torch.floor(_x0c @ lat.Ai.T - 0.5), dim=0).shape[0])
+    if a.box_auto > 0:
+        def _box(lt):
+            _b = torch.floor(_x0c @ lt.Ai.T - 0.5)
+            _nb = (_b.max(0).values - _b.min(0).values + 3).long()
+            return int(_nb.prod()), [int(q) for q in _nb]
+        _bx, _nb0 = _box(lat); CAUTO.update(box0=_bx, nb0=_nb0, B=a.box_auto)
+        _it = 0
+        while _bx > a.box_auto and _it < 50:
+            a.cell = a.cell * max((_bx / a.box_auto) ** (1.0 / 3.0), 1.01); _it += 1
+            NODE_H = a.cell * DXG * math.sqrt(2.0)
+            lat = SX.lattice(NODE_H, SX.HZ_CUBE * NODE_H, device=dev, dtype=torch.float64)
+            _bx, _nb1 = _box(lat)
+        CAUTO.update(box1=_bx, it=_it, occ2=int(torch.unique(torch.floor(_x0c @ lat.Ai.T - 0.5), dim=0).shape[0]))
     CAUTO["cell"] = a.cell; del _x0c
     print(f"[절 CM185 칸 상한] {json.dumps(CAUTO)}", flush=True)
     os.makedirs(a.out, exist_ok=True); json.dump(CAUTO, open(os.path.join(a.out, "cauto.json"), "w"))
