@@ -16,6 +16,7 @@ import sys
 W = "/home/dkta/work"
 MODEL = {"lego": "lego_whitebg-trained", "mic": "mic_whitebg-trained", "ficus": "ficus_whitebg-trained",
          "hotdog": "hotdog_whitebg-trained", "wolf": "wolf_whitebg-trained", "bread": "bread-trained"}          # 절 AG: PG 소성 씬
+MODEL.update({"mic_elastic": "mic", "ship_elastic": "ship"})      # 탄성 새 장면 (elastic_new: pgmodel/<물체>, 공식 3DGS 기본값 학습)
 MODEL.update({"chair_plasticine": "chair", "drums_foam": "drums", "materials_sand": "materials", "materials_metal": "materials", "ball_metal": "ball"})      # 절 CM186 새 형상 (pgmodel/<물체>, 직접 학습한 3DGS·DreamPhysics ball)
 ap = argparse.ArgumentParser()
 ap.add_argument("--sim", required=True)
@@ -29,6 +30,9 @@ ap.add_argument("--colors", default="", help="가우시안 색 덮어쓰기 .npy
 ap.add_argument("--iso", type=float, default=0.0, help="공분산을 등방형 (iso × 가우시안 축 길이 중앙값)² I 로 (F 무시). 0 이면 FΣFᵀ")
 ap.add_argument("--frame_label", type=int, default=None, help="주면 프레임 번호 (이 값 + 영상 프레임 순번) 를 크게 빨간색으로 찍는다")
 ap.add_argument("--cam_back", type=float, default=1.6, help="카메라를 물체 중심에서 이 배로 뒤로 (기본 1.6, 기존 그대로)")
+ap.add_argument("--elev", type=float, default=None, help="elastic_new: 위에서 내려다보는 카메라 고도각 (도; 같은 중심, 거리 = cam_back 거리 x --back2, 방위 = cameras.json 첫 장). 없으면 기존 그대로")
+ap.add_argument("--up", default="0,0,1", help="--elev 의 위 방향")
+ap.add_argument("--back2", type=float, default=1.0)
 ap.add_argument("--caption", default="", help="--frame_label 과 함께 왼쪽 위에 찍을 설명 (한국어 가능)")
 ap.add_argument("--frames", type=int, default=0, help="앞 이 상태 번호까지만 (0 = 전부; sim_*.h5 정렬 순 0..frames)")
 ap.add_argument("--mark", default="", help="사용자 10-30 발산 셀 입자 표시: 입자 번호 .npy -- 그 입자를 빨강으로 (가우시안 < NG 는 색만, 채움 입자 ≥ NG 는 "
@@ -91,6 +95,14 @@ cam = json.load(open(f"{mp}/cameras.json"))[0]
 Rw, pos = np.array(cam["rotation"]), np.array(cam["position"])
 _ctr = ((MEAN @ _RT) if ROT else MEAN).cpu().numpy().astype(np.float64)
 pos = _ctr + a.cam_back * (pos - _ctr)                                     # 회전·낙하·이동이 다 들어오게 뒤로
+if a.elev is not None:                                                      # elastic_new: 위에서 내려다보는 카메라 (p2s_top cam_patch 와 같은 식)
+    _up = np.array([float(q) for q in a.up.split(",")]); _up /= np.linalg.norm(_up)
+    _el = math.radians(a.elev); _rel = pos - _ctr; _d = np.linalg.norm(_rel) * a.back2
+    _h = _rel - _up * (_rel @ _up); _h /= np.linalg.norm(_h)
+    pos = _ctr + _d * (math.cos(_el) * _h + math.sin(_el) * _up)
+    _f = (_ctr - pos) / np.linalg.norm(_ctr - pos); _r = np.cross(_f, _up); _r /= np.linalg.norm(_r); _dn = np.cross(_f, _r)
+    Rw = np.stack([_r, _dn, _f], 1)
+    print("[cam] elev", a.elev, "up", _up, "pos", pos, flush=True)
 W2C = np.linalg.inv(np.block([[Rw, pos[:, None]], [np.zeros((1, 3)), np.ones((1, 1))]]))
 fx_ = 2 * math.atan(cam["width"] / (2 * cam["fx"])); fy_ = 2 * math.atan(cam["height"] / (2 * cam["fy"]))
 wv = torch.tensor(getWorld2View2(W2C[:3, :3].T, W2C[:3, 3])).transpose(0, 1).to(dev).float()
