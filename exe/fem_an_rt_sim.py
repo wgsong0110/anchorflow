@@ -174,11 +174,13 @@ if a.cell_auto > 0 or a.box_auto > 0:                                           
     _x0c = d["x"][0].to(dev).double()
     _occ0 = int(torch.unique(torch.floor(_x0c @ lat.Ai.T - 0.5), dim=0).shape[0])
     CAUTO = dict(N=a.cell_auto, occ0=_occ0, cell0=a.cell)
-    if a.cell_auto > 0 and _occ0 > a.cell_auto:
-        a.cell = a.cell * (_occ0 / a.cell_auto) ** (1.0 / 3.0)
+    _occ, _itc = _occ0, 0
+    while a.cell_auto > 0 and _occ > a.cell_auto and _itc < 50:                       # 상한 아래가 될 때까지 (점유 수는 c^-3 보다 느리게 줄 수 있음: 수박 1 번 만에 5.9 만)
+        a.cell = a.cell * max((_occ / a.cell_auto) ** (1.0 / 3.0), 1.01); _itc += 1
         NODE_H = a.cell * DXG * math.sqrt(2.0)
         lat = SX.lattice(NODE_H, SX.HZ_CUBE * NODE_H, device=dev, dtype=torch.float64)
-        CAUTO["occ1"] = int(torch.unique(torch.floor(_x0c @ lat.Ai.T - 0.5), dim=0).shape[0])
+        _occ = int(torch.unique(torch.floor(_x0c @ lat.Ai.T - 0.5), dim=0).shape[0])
+    CAUTO.update(occ1=_occ, itc=_itc)
     if a.box_auto > 0:
         def _box(lt):
             _b = torch.floor(_x0c @ lt.Ai.T - 0.5)

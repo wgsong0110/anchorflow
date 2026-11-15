@@ -209,7 +209,13 @@ __device__ __forceinline__ bool ao_rm3(const float* X, float cdp, float* Y) {
     float sgn[3], sg[3], ep[3], e[3], tr, rho, s;
     int st = ao_dpf(S, cdp, sgn, sg, ep, e, tr, rho, s);
     if (st == 0) { for (int k=0;k<9;k++) Y[k] = X[k]; return false; }
+#if AF_AO_RMPOS
+    // wolffix 11-15 (--ao_rmpos, env AF_AO_RMPOS=1): PhysGaussian 공식 sand_return_mapping 과 같게 -- 소성 (꼬리·꼭짓점) 반환 결과 특이값은 부호 없이 exp(H) (꼭짓점 U Vᵀ).
+    // 옛 판은 부호 sgn 을 남겨 뒤집힌 X 가 반환 뒤에도 뒤집힌 채 (꼭짓점이면 det −1 거울 무응력 상태) 로 굳었다 (wolf 끝 프레임 det F −1 입자, 위에 얹힌 뒤집힌 덩어리).
+    float sn[3]; for (int i=0;i<3;i++) sn[i] = (st == 2) ? 1.f : expf(tr/3.f + s*e[i]);
+#else
     float sn[3]; for (int i=0;i<3;i++) sn[i] = (st == 2) ? sgn[i] : sgn[i]*expf(tr/3.f + s*e[i]);
+#endif
     for (int a=0;a<3;a++) for (int b=0;b<3;b++) Y[a*3+b] = U[a*3]*sn[0]*V[b*3] + U[a*3+1]*sn[1]*V[b*3+1] + U[a*3+2]*sn[2]*V[b*3+2];
     return true;
 }
@@ -1000,6 +1006,7 @@ __global__ void aq_vbar(const int* IP, const float* cm, float* vm) {
 '''
 AO_SRC = "#define AF_CTAN_MODE %d\n" % int(os.environ.get("AF_CTAN", "0")) + AO_SRC
 AO_SRC = "#define AF_PTAN %d\n" % int(os.environ.get("AF_PTAN", "0")) + AO_SRC                 # 절 CM189 --ptan (exe/ptan_wrap.py; 0 = 옛 판, 소스 전처리 결과 같음)
+AO_SRC = "#define AF_AO_RMPOS %d\n" % int(os.environ.get("AF_AO_RMPOS", "0")) + AO_SRC       # wolffix 11-15: 모래 반환 사상 특이값 부호 (PG 공식), 기본 0 = 옛 판
 
 
 
