@@ -8,6 +8,12 @@ export TMPDIR=/dev/shm/dkta/tmp PYTHONUTF8=1 OMP_NUM_THREADS=8
 PY=/home/dkta/.conda/envs/af/bin/python
 say() { echo "[w$GPU $(date '+%F %T')] $*"; }
 pop() { ( flock 9; j=$(head -1 $Q); [ -n "$j" ] && sed -i 1d $Q; echo "$j" ) 9>/root/fpa/queue.lock; }
+post() { local D=$1 n=$2 s=$3 v=$4 r=$5 rc=$6 G=$7
+  CUDA_VISIBLE_DEVICES=$G ABL_EIG_VARS=def,q1,q27 timeout 1800 $PY exe/abl_an.py $D $s $v $r > $D/an.log 2>&1; say "$n 분석 rc=$? $(tail -1 $D/an.log | cut -c1-200)"
+  [ -f $D/metrics.json ] || echo "{\"rc\": $rc, \"no_summary\": true}" > $D/metrics.json
+  rclone copy $D $RA/runs/$n -q --transfers 8 --exclude "q27src/**" --exclude "pred.pt"
+  [ -f $D/pred.pt ] && rclone copyto $D/pred.pt $RA/runs/$n/pred.pt -q --s3-chunk-size 64M --s3-upload-concurrency 16
+  rm -rf $D; }
 while :; do
   j=$(pop); [ -z "$j" ] && break
   IFS=: read s v r <<< "$j"; n=${s}_${v}_r$r; D=$O/$n
@@ -20,12 +26,11 @@ while :; do
   CUDA_VISIBLE_DEVICES=$GPU timeout ${FPA_TMO:-5400} bash -c "$(cat $D/cmd.txt)" < /dev/null > $D/log.txt 2>&1; rc=$?
   nvidia-smi -i $GPU --query-compute-apps=pid --format=csv,noheader > $D/card_after.txt 2>&1
   say "$n rc=$rc $(( $(date +%s) - t0 )) 초 $(grep -ah '롤아웃\]' $D/log.txt | tail -1 | cut -c1-200) $(grep -a 'rror' $D/log.txt | tail -1 | cut -c1-200)"
-  CUDA_VISIBLE_DEVICES=$GPU timeout 1200 $PY exe/abl_an.py $D $s $v $r > $D/an.log 2>&1; say "$n 분석 rc=$? $(tail -1 $D/an.log | cut -c1-200)"
-  [ -f $D/metrics.json ] || echo "{\"rc\": $rc, \"no_summary\": true}" > $D/metrics.json
-  rclone copy $D $RA/runs/$n -q --transfers 8 --exclude "q27src/**" --exclude "pred.pt"
-  if [ -f $D/pred.pt ]; then mkdir -p /dev/shm/dkta/predkeep; ln $D/pred.pt /dev/shm/dkta/predkeep/$n.pt && ( rclone copyto /dev/shm/dkta/predkeep/$n.pt $RA/runs/$n/pred.pt -q --s3-chunk-size 64M --s3-upload-concurrency 16 && rm -f /dev/shm/dkta/predkeep/$n.pt ) > /dev/null 2>&1 &
+  if [ "$r" = 1 ] && case " def q1 q27 " in *" $v "*) true;; *) false;; esac; then
+    post "$D" "$n" "$s" "$v" "$r" "$rc" $GPU                                        # 영 모드 분석 (GPU) 은 카드에서 차례로
+  else
+    post "$D" "$n" "$s" "$v" "$r" "$rc" "" &                                        # 에너지·뒤집힘 분석은 CPU 로 뒤에서 (카드는 다음 판으로)
   fi
-  rm -rf $D
 done
 wait
 say "일꾼 끝"

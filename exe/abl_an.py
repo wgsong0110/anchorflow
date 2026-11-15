@@ -69,7 +69,7 @@ try:
 except Exception as e:
     import traceback
     M["energy_err"] = repr(e) + traceback.format_exc()[-400:]
-if int(rep) == 1 and os.path.exists(f"{D}/q27solver.pt") and os.path.exists(f"{D}/pred.pt") and var != "q64":
+if int(rep) == 1 and os.path.exists(f"{D}/q27solver.pt") and os.path.exists(f"{D}/pred.pt") and var != "q64" and (os.environ.get("ABL_EIG_VARS") is None or var in os.environ["ABL_EIG_VARS"].split(",")):
     q = {"q1": 1, "q27": 27}.get(var, 8)
     kb = 800 if scene in ("bread", "plane") else 2400
     r = subprocess.run([sys.executable, "-u", "exe/q27_eig.py", "--pred", f"{D}/pred.pt", "--solver", f"{D}/q27solver.pt", "--frames", "0", "--q", str(q), "--kb", str(kb), "--out", f"{D}/eig.json"],
