@@ -98,7 +98,7 @@ CB=${NS_CAMBACK:-1.6}; EL=${NS_ELEV:-40}; B2=${NS_BACK2:-1.1}
 python -u exe/lb_roll_to_h5.py --dump $D/pred.pt --traj $AG/gt_$SC --out $D/h5_ours > $D/h5.log 2>&1
 CUDA_VISIBLE_DEVICES=0 python -u exe/lb_render.py --sim $AG/gt_$SC --config $CFG --shape $SC0 --out $D/gt.mp4 --cam_back $CB --elev $EL --back2 $B2 --png $D/gt_png < /dev/null > $D/r_gt.log 2>&1
 CUDA_VISIBLE_DEVICES=0 python -u exe/lb_render.py --sim $D/h5_ours --config $CFG --shape $SC0 --out $D/ours.mp4 --cam_back $CB --elev $EL --back2 $B2 --png $D/ours_png < /dev/null > $D/r_ours.log 2>&1
-python -u exe/gfs_post.py vid --gt_label "$GTL" --our_label "우리 K=1  오차 ${ERR}%  ${MS} ms" --gt_png $D/gt_png --our_png $D/ours_png --out_json $D/visual.json --out_mp4 $D/cmp_raw.mp4 --font $W/font.otf --fps $(python -c "import json;print(round(1/json.load(open('$CFG'))['frame_dt'])))") > $D/vid.log 2>&1
+python -u exe/gfs_post.py vid --gt_label "$GTL" --our_label "우리 K=1  오차 ${ERR}%  ${MS} ms" --gt_png $D/gt_png --our_png $D/ours_png --out_json $D/visual.json --out_mp4 $D/cmp_raw.mp4 --font $W/font.otf --fps $(python -c "import json;print(round(1/json.load(open('$CFG'))['frame_dt']))") > $D/vid.log 2>&1
 V=$D/$VN
 ffmpeg -y -loglevel error -i $D/cmp_raw.mp4 -vf "scale='min(2400,iw)':-2,format=yuv420p" -c:v libx264 -crf 18 -movflags +faststart $V
 DEC=$(ffmpeg -v error -i $V -f null - 2>&1 | wc -l)
