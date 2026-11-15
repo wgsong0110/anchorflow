@@ -65,7 +65,7 @@ open(f"{OUT}/ablation_1115_tables.tex", "w").write("\n\n".join(out))
 # 그림: B (가우스점 수 대 오차) · C (칸 배수 대 오차·시간)
 try:
     import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
-    plt.rcParams["font.family"] = "Noto Sans CJK KR"
+    from matplotlib import font_manager as _fm; _fm.fontManager.addfont(os.path.expanduser("~/.fonts/NotoSansCJKkr-Regular.otf")); plt.rcParams["font.family"] = "Noto Sans CJK KR"
     os.makedirs(f"{OUT}/fig", exist_ok=True)
     fig, ax = plt.subplots(1, 2, figsize=(9, 3.2))
     for s in SB:
