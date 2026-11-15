@@ -155,7 +155,7 @@ class MatRT(ADET.DetMixin):
         s._pvb_on = pvb is not None
         super().__init__(*args, **kw)
         assert s.ga, "재질 판은 --ga (HHT) 만"
-        assert not s.bc, "재질 판은 고정 구속 상자 없는 씬만"
+        assert not s.bc or getattr(s, "_rbc_allow", False), "재질 판은 고정 구속 상자 없는 씬만 (exe/rotbc_wrap.py 의 회전 구동 노드는 예외: 같은 fixd·vbc 를 씀)"
         s.matk = s._mat
         s.ga_first = False                                                             # 첫 프레임 입자 가속도 = g (절 AO)
         s.pa.copy_(torch.tensor(s.g, device=s.dev, dtype=torch.float32).expand(s.N, 3))

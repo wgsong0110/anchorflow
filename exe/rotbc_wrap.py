@@ -85,6 +85,7 @@ def install():
         if groups and not bc:
             bc.append(([1e9] * 3, [1e-9] * 3, [0.0] * 3, 1e9, 2e9))            # 켜지지 않는 더미 상자: fixd·vbc 버퍼와 rt_bc_box 호출 자리를 만들기 위함
         kw["bc"] = bc or None
+        s._rbc_allow = bool(groups)                                              # 재질 판 (fem_mat_rt.MatRT) 의 "고정 상자 없는 씬만" 검사 예외
         orig_init(s, *a, **kw)
         s._rbc = list(groups.items())
         s.RP = torch.zeros(max(1, len(s._rbc)) * 12, device="cuda", dtype=torch.float32)
