@@ -3,7 +3,7 @@
 #   en_try.sh SC NAME "SSF 추가 인자" "앞 감싸개 (ssfix 다음)" "실행기 추가 플래그"
 set -u
 SC=$1; NAME=$2; SSF=${3:-}; WR=${4:-}; EX=${5:-}
-W=/home/dkta/work; AF=/root/sv/af_$SC; D=$W/try/${SC}_$NAME; mkdir -p $D; RX=r2:storage/result/anchorflow/lbours/elastic_new/try
+W=/home/dkta/work; AF=${EN_AF:-/root/sv/af_$SC}; D=$W/try/${SC}_$NAME; mkdir -p $D; RX=r2:storage/result/anchorflow/lbours/elastic_new/try
 C=$(cat $W/ours/${SC}_K1/cmd.txt)
 C=${C/ --dump --dump_F/}
 C=$(sed -E "s# --out \S+\$##" <<< "$C")
