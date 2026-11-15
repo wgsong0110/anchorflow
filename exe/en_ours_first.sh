@@ -17,7 +17,7 @@ OC=$W/gt/${SC}_ipg; mkdir -p $OC; t0=$(date +%s)
 (cd $IPG && WARP_CACHE_PATH=$W/wpc2 timeout 3600 python -u gs_simulation.py --model_path $MD --config $CFG --output_path $OC --output_h5 < /dev/null > $OC/run.log 2>&1) & PC=$!
 until [ -f $OC/simulation_ply/sim_0000000001.h5 ] || ! kill -0 $PC 2>/dev/null; do sleep 5; done
 [ -f $OC/simulation_ply/sim_0000000001.h5 ] || { say "[정답 실패] $(tail -2 $OC/run.log)"; exit 1; }
-GPID=$(pgrep -f "output_path $OC" | head -1); say "[정답 0 프레임] $(( $(date +%s) - t0 )) 초, 정답 pid $GPID 계속 돌림"
+GPAT="gs_simulation.py --model_path $MD --config $CFG --output_path $OC"; say "[정답 0 프레임] $(( $(date +%s) - t0 )) 초, 정답 pid $(pgrep -f "$GPAT" | tr '\n' ' ') 계속 돌림"
 F0=$W/f0_$SC/simulation_ply; mkdir -p $F0; for i in $(seq 0 $NF); do ln -sf $OC/simulation_ply/sim_0000000000.h5 $F0/$(printf sim_%010d.h5 $i); done
 cd $AF
 python -u exe/pg_h5_to_pt.py --h5_dir $F0 --config $CFG --out_pt $AG/${SC}_f0.pt --out_dir $AG/gt0_$SC > $W/cv0_$SC.log 2>&1 || { say "[변환 실패] $(tail -1 $W/cv0_$SC.log)"; exit 1; }
@@ -28,10 +28,10 @@ mk() { local D=$1 drop=$2 nodump=$3
 D=$W/ours0/${SC}_K1; DT=$W/ours0/${SC}_K1_t; mkdir -p $D $DT
 mk $D "" 0 > $D/cmd.txt; mk $DT "--pdiag --qjd --fhash --hgt --bar_cnt" 1 > $DT/cmd.txt
 grep -q "ssfix_wrap.py --ssf_bec 1 --ssf_split 3 --ssf_bigT 0.5 --ssf_tsum 1" $D/cmd.txt && grep -q -- "--ue_loc 51 " $D/cmd.txt && grep -q -- "--wrx_col 0 " $D/cmd.txt && grep -q -- "--mlow 1e-3" $D/cmd.txt || { say "[명령 확인 실패]"; exit 1; }
-kill -STOP $GPID; say "[정답 멈춤 (SIGSTOP)] 우리 판 단독"
+pkill -STOP -f "$GPAT"; say "[정답 멈춤 (SIGSTOP)] 우리 판 단독"
 t1=$(date +%s); CUDA_VISIBLE_DEVICES=0 timeout 3600 bash -c "$(cat $DT/cmd.txt)" < /dev/null > $DT/run.log 2>&1; rcT=$?
 t2=$(date +%s); CUDA_VISIBLE_DEVICES=0 timeout 3600 bash -c "$(cat $D/cmd.txt)" < /dev/null > $D/run.log 2>&1; rc=$?
-kill -CONT $GPID; say "[정답 다시 (SIGCONT)]"
+pkill -CONT -f "$GPAT"; say "[정답 다시 (SIGCONT)]"
 read MS RD FD DIV < <(python -c "
 import json,re
 t=json.load(open('$DT/summary.json')); s=json.load(open('$D/summary.json'))
