@@ -13,8 +13,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--scene", required=True)
 ap.add_argument("--par", type=int, default=4)
 ap.add_argument("--stages", default="main,vis,speed")
-ap.add_argument("--methods", default="pg,ipg,gf,ours")
-ap.add_argument("--cap", default="pg:1024,ipg:256,gf:512,ours:256", help="방법별 사다리 상한 N")
+ap.add_argument("--methods", default="pg,ipg,gf,omni,ours")
+ap.add_argument("--cap", default="pg:1024,ipg:16,gf:512,omni:256,ours:256", help="방법별 사다리 상한 N")
 ap.add_argument("--hexfix", default="", help="우리 판 추가 플래그 (발산 수정 플래그가 나오면)")
 ap.add_argument("--hextag", default="", help="우리 결과 폴더 접미 (수정판 구분)")
 ap.add_argument("--tifrac", type=float, default=0.2)
@@ -49,6 +49,9 @@ def sh(cmd, log, timeout=None):
 
 def old_cmd(m, n, out, dump=""):
     c = f"{ST}/{S}"
+    if m == "omni":
+        c2 = (f"cd {WT} && {PY} -u exe/stab_omni.py --repo {W}/OmniPhysGS --h5 {c}/init/sim_0000000000.h5 --config {c}/config.json --substeps {n} --out {out}.npz")
+        return c2 + (f" --dump {dump}" if dump else "")
     if m in ("pg", "ipg"):
         c2 = (f"cd {PG} && {PY} -u {WT}/exe/stab_mpm.py --method {m} --h5 {c}/init/sim_0000000000.h5 --config {c}/config.json "
               f"--substeps {n} --out {out}.npz --ckpt_every 0")

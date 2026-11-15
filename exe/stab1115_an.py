@@ -51,7 +51,7 @@ def loadrep(m, n, rep):
     return L.load(S, m, n, rep)
 
 
-for m in ("pg", "ipg", "gf", "ours"):
+for m in ("pg", "ipg", "gf", "omni", "ours"):
     ns = all_ns(m)
     if not ns:
         continue
