@@ -9,6 +9,7 @@ ap = argparse.ArgumentParser(); ap.add_argument("mode")
 ap.add_argument("--gt_pt"); ap.add_argument("--pred"); ap.add_argument("--out", default="")
 ap.add_argument("--gt_png"); ap.add_argument("--our_png"); ap.add_argument("--out_json"); ap.add_argument("--out_mp4"); ap.add_argument("--font", default=""); ap.add_argument("--fps", type=int, default=24)
 ap.add_argument("--seed", type=int, default=0)
+ap.add_argument("--gt_label", default="정답 (GaussianFluent)", help="절 CM186: 영상 왼쪽 글자 (PG 정답이면 PhysGaussian)")
 a = ap.parse_args()
 if a.mode == "topo":
     import torch
@@ -58,7 +59,7 @@ else:
         tg = torch.from_numpy(g).permute(2, 0, 1)[None].float().cuda() / 127.5 - 1; to = torch.from_numpy(o).permute(2, 0, 1)[None].float().cuda() / 127.5 - 1
         with torch.no_grad(): L.append(float(lp(tg, to)))
         im = Image.fromarray(np.concatenate([g, o], 1)); d = ImageDraw.Draw(im)
-        d.text((12, 8), "정답 (GaussianFluent)", fill=(0, 0, 0), font=fnt); d.text((g.shape[1] + 12, 8), "우리", fill=(0, 0, 0), font=fnt)
+        d.text((12, 8), a.gt_label, fill=(0, 0, 0), font=fnt); d.text((g.shape[1] + 12, 8), "우리", fill=(0, 0, 0), font=fnt)
         W.append_data(np.array(im))
     W.close()
     o = dict(frames=n, psnr=float(np.mean(P)), ssim=float(np.mean(S)), lpips=float(np.mean(L)), psnr_by_frame=P, ssim_by_frame=S, lpips_by_frame=L)

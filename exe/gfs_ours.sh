@@ -23,7 +23,9 @@ if not hit and "NOFLOOR" not in sys.argv[3:]:
     d["boundary_conditions"].append({"type": "surface_collider", "point": [1, 1, z3], "normal": [0.0, 0.0, 1.0], "surface": "sticky", "friction": 0.0, "start_time": 0, "end_time": 1000.0})
 # GF 러너는 config 의 substep_dt 를 무시하고 0.6 dx / 음속 으로 다시 계산한다 (gaussianfluent-hidden-defaults 2번) -> 우리 판의 격자 속도 감쇠 (--pg_vdamp, 서브스텝당 grid_v_damping_scale) 지수가 GF 실제 서브스텝 수와 맞도록 사본 config 의 substep_dt 를 GF 실제값으로
 import math
-_c = math.sqrt(d["E"] * (1 - d["nu"]) / ((1 + d["nu"]) * (1 - 2 * d["nu"]) * d["density"])); d["substep_dt"] = 0.6 * dx / _c
+import os as _os
+if _os.environ.get("GFS_KEEP_DT", "0") != "1":      # 절 CM186: PG 공식 러너로 만든 정답 (GFS_KEEP_DT=1) 은 config substep_dt 를 그대로 쓴다 (PG 는 다시 계산하지 않음); 기본 0 = GF 러너 정답 (옛 동작)
+    _c = math.sqrt(d["E"] * (1 - d["nu"]) / ((1 + d["nu"]) * (1 - 2 * d["nu"]) * d["density"])); d["substep_dt"] = 0.6 * dx / _c
 print("substep_dt 원래 config", json.load(open(sys.argv[1]))["substep_dt"], "-> GF 실제", d["substep_dt"], "서브스텝/프레임", int(d["frame_dt"] / d["substep_dt"]))
 if "ABLB" in sys.argv[3:]: d["material"] = "jelly"      # 실험 B: 같은 E·ν 의 탄성
 if "ABLC" in sys.argv[3:]:                                # 실험 C: 바닥을 sticky 대신 미끄럼 (마찰 0)
@@ -80,8 +82,9 @@ python -u exe/lb_roll_to_h5.py --dump $O/run/pred_v.pt --traj $W/ag/gt_$n --out 
 rw() { (cd $GF && python -u $AF/exe/gfs_render.py --gf $GF --model_path $MODEL --config $CFG --frames $((NF + 1)) "$@" < /dev/null); }
 rw --sim $W/gt/$n/simulation_ply --out $O/gt.mp4 > $O/r_gt.log 2>&1; rw --sim $O/h5_ours --out $O/ours.mp4 > $O/r_ours.log 2>&1
 say "  [$n] 렌더 정답 PNG $(ls $O/gt_frames 2>/dev/null | wc -l) 우리 PNG $(ls $O/ours_frames 2>/dev/null | wc -l) $(grep -a 'rror' $O/r_gt.log $O/r_ours.log | tail -1 | cut -c1-200)"
-python -u exe/gfs_post.py vid --gt_png $O/gt_frames --our_png $O/ours_frames --out_json $O/visual.json --out_mp4 $O/gf_${n}${SFX}_cmp_raw.mp4 --font $W/font.otf --fps 24 > $O/vid.log 2>&1; say "  [$n] $(tail -1 $O/vid.log | cut -c1-300)"
+python -u exe/gfs_post.py vid --gt_label "${GFS_GTLABEL:-정답 (GaussianFluent)}" --gt_png $O/gt_frames --our_png $O/ours_frames --out_json $O/visual.json --out_mp4 $O/gf_${n}${SFX}_cmp_raw.mp4 --font $W/font.otf --fps 24 > $O/vid.log 2>&1; say "  [$n] $(tail -1 $O/vid.log | cut -c1-300)"
 ffmpeg -y -loglevel error -i $O/gf_${n}${SFX}_cmp_raw.mp4 -vf "scale='min(2400,iw)':-2,format=yuv420p" -c:v libx264 -crf 18 -movflags +faststart $O/gf_${n}${SFX}_cmp.mp4
 ffprobe -v error -show_entries stream=width,height,pix_fmt,nb_frames -of csv=p=0 $O/gf_${n}${SFX}_cmp.mp4 | tee -a $LOG
-rclone copyto $O/gf_${n}${SFX}_cmp.mp4 $R/v20261009/gf_${n}${SFX}_cmp.mp4 -q
-rclone copy $O $RX/ours/$n$SFX -q --include "*.json" --include "*.log" --include "cmd.txt"; say "  [$n] 영상 $R/v20261009/gf_${n}${SFX}_cmp.mp4"
+VD=${GFS_VIDDIR:-$R/v20261009}      # 절 CM186: 영상 올릴 곳 (기본 = 옛 그대로)
+rclone copyto $O/gf_${n}${SFX}_cmp.mp4 $VD/gf_${n}${SFX}_cmp.mp4 -q
+rclone copy $O $RX/ours/$n$SFX -q --include "*.json" --include "*.log" --include "cmd.txt"; say "  [$n] 영상 $VD/gf_${n}${SFX}_cmp.mp4"
