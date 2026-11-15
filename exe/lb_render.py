@@ -18,6 +18,7 @@ MODEL = {"lego": "lego_whitebg-trained", "mic": "mic_whitebg-trained", "ficus": 
          "hotdog": "hotdog_whitebg-trained", "wolf": "wolf_whitebg-trained", "bread": "bread-trained"}          # 절 AG: PG 소성 씬
 MODEL.update({"mic_elastic": "mic", "ship_elastic": "ship", "chair_elastic": "chair", "ship_plastic": "ship", "mic_plastic": "mic", "mic_metal": "mic", "ship_plastic_lego": "ship", "mic_metal_lego": "mic"})      # 탄성 새 장면 (elastic_new: pgmodel/<물체>, 공식 3DGS 기본값 학습)
 MODEL.update({"chair_plasticine": "chair", "drums_foam": "drums", "materials_sand": "materials", "materials_metal": "materials", "ball_metal": "ball"})      # 절 CM186 새 형상 (pgmodel/<물체>, 직접 학습한 3DGS·DreamPhysics ball)
+MODEL.update({"chair_paste": "chair", "drums_honey": "drums", "bread_foam_drop": "bread-trained"})      # 절 CM189 plastfix
 ap = argparse.ArgumentParser()
 ap.add_argument("--sim", required=True)
 ap.add_argument("--config", required=True)
