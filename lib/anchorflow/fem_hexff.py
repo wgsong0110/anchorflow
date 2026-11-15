@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 import os
-_BLOC2 = int(os.environ.get("AF_BLOC", "0")) >= 2                         # 절 CM189 --bloc 2 (exe/bloc_wrap.py): 뒤집힘 보폭도 노드별 (끄면 기존 그대로)
+_BLOC2 = int(os.environ.get("AF_BLOC", "0")) >= 3                         # 절 CM189 --bloc 3 (exe/bloc_wrap.py): 뒤집힘 보폭도 노드별 (끄면 기존 그대로; chair_paste 12 프레임 발산 J 3e-4 -> 기본 아님)
 INFO = dict(tau=0.0, mods=[], n_kfe=0, n_chk=0, n_lmix=0, lmix=0, kfe=1, skip=(2,))
 
 HF_SRC = r"""
