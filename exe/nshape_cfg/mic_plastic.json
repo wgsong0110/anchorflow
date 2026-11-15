@@ -1,0 +1,109 @@
+{
+ "opacity_threshold": 0.02,
+ "rotation_degree": [
+  119.5764,
+  -6.4234,
+  138.3083
+ ],
+ "rotation_axis": [
+  0,
+  1,
+  2
+ ],
+ "substep_dt": 0.0001,
+ "frame_dt": 0.04,
+ "frame_num": 50,
+ "E": 100000.0,
+ "nu": 0.3,
+ "material": "plasticine",
+ "density": 1000,
+ "g": [
+  0.0,
+  0.0,
+  -9.8
+ ],
+ "n_grid": 100,
+ "particle_filling": {
+  "n_grid": 100,
+  "density_threshold": 100.0,
+  "search_threshold": 1.0,
+  "search_exclude_direction": 2,
+  "ray_cast_direction": 4,
+  "max_particles_num": 2000000,
+  "max_partciels_per_cell": 1,
+  "boundary": [
+   0.4,
+   1.6,
+   0.4,
+   1.6,
+   0.4,
+   1.6
+  ],
+  "smooth": true,
+  "visualize": true
+ },
+ "boundary_conditions": [
+  {
+   "type": "bounding_box"
+  },
+  {
+   "type": "surface_collider",
+   "point": [
+    1,
+    1,
+    0.2
+   ],
+   "normal": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "surface": "sticky",
+   "friction": 0.0,
+   "start_time": 0,
+   "end_time": 1000.0
+  },
+  {
+   "type": "enforce_particle_translation",
+   "point": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "size": [
+    0.7,
+    0.7,
+    0.7
+   ],
+   "velocity": [
+    0.4,
+    0.3,
+    -1.0
+   ],
+   "start_time": 0,
+   "end_time": 5e-05
+  }
+ ],
+ "mpm_space_vertical_upward_axis": [
+  0,
+  0,
+  1
+ ],
+ "mpm_space_viewpoint_center": [
+  1,
+  1,
+  0.75
+ ],
+ "default_camera_index": -1,
+ "show_hint": false,
+ "init_azimuthm": 30,
+ "init_elevation": 15,
+ "init_radius": 4.5,
+ "move_camera": false,
+ "delta_a": 0.0,
+ "delta_e": 0.0,
+ "delta_r": 0.0,
+ "yield_stress": 100.0,
+ "grid_v_damping_scale": 0.9999,
+ "_elastic_new": "chair_plasticine (새 형상 장면) 기준. 재질 = plasticine. PG 공식 예제 config 에 plasticine 이 없어 E·nu·yield_stress·density·grid_v_damping_scale 은 PG 공식 config/plane_config.json (항복 예제) 값 그대로 (chair_plasticine 과 같음), softening 은 PG 코드 기본 0.1. 기울기 = 레고 L000 정답의 초기 회전 R (lbdata/test_low/L000/meta.json; lbdata/config.json 의 rotation_degree 는 [0] 이라 R 을 PG 축 회전으로 분해: R = Rz(138.3083) Ry(-6.4234) Rx(119.5764), 오차 2e-16). 초기 속도: 레고 config init_velocity 는 [0,0,0] 이라 바닥 쪽으로 기운 속도 [0.4, 0.3, -1.0] m/s (|v| 1.12) 를 PG 공식 초기 속도 지정 방식 (enforce_particle_translation, 시작 0·끝 5e-5 = 첫 서브스텝만) 으로 줌. 바닥 z 는 인스턴스에서 회전·정규화 뒤 가우시안 최저점 - 0.3 (exe/elastic_new_floor.py). 50 프레임, frame_dt 0.04."
+}

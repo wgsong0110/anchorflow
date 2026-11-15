@@ -1,11 +1,11 @@
 #!/bin/bash
-# elastic_new (사용자 11-15 "pillow2sofa 대신 다른 탄성 씬"): mic·ship 을 PG jelly (pillow2sofa 공식 값) 로, 레고 L000 기울기로 0.3 m 낙하, 50 프레임.
+# elastic_new (사용자 11-15 재구성: chair 탄성 jelly, ship·mic 소성 plasticine, 레고 L000 회전 + 바닥 쪽 초기 속도로 던짐; "pillow2sofa 대신 다른 탄성 씬"): mic·ship 을 PG jelly (pillow2sofa 공식 값) 로, 레고 L000 기울기로 0.3 m 낙하, 50 프레임.
 #   vast_nshape_pg.sh 와 같은 사슬. 바뀐 것: (1) 3DGS 없으면 공식 3DGS 기본값 학습 (vast_nshape.sh 와 같은 판) (1b) 바닥 z = 최저점 - 0.3 (exe/elastic_new_floor.py)
 #   (2) 정답 = 원본 PhysGaussian 8339ed6 과 i-physgaussian 사본을 같이 띄워 원본이 끝나면 원본, 아니면 사본 ("정답 (PG 사본)")
 #   (3) 우리 판 K=1 만 (4) 단독 시간 판 (5) 렌더 = 위에서 내려다보는 카메라 (--elev) 2 칸, 칸 제목에 오차·ms. destroy 안 함.
 #   env: R2_*, XS_SC, XS_OBJ, XS_CODE, (NS_ELEV 40, NS_BACK2 1.1, NS_CAMBACK 1.6)
 set -u
-SC=${XS_SC:?}; OBJ=${XS_OBJ:?}; TAG=elastic_new_$OBJ
+SC=${XS_SC:?}; OBJ=${XS_OBJ:?}; TAG=elastic_new_$SC
 R=r2:storage/result/anchorflow; RX=$R/lbours/elastic_new; DS=r2:storage/datasets/anchorflow/nshape; VD=$R/v20261009; MI=$R/_vastmirror
 mkdir -p /root/sv; LOG=/root/sv/$TAG.log
 say() { echo "[$TAG $(date '+%F %T')] $*" | tee -a $LOG; rclone copyto $LOG $RX/$TAG.log -q 2>/dev/null; }
@@ -14,8 +14,9 @@ nvidia-smi --query-gpu=index,name,power.limit,power.default_limit,memory.total -
 PL=$(nvidia-smi --query-gpu=power.limit --format=csv,noheader,nounits | head -1 | cut -d. -f1); PD=$(nvidia-smi --query-gpu=power.default_limit --format=csv,noheader,nounits | head -1 | cut -d. -f1)
 if [ -n "$PL" ] && [ -n "$PD" ] && [ "$PL" -lt "$PD" ]; then say "[전력 제한] $PL W < $PD W"; echo "전력 제한" | rclone rcat $RX/$TAG.END; exit 1; fi
 export HOME=/root
-python -c "import torch, cupy, h5py, warp, lpips, diff_gaussian_rasterization, simple_knn, taichi, plyfile" 2>/dev/null || { say "[세팅 실패] pip"; echo "pip 실패" | rclone rcat $RX/$TAG.END; exit 1; }
-W=/home/dkta/work; AF=/root/sv/af_$OBJ; AG=/dev/shm/dkta/ag_$OBJ; PGU=$W/PhysGaussian_upstream; IPG=$W/i-physgaussian; GF=$W/GaussianFluent
+python -c "import mcubes" 2>/dev/null || pip install -q --only-binary=:all: PyMCubes >> $LOG 2>&1      # 원본 PG 채우기·사본 둘 다 mcubes 필요
+python -c "import torch, cupy, h5py, warp, lpips, diff_gaussian_rasterization, simple_knn, taichi, plyfile, mcubes" 2>/dev/null || { say "[세팅 실패] pip"; echo "pip 실패" | rclone rcat $RX/$TAG.END; exit 1; }
+W=/home/dkta/work; AF=/root/sv/af_$SC; AG=/dev/shm/dkta/ag_$SC; PGU=$W/PhysGaussian_upstream; IPG=$W/i-physgaussian; GF=$W/GaussianFluent
 mkdir -p $W/pgmodel $AF $AG /home/dkta/.conda/envs/af/bin /dev/shm/dkta/tmp
 ln -sf $(command -v python) /home/dkta/.conda/envs/af/bin/python
 [ -f $PGU/gs_simulation.py ] || rclone copy $MI/PhysGaussian_upstream_8339ed6 $PGU --transfers 32 -q &
@@ -57,7 +58,7 @@ else
 fi
 cp $CFG $O/config.json; rclone copy $O $DS/gt_pg/$SC --transfers 16 -q; say "[정답] $GTL R2 올림 $DS/gt_pg/$SC"
 cd $AF
-python -u exe/pg_h5_to_pt.py --h5_dir $O/simulation_ply --config $CFG --out_pt $AG/$SC.pt --out_dir $AG/gt_$SC > $W/cv_$SC.log 2>&1 || { say "[변환 실패] $(tail -1 $W/cv_$SC.log)"; echo "변환 실패" | rclone rcat $RX/$TAG.END; exit 1; }
+python -u exe/pg_h5_to_pt.py --h5_dir $O/simulation_ply --config $CFG --out_pt $AG/$SC.pt --out_dir $AG/gt_$SC --v0_from_bc > $W/cv_$SC.log 2>&1 || { say "[변환 실패] $(tail -1 $W/cv_$SC.log)"; echo "변환 실패" | rclone rcat $RX/$TAG.END; exit 1; }
 rclone cat $R/lbours/wolfcv/cm157/BA_1/cmd.txt > $W/BA_1.txt
 # ---- (3) 우리 판 K=1, (4) 단독 시간 판
 run1() { local sfx=$1 drop=$2 nodump=$3; local D=$W/ours/${SC}_K1${sfx}; mkdir -p $D
@@ -81,10 +82,10 @@ python -u exe/lb_roll_to_h5.py --dump $D/pred.pt --traj $AG/gt_$SC --out $D/h5_o
 CUDA_VISIBLE_DEVICES=0 python -u exe/lb_render.py --sim $AG/gt_$SC --config $CFG --shape $SC --out $D/gt.mp4 --cam_back $CB --elev $EL --back2 $B2 --png $D/gt_png < /dev/null > $D/r_gt.log 2>&1
 CUDA_VISIBLE_DEVICES=0 python -u exe/lb_render.py --sim $D/h5_ours --config $CFG --shape $SC --out $D/ours.mp4 --cam_back $CB --elev $EL --back2 $B2 --png $D/ours_png < /dev/null > $D/r_ours.log 2>&1
 python -u exe/gfs_post.py vid --gt_label "$GTL" --our_label "우리 K=1  오차 ${ERR}%  ${MS} ms" --gt_png $D/gt_png --our_png $D/ours_png --out_json $D/visual.json --out_mp4 $D/cmp_raw.mp4 --font $W/font.otf --fps 25 > $D/vid.log 2>&1
-V=$D/${OBJ}_K1_cmp.mp4
+V=$D/${SC}_K1_cmp.mp4
 ffmpeg -y -loglevel error -i $D/cmp_raw.mp4 -vf "scale='min(2400,iw)':-2,format=yuv420p" -c:v libx264 -crf 18 -movflags +faststart $V
 DEC=$(ffmpeg -v error -i $V -f null - 2>&1 | wc -l)
 say "  [$SC] 렌더 정답 $(ls $D/gt_png 2>/dev/null | wc -l) 우리 $(ls $D/ours_png 2>/dev/null | wc -l) $(tail -1 $D/vid.log | cut -c1-200) 영상 $(ffprobe -v error -show_entries stream=width,height,pix_fmt,nb_frames -of csv=p=0 $V 2>&1) 디코드 오류 줄 $DEC"
-rclone copyto $V $VD/${OBJ}_K1_cmp.mp4 -q
+rclone copyto $V $VD/${SC}_K1_cmp.mp4 -q
 rclone copy $D $RX/ours/${SC}_K1 -q --include "*.json" --include "*.log" --include "cmd.txt" --include "*.mp4"
-say "[끝] 오차 $ERR % ms $MS 영상 $VD/${OBJ}_K1_cmp.mp4"; echo "끝 $(date) err=$ERR ms=$MS" | rclone rcat $RX/$TAG.END
+say "[끝] 오차 $ERR % ms $MS 영상 $VD/${SC}_K1_cmp.mp4"; echo "끝 $(date) err=$ERR ms=$MS" | rclone rcat $RX/$TAG.END
