@@ -17,12 +17,13 @@ ap.add_argument("--methods", default="pg,ipg,gf,ours")
 ap.add_argument("--cap", default="pg:1024,ipg:256,gf:512,ours:256", help="방법별 사다리 상한 N")
 ap.add_argument("--hexfix", default="", help="우리 판 추가 플래그 (발산 수정 플래그가 나오면)")
 ap.add_argument("--hextag", default="", help="우리 결과 폴더 접미 (수정판 구분)")
+ap.add_argument("--tifrac", type=float, default=0.2)
 ap.add_argument("--timeout", type=int, default=10800)
 a = ap.parse_args()
 S = a.scene; ST = L.ST; W = os.path.dirname(ST); PY = sys.executable
 PG = f"{W}/i-physgaussian"
 CAP = {kv.split(":")[0]: int(kv.split(":")[1]) for kv in a.cap.split(",")}
-SEM = threading.BoundedSemaphore(a.par)
+SEM = threading.BoundedSemaphore(a.par); GSEM = threading.BoundedSemaphore(2)
 os.makedirs(f"{ST}/{S}", exist_ok=True)
 LOGF = open(f"{ST}/{S}/drv.log", "a"); LK = threading.Lock()
 FR = 60
@@ -63,7 +64,7 @@ def hex_cmd(n, d, dump=False, stats=1, direct=None, frames=FR):
     du = "--dump --dump_F " if dump else ""
     env = f"AF_SP_FR=1,{frames} AF_E1_DG=1 AF_G1_DG=1 " + ("" if stats else "")
     for k, v in (("@ENV@", env), ("@OUT@", d), ("@ST@", str(stats)), ("@DATA@", f"{ST}/{S}/hex_in.pt"), ("@FR@", str(frames)), ("@TAG@", f"{S}_N{n}"),
-                 ("@N@", str(n)), ("@DUMP@", du), ("@DIR@", str(dr))):
+                 ("@N@", str(n)), ("@S@", S), ("@RR@", f"{ST}/{S}/rr"), ("@CFG@", f"{ST}/{S}/config.json"), ("@DUMP@", du), ("@DIR@", str(dr))):
         base = base.replace(k, v)
     return f"cd {WT} && {base} {a.hexfix}"
 
@@ -87,7 +88,11 @@ def run(m, n, rep):
         if os.path.exists(out + ".fin"):
             return
         with SEM:
-            t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 {old_cmd(m, n, out)}", out + ".log")
+            if m == "gf": GSEM.acquire()
+            try:
+                t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 TI_DEVICE_MEMORY_FRACTION={a.tifrac} {old_cmd(m, n, out)}", out + ".log")
+            finally:
+                if m == "gf": GSEM.release()
         for t in glob.glob(out + "_tmp*"):
             shutil.rmtree(t, ignore_errors=True) if os.path.isdir(t) else os.remove(t)
         open(out + ".fin", "w").write(f"rc={rc} {time.time() - t0:.0f}s")
@@ -163,7 +168,7 @@ PYEOF""", f"{V}/{name}_conv.log")
                     f"--render_npz {V}/{name}_full.npz --video {V}/{name}.mp4 --png_dir {png} --out {V}/{name}.r.npz", f"{V}/{name}_render.log")
             shutil.rmtree(d, ignore_errors=True); os.path.exists(f"{V}/{name}_full.npz") and os.remove(f"{V}/{name}_full.npz")
         else:
-            sh(f"CUDA_VISIBLE_DEVICES=0 {old_cmd(m, n, f'{V}/{name}', dump=dump)}", f"{V}/{name}_dump.log")
+            sh(f"CUDA_VISIBLE_DEVICES=0 TI_DEVICE_MEMORY_FRACTION=0.5 {old_cmd(m, n, f'{V}/{name}', dump=dump)}", f"{V}/{name}_dump.log")
             rc = sh(f"cd {WT} && CUDA_VISIBLE_DEVICES=0 {PY} -u exe/rep_ip.py --sim {dump} --cfg {ST}/{S}/config.json --shape {S} --method ours --frames {FR} --render_ref "
                     f"--video {V}/{name}.mp4 --png_dir {png} --out {V}/{name}.r.npz", f"{V}/{name}_render.log")
             shutil.rmtree(dump, ignore_errors=True)
@@ -209,6 +214,8 @@ def stage_speed():
 
 
 if "ours" in a.methods.split(",") or "speed" in a.stages:
+    os.makedirs(f"{ST}/{S}/rr", exist_ok=True)
+    json.dump({"h5": f"{ST}/{S}/init/sim_0000000000.h5", "R": [[1, 0, 0], [0, 1, 0], [0, 0, 1]]}, open(f"{ST}/{S}/rr/meta.json", "w"))
     if not os.path.exists(f"{ST}/{S}/hex_in.pt"):
         subprocess.run([PY, f"{HERE}/stabhex_data.py", f"{ST}/{S}", f"{ST}/{S}/hex_in.pt", "60"], check=True)
 for st in a.stages.split(","):

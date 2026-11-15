@@ -53,6 +53,7 @@ cd $D || exit 1
 export PYTHONUTF8=1 OMP_NUM_THREADS=8 CUPY_CACHE_DIR=/dev/shm/dkta/cache/cupy_s1 XDG_CACHE_HOME=/dev/shm/dkta/cache TORCH_EXTENSIONS_DIR=/dev/shm/dkta/cache/torch_ext TMPDIR=/dev/shm/dkta/tmp
 mkdir -p $CUPY_CACHE_DIR $TMPDIR
 sed -i 's/MODEL = {"lego"/MODEL = {"vasedeck": "vasedeck_whitebg-trained", "lego"/' exe/rep_ip.py
+python exe/stab1115_patch_models.py
 python exe/stab1115_prep.py $W/assets_cfg/ficus_drop_config.json $W/assets_cfg $HS $W/stab $SCS 2>&1 | tee -a $LOG
 OK=1; for s in $SCS; do [ -s $W/stab/$s/init/sim_0000000000.h5 ] && [ -s $W/stab/$s/config.json ] || OK=0; done
 [ -f /root/s1/pip.done ] && [ -d $W/i-physgaussian/gaussian-splatting ] && [ $OK = 1 ] || { say "[세팅 실패]"; echo "세팅 실패 $(date)" | rclone rcat $MK/setup_fail; exit 1; }
