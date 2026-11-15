@@ -264,7 +264,7 @@ class VRGS:
     """케이지 XPBD. x0 [Np,3] 입자 rest, v0 [Np,3], m [Np] 입자 질량, rho_p [Np] 입자 밀도."""
 
     def __init__(s, x0, v0, m, rho_p, E, nu, g, frame_dt, N, iters, vmax=30000, floor_z=None, fix_boxes=(), damp_scale=1.0, damp_dt=None,
-                 h=None, nrot=5, rot_bcs=(), fix_boxes_t=()):
+                 h=None, nrot=5, rot_bcs=(), fix_boxes_t=(), origin=None):
         dev = "cuda"
         s.Np = x0.shape[0]
         x0 = x0.to(dev).double()
@@ -328,6 +328,12 @@ class VRGS:
         vv = torch.where(Ms[:, None] > 0, Ps / Ms.clamp(min=1e-300)[:, None], vbar[None])
         vv[s.fixed] = 0.0
         vv[w == 0.0] = 0.0
+        # [final_pa_bl] 좌표 원점 옮김 (평행 이동만; 동역학 불변): float32 위치에서 서브스텝 변위 g dt² 가 위치의 반 ulp 보다 작으면 (pillow2sofa: g 5, dt 1e-4 -> 5e-8,
+        #   z >= 1 의 반 ulp 6e-8) 정지에서 출발한 정점이 반올림으로 제자리에 머물고 v = (x − xp)/dt = 0 이 되어 영영 안 떨어진다 -> 시뮬 내부 좌표를 origin 기준으로.
+        #   출력 xo 는 프레임 끝 (시간 밖) 에 origin 을 더해 원래 좌표. origin None = 예전 그대로.
+        s.origin = None if origin is None else torch.as_tensor(origin, device=dev, dtype=torch.float64)
+        if s.origin is not None:
+            V = V - s.origin
         s.X0 = V.float().contiguous(); s.V0 = vv.float().contiguous()
         s.x = s.X0.clone(); s.xp = s.X0.clone(); s.v = s.V0.clone()
         s.w = w.float().contiguous()
@@ -335,7 +341,7 @@ class VRGS:
         s.lam = torch.zeros(2 * s.nt, device=dev); s.q = torch.zeros(s.nt, 4, device=dev); s.q[:, 3] = 1.0
         s.xo = torch.zeros(s.Np, 3, device=dev)
         s.g = [float(q) for q in g]; s.frame_dt = float(frame_dt); s.nu = float(nu)
-        s.fz = -1e30 if floor_z is None else float(floor_z)
+        s.fz = -1e30 if floor_z is None else float(floor_z) - (0.0 if s.origin is None else float(s.origin[2]))
         s.damp_scale, s.damp_dt = float(damp_scale), damp_dt
         s.nrot = int(nrot)
         s.aR = torch.zeros(s.nt, device=dev); s.aV = torch.zeros(s.nt, device=dev)
@@ -427,6 +433,8 @@ class VRGS:
         s.g_skin.replay()
         e1.record()
         torch.cuda.synchronize()
+        if s.origin is not None:
+            s.xo += s.origin.float()
         s.fr += 1
         return e0.elapsed_time(e1)
 
@@ -440,7 +448,7 @@ class VRGS:
                 f = max(0.0, min(t + s.frame_dt, t1) - max(t, t0)) / s.frame_dt
                 rs += r_ * f; ts += t_ * f
             n_ = torch.tensor(nv_, device=s.x.device, dtype=torch.float32)
-            off = s.x - torch.tensor(pt, device=s.x.device, dtype=torch.float32)
+            off = s.x - torch.tensor(pt, device=s.x.device, dtype=torch.float32) + (0.0 if s.origin is None else s.origin.float())
             rp = off - (off @ n_)[:, None] * n_
             v = rs * torch.cross(rp, n_.expand_as(rp), dim=-1) + ts * n_
             vd[msk] = v[msk]

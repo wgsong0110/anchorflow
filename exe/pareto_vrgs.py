@@ -97,7 +97,8 @@ def parse(sv):
 
 SETS = [parse(q) for q in a.set]
 S = VG.VRGS(x0, d["v"][0], m, rho_p, E_GT, NU, cfg["g"], float(cfg["frame_dt"]), SETS[0][0], SETS[0][1], vmax=a.vmax, floor_z=FZ, fix_boxes=BOX,
-            damp_scale=DSC, damp_dt=float(cfg["substep_dt"]), rot_bcs=ROT, fix_boxes_t=BOXW)
+            damp_scale=DSC, damp_dt=float(cfg["substep_dt"]), rot_bcs=ROT, fix_boxes_t=BOXW,
+            origin=(0.5 * (x0.min(0).values + x0.max(0).values)).tolist() if BOXW else None)   # [final_pa_bl] 구간 고정 장면 (정지에서 풀려 떨어짐) 만 float32 반올림 정지 막는 원점 이동 (vrgs_xpbd 주석)
 INFO = S.info()
 print(f"[VR-GS] {a.tag} 입자 {S.Np}, 케이지 정점 {S.nv} 사면체 {S.nt} 칸 {S.h:.5f} 색 {len(S.colors)} 고정 정점 {INFO['nfixed']} (구간 고정 {INFO.get('nfixed_t')}), 질량 케이지 {S.mass_cage:.4g} / 입자 {S.mass_part:.4g}, "
       f"결속 무게중심 최소 {S.bind_min:.2e}, 바닥 {FZ}, 감쇠 {DSC}, 정답 E {E_GT:g} ν {NU}, 프레임 {L}, EXT {EXT:.5f}", flush=True)
