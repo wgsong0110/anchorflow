@@ -8,6 +8,7 @@ it = max(int(q.split("_")[-1]) for q in os.listdir(f"{md}/point_cloud") if q.sta
 v = PlyData.read(f"{md}/point_cloud/iteration_{it}/point_cloud.ply")["vertex"]
 x = np.stack([v["x"], v["y"], v["z"]], 1).astype(np.float32); op = 1 / (1 + np.exp(-np.asarray(v["opacity"], np.float64)))
 c = json.load(open(cf)); x = x[op > c["opacity_threshold"]]
+if "_floor_gap" in c: drop = float(c["_floor_gap"])                      # 레고 L000 세팅: 바닥 = 최저점 - lift
 for dg, ax in zip(c["rotation_degree"], c["rotation_axis"]):
     cs, sn = math.cos(dg / 180.0 * 3.1415926), math.sin(dg / 180.0 * 3.1415926)
     R = {0: [[1, 0, 0], [0, cs, -sn], [0, sn, cs]], 1: [[cs, 0, sn], [0, 1, 0], [-sn, 0, cs]], 2: [[cs, -sn, 0], [sn, cs, 0], [0, 0, 1]]}[int(ax)]
@@ -17,4 +18,4 @@ zmin = float(x[:, 2].min()); zf = round(zmin - drop, 4)
 for b in c["boundary_conditions"]:
     if b["type"] == "surface_collider": b["point"][2] = zf
 json.dump(c, open(cf, "w"), indent=1, ensure_ascii=False)
-print(f"[바닥] 가우시안 {len(x)} 최저점 z {zmin:.4f} -> 바닥 z {zf} (낙하 {drop}); 상자 {x.min(0).round(3)} ~ {x.max(0).round(3)}")
+print(f"[바닥] (간격 {drop}) 가우시안 {len(x)} 최저점 z {zmin:.4f} -> 바닥 z {zf} (낙하 {drop}); 상자 {x.min(0).round(3)} ~ {x.max(0).round(3)}")

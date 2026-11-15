@@ -49,7 +49,7 @@ if [ "$HAVE" -ge $((NF + 1)) ]; then
   if grep -q "i-physgaussian" $O/RUNNER; then GTL="정답 (PG 사본)"; else GTL="정답 (PhysGaussian)"; fi; say "[정답] R2 에 있음 ($HAVE) -> 받음, $GTL"
 else
 O=$W/gt/$SC; OC=$W/gt/${SC}_ipg; mkdir -p $O $OC; t0=$(date +%s)
-(cd $PGU && WARP_CACHE_PATH=$W/wpc timeout 1200 python -u gs_simulation.py --model_path $MD --config $CFG --output_path $O --output_h5 < /dev/null > $O/run.log 2>&1) & PU=$!
+(cd $PGU && WARP_CACHE_PATH=$W/wpc timeout ${NS_PGU_TO:-600} python -u gs_simulation.py --model_path $MD --config $CFG --output_path $O --output_h5 < /dev/null > $O/run.log 2>&1) & PU=$!
 (cd $IPG && WARP_CACHE_PATH=$W/wpc2 timeout 3600 python -u gs_simulation.py --model_path $MD --config $CFG --output_path $OC --output_h5 < /dev/null > $OC/run.log 2>&1) & PC=$!
 wait $PU; rcu=$?; nu=$(ls $O/simulation_ply 2>/dev/null | grep -c h5)
 say "[정답 원본] rc=$rcu 프레임 $nu $(( $(date +%s) - t0 )) 초 $(grep -a 'rror' $O/run.log | tail -1 | cut -c1-200)"
@@ -64,7 +64,7 @@ fi
 cp $CFG $O/config.json; rclone copy $O $DS/gt_pg/$SC --transfers 16 -q; say "[정답] $GTL R2 올림 $DS/gt_pg/$SC"
 fi
 cd $AF
-python -u exe/pg_h5_to_pt.py --h5_dir $O/simulation_ply --config $CFG --out_pt $AG/$SC.pt --out_dir $AG/gt_$SC --v0_from_bc > $W/cv_$SC.log 2>&1 || { say "[변환 실패] $(tail -1 $W/cv_$SC.log)"; echo "변환 실패" | rclone rcat $RX/$TAG.END; exit 1; }
+python -u exe/pg_h5_to_pt.py --h5_dir $O/simulation_ply --config $CFG --out_pt $AG/$SC.pt --out_dir $AG/gt_$SC $(python -c "import json;print('--v0_from_bc' if any(b['type']=='enforce_particle_translation' for b in json.load(open('$CFG'))['boundary_conditions']) else '')") > $W/cv_$SC.log 2>&1 || { say "[변환 실패] $(tail -1 $W/cv_$SC.log)"; echo "변환 실패" | rclone rcat $RX/$TAG.END; exit 1; }
 rclone cat $R/lbours/wolfcv/cm157/BA_1/cmd.txt > $W/BA_1.txt
 # ---- (3) 우리 판 K=1, (4) 단독 시간 판
 run1() { local sfx=$1 drop=$2 nodump=$3; local D=$W/ours/${SC}_K1${sfx}; mkdir -p $D
@@ -92,7 +92,7 @@ CB=${NS_CAMBACK:-1.6}; EL=${NS_ELEV:-40}; B2=${NS_BACK2:-1.1}
 python -u exe/lb_roll_to_h5.py --dump $D/pred.pt --traj $AG/gt_$SC --out $D/h5_ours > $D/h5.log 2>&1
 CUDA_VISIBLE_DEVICES=0 python -u exe/lb_render.py --sim $AG/gt_$SC --config $CFG --shape $SC --out $D/gt.mp4 --cam_back $CB --elev $EL --back2 $B2 --png $D/gt_png < /dev/null > $D/r_gt.log 2>&1
 CUDA_VISIBLE_DEVICES=0 python -u exe/lb_render.py --sim $D/h5_ours --config $CFG --shape $SC --out $D/ours.mp4 --cam_back $CB --elev $EL --back2 $B2 --png $D/ours_png < /dev/null > $D/r_ours.log 2>&1
-python -u exe/gfs_post.py vid --gt_label "$GTL" --our_label "우리 K=1  오차 ${ERR}%  ${MS} ms" --gt_png $D/gt_png --our_png $D/ours_png --out_json $D/visual.json --out_mp4 $D/cmp_raw.mp4 --font $W/font.otf --fps 25 > $D/vid.log 2>&1
+python -u exe/gfs_post.py vid --gt_label "$GTL" --our_label "우리 K=1  오차 ${ERR}%  ${MS} ms" --gt_png $D/gt_png --our_png $D/ours_png --out_json $D/visual.json --out_mp4 $D/cmp_raw.mp4 --font $W/font.otf --fps $(python -c "import json;print(round(1/json.load(open('$CFG'))['frame_dt'])))") > $D/vid.log 2>&1
 V=$D/${SC}_K1_cmp.mp4
 ffmpeg -y -loglevel error -i $D/cmp_raw.mp4 -vf "scale='min(2400,iw)':-2,format=yuv420p" -c:v libx264 -crf 18 -movflags +faststart $V
 DEC=$(ffmpeg -v error -i $V -f null - 2>&1 | wc -l)

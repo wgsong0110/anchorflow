@@ -27,7 +27,7 @@ import torch
 W = "/home/dkta/work"
 MODEL = {"lego": "lego_whitebg-trained", "ficus": "ficus_whitebg-trained", "wolf": "wolf_whitebg-trained", "bread": "bread-trained"}
 MODEL.update({"chair_plasticine": "chair", "drums_foam": "drums", "materials_sand": "materials", "materials_metal": "materials", "ball_metal": "ball"})
-MODEL.update({"chair_elastic": "chair", "ship_plastic": "ship", "mic_metal": "mic", "mic_plastic": "mic", "mic_elastic": "mic", "ship_elastic": "ship"})      # elastic_new      # 절 CM186 새 형상 (pgmodel/<물체>, 직접 학습한 3DGS·DreamPhysics ball)
+MODEL.update({"chair_elastic": "chair", "ship_plastic": "ship", "mic_metal": "mic", "mic_plastic": "mic", "mic_elastic": "mic", "ship_elastic": "ship", "ship_plastic_lego": "ship", "mic_metal_lego": "mic"})      # elastic_new      # 절 CM186 새 형상 (pgmodel/<물체>, 직접 학습한 3DGS·DreamPhysics ball)
 
 
 class Cfg:
