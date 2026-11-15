@@ -107,6 +107,7 @@ ap.add_argument("--fl_nost", action="store_true", help="절 CM6 진단 전용 (�
 ap.add_argument("--fl_dhm", type=float, default=1.0, help="절 CM6 진단 전용 (채택 후보 아님): 장벽 두께 d̂ = 이 값 x ½ dx_정답 (κ 도 같은 식 (λ+2μ) V_q / d̂²)")
 ap.add_argument("--hgt", action="store_true", help="절 CM6 진단 (결과 불변): 프레임마다 정답·우리 높이 (질량 중심·최대·99 백분위, 바닥 법선 방향) 를 fem.jsonl hg·hp 에")
 ap.add_argument("--fp_interp", action="store_true", help="절 CM20 (사용자 승인 11-07 정의 변경, --ga 만; 절 CM22 재질 판 (wolf 모래·bread) 도 -- 마지막 걸음도 가우스 점 커밋 (RM) 뒤 F·재질 상태 교체): 입자 F 를 G2P 누적 F ← A(x_p) F 대신 프레임 끝 가우스 점 F_q^end = A(x_q) F_q 의 칸 안 삼선형 보간 (회전·로그 신장 분리 평균, rt_gauss 규칙) 으로 교체. 끄면 예전과 비트 같음")
+ap.add_argument("--fpi_el", type=int, default=0, help="절 CM191 (기본 0 = 소스 그대로): 1 이면 --fp_interp 를 탄성 재질에만 -- 재질 판 (sand·foam·plasticine·watermelon·metal, 반환 사상 있는 재질) 은 --fp_interp 를 끄고 입자 F = G2P 누적 (걸음별 RM, 입자 소성 이력) 을 씀")
 ap.add_argument("--gq_mass", action="store_true", help="절 CM9 (사용자 승인 정의 변경): 노드 질량·운동량 (HHT 입자 가속도 몫도) 을 입자 -> 자기 팔분 가우스 점 -> 노드 (힘과 같은 점 x_q·같은 가중·같은 기저 w_n(x_q)) 로. 끄면 예전과 비트 같음")
 ap.add_argument("--gq_chk", action="store_true", help="절 CM9 진단 (결과 불변): 프레임마다 노드 질량·운동량·가속도 몫 합 대 입자 합 상대 차를 fem.jsonl gqchk 에 (구속 입자 속도를 바꾸는 --pbc 씬은 뜻 없음)")
 ap.add_argument("--lift_cells", type=int, default=0, help="절 CM11 진단 (사용자 지시): 처음 입자 위치 전체를 바닥 법선 방향으로 이 정수 x B-스플라인 칸 크기 h (= 격자 행렬 A 의 열 길이) 만큼 띄워 시작 (초기 속도·질량·F·구속 입자 선택·빈 노드 문턱은 원래 위치로 그대로); 오차 err 는 정답 그대로 대비, err_lift 는 띄운 거리 빼고")
@@ -273,6 +274,9 @@ SOLVER = ADET.DetRT if a.det else ART.RTSolver
 MATX = {}
 SNHX = dict(snh=True) if a.elx == "snh" else {}                                    # 절 CM18: 탄성 판만 (MATX 에 안 넣음 -- MATX 가 차면 재질 판 발산 판정이 켜짐)
 MATNAME = cfg.get("material")
+if a.fpi_el and a.fp_interp and MATNAME in ("sand", "foam", "plasticine", "watermelon", "metal"):     # 절 CM191: 반환 사상 재질은 가우스 점 F 보간 교체를 하지 않음
+    a.fp_interp = False
+    print(f"[절 CM191 --fpi_el] 재질 {MATNAME}: --fp_interp 끔 (입자 F = G2P 누적)", flush=True)
 if MATNAME in ("sand", "foam", "plasticine", "watermelon", "metal"):                            # 절 CM2: 재질 판 (lib/anchorflow/fem_mat_rt.py) -- 같은 실행기·같은 인자
     assert a.elx == "fcr", "--elx snh 는 탄성 판만 (재질 판 수박은 exe/fem_ao_rt_sim.py --elx, 절 CM13)"     # 절 CM22: --fp_interp·--qjd 재질 판도 (끄면 그대로)
     from anchorflow import fem_mat_rt as MRT

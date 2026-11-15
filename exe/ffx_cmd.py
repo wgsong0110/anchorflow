@@ -10,7 +10,7 @@
   cgN      --cg N               tpX      --tolP X (X 는 점 없이, 예 tp3e-1)              nofpi    --fp_interp 뺌
   ssw      ssfix 바깥 감싸개 넣음 (old 에)                       mlow / nomlow   --mlow 1e-3 넣음 / 뺌
   uelN     --ue_loc N           wcN      --wrx_col N           dump     --dump --dump_F --dump_part
-  pfx      --fp_interp 넣음 (없으면)
+  pfx      --fp_interp 넣음 (없으면)   fel  --fpi_el 1 (--fp_interp 탄성 재질에만)   wrxN  --wrx N
 새 기본 판 후보 이름은 절 CM191 이 정하면 여기에 별칭으로 둔다 (NEW)."""
 import json, os, re, subprocess, sys
 scene, var, rep, out = sys.argv[1:5]
@@ -51,6 +51,10 @@ for m in mods:
         assert re.search(r" --ue_loc \d+ ", c); c = re.sub(r" --ue_loc \d+ ", f" --ue_loc {m[3:]} ", c)
     elif re.match(r"wc\d$", m):
         assert re.search(r" --wrx_col \d+ ", c); c = re.sub(r" --wrx_col \d+ ", f" --wrx_col {m[2:]} ", c)
+    elif m == "fel":                                   # 절 CM191: --fp_interp 는 탄성 재질에만 (실행기 --fpi_el 1)
+        if " --fpi_el " not in c: c = c.replace(" --K ", " --fpi_el 1 --K ", 1)
+    elif re.match(r"wrx\d$", m):
+        assert re.search(r" --wrx \d+ ", c); c = re.sub(r" --wrx \d+ ", f" --wrx {m[3:]} ", c)
     elif m == "dump":
         if " --dump " not in c: c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1)
     else:
