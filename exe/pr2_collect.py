@@ -6,7 +6,7 @@ import sys
 
 R = "r2:storage/result/anchorflow/lbours/paper_remeasure2"
 G = []
-for T in ["A", "B", "C", "D", "E", "F", "H", "D2", "F2", "H2"]:                           # 뒤 샤드가 앞 샤드를 이김 (D2·F2·H2 = 회전 구동기 구현 뒤 다시 잰 것)
+for T in ["A", "B", "C", "D", "E", "F", "H", "D2", "F2", "H2", "F3", "E2"]:                           # 뒤 샤드가 앞 샤드를 이김 (D2·F2·H2 = 회전 구동기 구현 뒤 다시 잰 것)
     r = subprocess.run(["rclone", "cat", f"{R}/stab_{T}/grid.json"], capture_output=True, text=True)
     if r.returncode == 0 and r.stdout.strip():
         for g in json.loads(r.stdout):
@@ -15,7 +15,7 @@ for T in ["A", "B", "C", "D", "E", "F", "H", "D2", "F2", "H2"]:                 
 best = {}
 for g in G:                                                                             # 같은 (장면, 방법, N) 이 여러 샤드에 있으면 완주가 많은 쪽 (C 의 phystwin ficus 는 절대 경로 문제로 실패 -> H 에서 다시 잼)
     k = (g["scene"], g["method"], g["N"])
-    if k not in best or g["ok"] > best[k]["ok"] or (g["ok"] > 0 and g["shard"] in ("D2", "F2", "H2")):
+    if k not in best or g["ok"] > best[k]["ok"] or (g["ok"] > 0 and g["shard"] in ("D2", "F2", "H2", "F3", "E2")):
         best[k] = g
 G = list(best.values())
 G = [g for g in G if g["scene"] != "L000"]
