@@ -44,7 +44,7 @@ prep)
   ( CUDA_VISIBLE_DEVICES=0 $PY -u exe/simplicits_weights.py --pts $IN/aux_${S}_pts.npy --out $IN/simp_$S.pt > $O/simp_$S.log 2>&1; say "simplicits $(tail -1 $O/simp_$S.log | cut -c1-200)" ) &
   ( cd $PG && CUDA_VISIBLE_DEVICES=1 $PY -u $OLDPWD/exe/rep_render.py --aux $IN/aux_$S.npz --target --flow $IN/gflow_$S.npz --out $IN/${S}_target.mp4 > $O/target_$S.log 2>&1; say "목표 영상 $(tail -1 $O/target_$S.log | cut -c1-200)" ) &
   wait
-  rclone copy $IN $R/inputs/$S -q --include "*_$S*" --include "*$S.*" --include "${S}_target.mp4"; say "prep 끝 $(ls $IN | tr '\n' ' ')"
+  rclone copy $IN $R/inputs/$S -q --include "*_$S*" --include "*$S.*" --include "${S}_target.mp4"; touch $IN/PREP_DONE_$S; say "prep 끝 $(ls $IN | tr '\n' ' ')"
   ;;
 cal)
   # bread 1 프레임: 기존 r10 첫 프레임 값 (PhysTwin k10 RMSE 0.325%, GS-Verse 0.324%, Simplicits 0.546%) 과 맞는 플래그를 찾는다
@@ -72,22 +72,24 @@ PYEOF
   ;;
 main)
   fetch_model $MODEL
-  for f in gflow_$S.npz aux_$S.npz simp_$S.pt ${S}_target.mp4; do [ -s $IN/$f ] || rclone copyto $R/inputs/$S/$f $IN/$f -q; done
+  for f in gflow_$S.npz aux_$S.npz simp_$S.pt ${S}_target.mp4; do
+    [ -s $IN/$f ] || { until rclone lsf $R/inputs/$S/$f 2>/dev/null | grep -q .; do sleep 30; done; sleep 20; rclone copyto $R/inputs/$S/$f $IN/$f -q; }   # prep 가 다른 인스턴스에서 끝나기를 기다림
+  done
   D=$O/main; mkdir -p $D
-  ( while :; do sleep 600; rclone copy $D $R/main/$S -q --exclude "*.frames/**"; done ) & SYNC=$!
+  ( while :; do sleep 600; rclone copy $D $R/main/$S -q; done ) & SYNC=$!
   one() { local m=$1 g=$2 n=${1}_$S c vid
     if [ ${m#pt} != $m ]; then while ! rclone lsf $R/flags.txt >/dev/null 2>&1; do sleep 30; done; PTF=$(rclone cat $R/flags.txt | grep -v '^#' | head -1); fi
     c=$(cmd_of $m); [ -f $D/$n.npz ] || { say "$n 카드 $g 시작: $c"
       echo "CUDA_VISIBLE_DEVICES=$g $PY -u $c --out $D/$n.npz --resume --video $D/$n.mp4 --save_traj" > $D/$n.cmd.txt
       CUDA_VISIBLE_DEVICES=$g $PY -u $c --out $D/$n.npz --resume --video $D/$n.mp4 --save_traj < /dev/null >> $D/$n.log 2>&1; say "$n rc=$? $(grep -a '요약\|rror' $D/$n.log | tail -2 | cut -c1-260 | tr '\n' ' ')"; }
-    rclone copy $D $R/main/$S -q --exclude "*.frames/**"
+    rclone copy $D $R/main/$S -q
     mkdir -p $D/metrics; [ -f $D/metrics/$n.json ] || { CUDA_VISIBLE_DEVICES=$g $PY -u exe/rep_metrics.py --res $D/$n.npz --flow $IN/gflow_$S.npz --video $D/$n.mp4 \
       --target_video $IN/${S}_target.mp4 --out $D/metrics/$n.json < /dev/null > $D/metrics/$n.log 2>&1; say "지표 $n rc=$? $(grep -a '측정\|rror' $D/metrics/$n.log | tail -2 | tr '\n' ' ')"; }
-    rclone copy $D $R/main/$S -q --exclude "*.frames/**"; }
+    rclone copy $D $R/main/$S -q; }
   P=""; i=0
-  for m in hex vrgsx gsverse simp pt1 pt10 pt100 pt1000; do one $m $((i % NG)) & P="$P $!"; i=$((i + 1)); sleep 5; done
+  for m in ${JOBS:-hex vrgsx gsverse simp pt1 pt10 pt100 pt1000}; do one $m $((i % NG)) & P="$P $!"; i=$((i + 1)); sleep 5; done
   wait $P; kill $SYNC 2>/dev/null
-  rclone copy $D $R/main/$S -q --exclude "*.frames/**"; say "main 끝"
+  rclone copy $D $R/main/$S -q; say "main 끝"
   ;;
 esac
 done
