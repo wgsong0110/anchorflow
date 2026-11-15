@@ -25,12 +25,12 @@ new = '''    _XR = gs.get_xyz[KIDX] @ RT.T if ROT else gs.get_xyz[KIDX]
 if old in s and "_XR" not in s:
     open(f, "w").write(s.replace(old, new, 1)); print("패치 sim_area", f)
 
-# 다시점 렌더 (stab_mv_render.py, Spring-Gaus 준비 판) 도 같은 sim_area 자르기 (vasedeck·plane)
+# 다시점 렌더 (stab_mv_render.py, Spring-Gaus 준비 판) 도 같은 sim_area 자르기 (vasedeck·plane; final_pa_bl: pillow2sofa 도 -- 자르지 않으면 정답 h5 와 가우시안 번호 대응 오차 0.88, 자르면 0)
 f = "exe/stab_mv_render.py"
 s = open(f).read()
 old = '''TP, SO, MEAN = transform2origin(gs.get_xyz[KIDX] @ _RT.T if ROT else gs.get_xyz[KIDX], float(cfg.get("scale", 1.0)))\n'''
 new = '''_XR = gs.get_xyz[KIDX] @ _RT.T if ROT else gs.get_xyz[KIDX]
-if a.shape in ("vasedeck", "plane") and cfg.get("sim_area") is not None:                     # PG 전처리 sim_area 자르기 (paper_remeasure2)
+if a.shape in ("vasedeck", "plane", "pillow2sofa") and cfg.get("sim_area") is not None:                     # PG 전처리 sim_area 자르기 (paper_remeasure2)
     _b = cfg["sim_area"]
     _m = torch.ones(_XR.shape[0], dtype=torch.bool, device=_XR.device)
     for _i in range(3):
