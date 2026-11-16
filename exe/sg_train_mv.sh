@@ -32,10 +32,14 @@ mkdir -p $(dirname $DATA); [ -s $DATA ] || rclone copyto $DSRC $DATA -q
 if [ $S = p2s ]; then E=stab_pillow2sofa_2026_1116_0645_20; [ -s $F/exp/$E/dump_cfg.yaml ] || rclone copy $OX/p/$(basename $F)/exp/$E $F/exp/$E -q --exclude "evaluations/**" --exclude "dynamic_refine/**"; fi
 rm -rf $C; mkdir -p $C; rclone cat $CT | tar -x -C $C; [ -n "$OV" ] && rclone cat $OV | tar -x -C $C
 python -c "import open3d" 2>/dev/null || { (apt-get install -y -qq libegl1 libgl1 libglib2.0-0 libgomp1 || (apt-get update -qq && apt-get install -y -qq libegl1 libgl1 libglib2.0-0 libgomp1)) >/dev/null 2>&1; python -c "import open3d" 2>/dev/null || pip install -q open3d >/dev/null 2>&1; }
+PPX=""
+if ! python -c "import open3d" 2>/dev/null; then                                           # AVX 없는 CPU (QEMU) 에서 open3d 가 SIGILL -- 동역학 학습에서 o3d 는 VIZ_INTERVAL (999999) 시각화·공식 평가 (건너뜀) 에만 쓰임
+  mkdir -p /root/o3dstub/open3d; printf 'def __getattr__(n):\n    raise RuntimeError("open3d stub (AVX 없음): " + n)\n' > /root/o3dstub/open3d/__init__.py; PPX=/root/o3dstub:; say "open3d 대체 모듈 (쓰이면 오류)"
+fi
 say "준비 끝: 저장점 $(python -c "import torch;print(torch.load('$F/sg_resume/cur/checkpoint/state.pt',map_location='cpu',weights_only=False)['iter'])" 2>/dev/null || echo 없음), 카드 $(nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader)"
 if [ ! -s $F/sg_train.json ]; then
   cd $C
-  env CUDA_VISIBLE_DEVICES=0 PYTHONUTF8=1 OMP_NUM_THREADS=8 WANDB_MODE=disabled PYTHONPATH=/dev/shm/dkta/pylib/sg SG_RESUME_EVERY=5 SG_RESUME_R2_MAP="$O=$OX" $ENVX \
+  env CUDA_VISIBLE_DEVICES=0 PYTHONUTF8=1 OMP_NUM_THREADS=8 WANDB_MODE=disabled PYTHONPATH=${PPX}/dev/shm/dkta/pylib/sg SG_RESUME_EVERY=5 SG_RESUME_R2_MAP="$O=$OX" $ENVX \
     python -u exe/stab_sg.py --mode train --sg /dev/shm/dkta/ext/Spring-Gaus --fit $F --out $F \
     --data $DATA --tag $TAG --frames 300 --floor none --cfg_bc --pg_vdamp >> $F/$LG 2>&1
   rc=$?; say "학습 rc=$rc $(cat $F/sg_train.json 2>/dev/null | tr -d '\n ' | head -c 300)"
