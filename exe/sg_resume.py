@@ -8,9 +8,9 @@
     SG_RESUME_R2_MAP="<로컬 앞부분>=<R2 앞부분>" 이면 저장 직후 rclone 으로 R2 에 바로 올림 (뒤에서).
   - 재개: 같은 cfg (dump_cfg.yaml 원문 같음) 의 가장 늦은 저장점을 찾아 공식 dy_reload 경로로 시뮬레이터·가우시안을 만들고 (공식 규약: 정제 단계 건너뜀),
     옵티마이저·난수·반복 번호를 넣은 뒤 그 다음 반복부터 공식 train_step 을 그대로 돌림. n_step 증가 일정 (N_STEP_ITER) 은 반복 번호로 정해지므로 그대로 이어짐.
-  - 옛 체크포인트 (공식 SAVE_INTERVAL 100: exp/*/checkpoints_dynamic/checkpoint/) 에서도 재개 가능 -- 단 공식 저장에는 가우시안 옵티마이저 상태가 없어
+  - SG_RESUME_LEGACY=1 이면 옛 체크포인트 (공식 SAVE_INTERVAL 100: exp/*/checkpoints_dynamic/checkpoint/) 에서도 재개 (기본 끔) -- 단 공식 저장에는 가우시안 옵티마이저 상태가 없어
     그 Adam 모멘트만 새로 시작 (근사; 로그에 '옛 체크포인트 근사 재개' 표시). 시뮬레이터 옵티마이저·난수·n_step·반복 번호는 정확.
-  환경: SG_RESUME=0 끔, SG_RESUME_EVERY (기본 5), SG_RESUME_STOP_AT (검증용: 이 반복 저장 뒤 프로세스 종료)."""
+  환경: SG_NO_EMPTY_CACHE=1 (동역학 반복 안 empty_cache 끔, 결과 불변 가속), SG_RESUME=0 끔, SG_RESUME_EVERY (기본 5), SG_RESUME_STOP_AT (검증용: 이 반복 저장 뒤 프로세스 종료)."""
 import glob
 import json
 import os
@@ -67,7 +67,7 @@ def _cands(FIT, dump_cfg, n_iter):
                     _log(f"{f}: cfg 다름 -> 안 씀")
             except Exception as ex:                                                  # noqa: BLE001
                 _log(f"{f}: 읽기 실패 {ex!r}")
-    for d in glob.glob(f"{FIT}/exp/*/checkpoints_dynamic/checkpoint/"):
+    for d in (glob.glob(f"{FIT}/exp/*/checkpoints_dynamic/checkpoint/") if os.environ.get("SG_RESUME_LEGACY", "0") == "1" else []):   # 옛 체크포인트 (근사) 는 켤 때만
         need = ("train_param.pth.tar", "Spring_Mass.pth.tar", "random_state.pkl", "gaussians.ply", "anchors.pt", "dy_n_step.json")
         if not all(os.path.exists(d + q) for q in need):
             continue
@@ -93,7 +93,12 @@ def install(T, FIT, arg, cfg, exp_dir):
     if best is not None:
         it, new, ck, st = best
         arg.dy_reload = f"{ck}/Spring_Mass.pth.tar"                                   # 공식 dy_reload 경로: 가우시안 ply·앵커·가중치·n_step 적재, 정제 단계 건너뜀
+        fz = cfg.is_frozen() if hasattr(cfg, "is_frozen") else False
+        if fz:
+            cfg.defrost()
         cfg.DYNAMIC.PRETRAINED = arg.dy_reload
+        if fz:
+            cfg.freeze()
         ctx.update(start=it + 1, load=(new, ck, st))
         _log(f"재개: 반복 {it} 끝난 저장점 {ck} ({'새 형식 정확' if new else '옛 체크포인트 근사 재개 (가우시안 Adam 모멘트만 새로)'}) -> 반복 {it + 1} 부터")
     else:
@@ -191,10 +196,15 @@ def install(T, FIT, arg, cfg, exp_dir):
                 ctx["rng"] = dict(py=rs.random_rng_state, np=rs.numpy_rng_state, torch=rs.torch_rng_state, cuda=rs.torch_cuda_rng_state_all)
             _log(f"적재 끝: 반복 {ctx['start']} 부터, n_step {simulator.n_step}")
         T.etqdm = Bar
+        ec0 = torch.cuda.empty_cache
+        if os.environ.get("SG_NO_EMPTY_CACHE", "0") == "1":                         # 가속: 프레임마다 부르는 캐시 비우기만 끔 (할당기 동작만; 계산·난수 불변 -- exe/sgr_test 로 확인)
+            torch.cuda.empty_cache = lambda: None
+            _log("torch.cuda.empty_cache 끔 (SG_NO_EMPTY_CACHE=1)")
         try:
             return train_step0(*a, **k)
         finally:
             T.etqdm = etqdm0
+            torch.cuda.empty_cache = ec0
             if ctx["sync"] is not None:
                 ctx["sync"].wait()
 
