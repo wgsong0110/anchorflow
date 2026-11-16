@@ -49,6 +49,28 @@ def missing(rows):
     return sorted(rows + add, key=order)
 
 
+# 자유낙하 해당 없음 (장면 조건, 정의는 그대로): 접촉 전 프레임이 없음 (레고: 0 프레임부터 최저점이 바닥 + 1.5 dx 안) 또는
+# 외부 구속이 일을 함 (wolf: PG config release_particles_sequentially 로 층마다 풀림 -> 자유낙하 아님)
+FF_NA = dict(wolf="wolf: PG config release_particles_sequentially (층별 순차 풀림) 구속 -> 자유낙하 구간 아님")
+for r in P:
+    if r.get("frames") is None:
+        continue
+    if r.get("scene") in FF_NA:
+        r["freefall_mom_err_raw"] = r.get("freefall_mom_err"); r["freefall_mom_err"] = None; r["note"] = (r.get("note", "") + "; " + FF_NA[r["scene"]]).strip("; ")
+    elif r.get("freefall_frames") == 0:
+        r["freefall_mom_err"] = None; r["note"] = (r.get("note", "") + "; 접촉 전 프레임 없음 (0 프레임부터 최저점이 바닥 + 1.5 dx 안) -> 자유낙하 해당 없음").strip("; ")
+
+
+def e0_na(rows):
+    for r in rows:
+        if r.get("frames") is not None and r.get("E0") is not None and abs(r["E0"]) < 1e-12:
+            r["e_drift_max_raw"] = r.get("e_drift_max"); r["e_drift_max"] = None; r["e_ratio_last"] = None
+            r["note"] = (r.get("note", "") + "; E_0 = 0 (중력 0 이고 처음 정지) -> 에너지 비 해당 없음").strip("; ")
+
+
+e0_na(P)
+
+
 def var_of(r):
     j = r.get("job", "")
     return j[len(f"ours_{r['scene']}_"):] if j.startswith("ours_") else None
@@ -126,7 +148,7 @@ L += [r"\end{tabular}", "",
       r"det$\le$0 = det$F\le0$ 입자 비율의 프레임 최대; det 최소 = 전 프레임$\cdot$전 입자; $|J{-}1|$ = 프레임 평균 $|\det F-1|$ 의 최대; $\Delta V$ = 마지막 프레임 $\sum_i V_i(J_i-1)/\sum_i V_i$; "
       r"관통 = 부분표본 (32768 점) 바닥 아래 최대 깊이$/L$ ($L$ = 0 프레임 대각선) 와 바닥 아래 비율 최대; $\Delta E_{\max}/|E_0|$ = 운동+중력 위치 에너지 $\max_t(E_t-E_0)/|E_0|$ (위치 기준 = 바닥, 바닥 없으면 0 프레임 최저점), $E_T/E_0$ = 마지막/처음; "
       r"자유낙하 = 접촉 전 프레임에서 운동량 크기 $\sqrt{2MK_t}$ 와 $M|g|t$ 의 상대 오차 최대; 떨림 = 부분표본 $\|x_{t+1}-2x_t+x_{t-1}\|/L$ 전 구간 평균. "
-      r"-- = 해당 없음: 바닥 없는 장면 (pillow2sofa$\cdot$bread, 실행이 바닥 없음) 의 관통$\cdot$자유낙하, 변형 기울기가 없는 스프링-질량 표현 (PhysTwin$\cdot$Spring-Gaus) 의 det$\cdot$부피. "
+      r"-- = 해당 없음: 바닥 없는 장면 (pillow2sofa$\cdot$bread, 실행이 바닥 없음) 의 관통$\cdot$자유낙하, bread 의 에너지 비 (중력 0$\cdot$처음 정지라 $E_0=0$), 레고의 자유낙하 (0 프레임부터 최저점이 바닥 $+1.5dx$ 안이라 접촉 전 프레임 없음), wolf 의 자유낙하 (PG config 의 층별 순차 풀림 구속이 일을 해 자유낙하가 아님), 변형 기울기가 없는 스프링-질량 표현 (PhysTwin$\cdot$Spring-Gaus) 의 det$\cdot$부피. "
       r"final\_blx = 탄성 전용 베이스라인의 bread$\cdot$wolf 는 재질 확장 실험에서 같은 정의로 잼. bread 는 손잡이 구속이 일을 하고 pillow2sofa 는 구간 고정이 풀리므로 에너지 증가가 곧 오류는 아님. "
       r"우리 $N$ = 프레임당 걸음 수 $K$ (K1 = 기본 판, 적응 쪼개기), 정답 MPM $N$ = PG 공식 config 서브스텝, 베이스라인 $N$ = 대표 설정 서브스텝.",
       r"\end{minipage}", r"\end{center}"]
