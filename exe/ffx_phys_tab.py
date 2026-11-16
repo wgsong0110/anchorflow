@@ -9,7 +9,7 @@ import sys
 
 src, out, paper = sys.argv[1:4]
 SC = [("L000", "레고"), ("pillow2sofa", "pillow2sofa"), ("bread", "bread"), ("wolf", "wolf")]
-MS = [("mpm", "정답 MPM (PG)"), ("ours", "우리"), ("vrgs", "VR-GS"), ("phystwin", "PhysTwin"), ("springgaus", "Spring-Gaus")]
+MS = [("mpm", "정답 MPM (PG)"), ("ours", "우리"), ("ipg", "i-PG"), ("omni", "OmniPhysGS"), ("vrgs", "VR-GS"), ("phystwin", "PhysTwin"), ("springgaus", "Spring-Gaus")]   # 절 CM192: i-PG·OmniPhysGS 추가
 ELONLY = ("vrgs", "phystwin", "springgaus")
 SKIP = ("dV_series", "E_series")
 P, V = [], []
@@ -80,8 +80,8 @@ PAR = ("def", "k2", "k4")
 for r in P + V:
     if r["method"] == "ours":
         r["variant"] = var_of(r)
-AP = [r for r in P if r["method"] == "ours"]
-AV = [r for r in V if r["method"] == "ours"]
+AP = [r for r in P if r["method"] == "ours" and not str(r.get("variant")).rsplit("_", 1)[-1] in ("r2", "r3")]   # 절 CM192: 노이즈용 반복 폴더 (ours_<장면>_def_r2·r3) 는 표에서 뺌
+AV = [r for r in V if r["method"] == "ours" and not str(r.get("variant")).rsplit("_", 1)[-1] in ("r2", "r3")]
 P = [r for r in P if r["method"] != "ours" or r.get("variant") in PAR]
 V = [r for r in V if r["method"] != "ours" or r.get("variant") in PAR]
 P, V = missing(P), missing(V)
