@@ -158,6 +158,10 @@ def run1(m, n, rep):
         o0 = f"{L.res_dir(S, rep)}/{m}_N{n}"
         if stale_fin(o0 + ".fin", o0 + ".log"):
             say("끊긴 판 다시", S, m, n, rep); os.remove(o0 + ".fin")
+        elif os.path.exists(o0 + ".fin"):                 # [stabfinal] 예전 시간 제한에 걸린 판 (rc=-9) 은 지금 제한이 더 길면 다시 (mic i-PG N8·16: 3 시간 제한, 카드 넷이 나눠 써 프레임당 240~390 초)
+            mm = re.match(r"rc=-9 (\d+)s", open(o0 + ".fin").read().strip())
+            if mm and int(mm.group(1)) < a.timeout - 60:
+                say("시간 제한 판 다시 (제한", a.timeout, "s)", S, m, n, rep); os.remove(o0 + ".fin")
     if m == "ours":
         d = L.hex_dir(S, n, rep) + a.hextag
         if os.path.exists(f"{d}/FIN"):
