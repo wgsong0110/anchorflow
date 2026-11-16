@@ -11838,3 +11838,4 @@ bloc 2 는 chair 무게중심을 프레임 9 까지 정답에 맞춤 (0.361 대 
 ### CM196.3 E 표 wolf 행 (A6000 단독, 1 회; R2 runs_wolfN/wolf_ssN.bs2.gran_r1, 시작·끝 모두 카드에 다른 계산 프로세스 없음)
 - N 1·2·4·8·16·32·64·128: 오차 4.25 (옛 판 그대로)·3.51·3.35·2.66·2.17·1.80·1.76·1.86 %, ms 21 (그대로)·24.9·41.9·78.5·158.7·320.0·642.3·1516.6.
 - 물리·시각 지표는 덤프 판 wolf_ssN.dump.bs2.gran_r1 -> R2 final_fix/phys/ours_wolf_ssN.dump_gran (exe/ffx_mq_worker.sh, 대기열 final_fix_wolft_granmq).
+- 물리·시각 (덤프 판, 표 ablation_final_1115_metrics.tex wolf ssN): N2~64 det≤0 0 %, N128 만 det≤0 0.001 % (det 최소 −1.0, 입자 소수 뒤집힘); 떨림 0.83~1.45 (옛 0.80~1.26), PSNR 29.4~30.8 (옛 29.3~29.4) -- 원본 표 갱신 writing/anchorflow 6ec5781 (02:28 KST). 덤프 ss32·64·128 은 다른 작업과 카드 공유 중 실행 (시간 무관).
