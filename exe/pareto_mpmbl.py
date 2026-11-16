@@ -96,6 +96,11 @@ if a.method in ("ipg", "pg"):
     if a.method == "ipg":
         from implicit_mpm_solver import ImplicitMPMSolver     # noqa: E402
         sol = ImplicitMPMSolver(n_particles=10, n_grid=n_grid, grid_lim=GL)
+        if os.environ.get("AF_IPG_FAST") == "1":              # 같은 알고리즘, 자유 노드 압축 (exe/ipg_fast.py)
+            sys.path.insert(0, HERE)
+            from ipg_fast import newton_gmres_fast              # noqa: E402
+            ImplicitMPMSolver.p2g2p_newton_gmres = newton_gmres_fast
+            print("[AF_IPG_FAST] exe/ipg_fast.newton_gmres_fast", flush=True)
     else:
         from mpm_solver_warp.mpm_solver_warp import MPM_Simulator_WARP   # noqa: E402
         sol = MPM_Simulator_WARP(10)
@@ -298,7 +303,7 @@ for f in range(F0, L + 1):
 summ = dict(args=vars(a), method=a.method, nsub=nsub, dt=dt, n_grid=n_grid, material=MAT, EXT=EXT, n_particles=N, frames_total=L, frames_done=len(errs),
             err_mean=float(np.mean(errs)) if errs else None, err_pct=(100 * float(np.mean(errs))) if (errs and DIV is None) else None, div=DIV,
             err=errs, zmin=ZMIN, sec=time.time() - t0, ms=MS, ms_mean=(float(np.mean(MS[2:])) if len(MS) > 2 else None), ms_max=(float(np.max(MS[2:])) if len(MS) > 2 else None),
-            af_ipg_fused=os.environ.get("AF_IPG_FUSED"), af_ipg_gpu=os.environ.get("AF_IPG_GPU"), gpu=torch.cuda.get_device_name(0))
+            af_ipg_fused=os.environ.get("AF_IPG_FUSED"), af_ipg_gpu=os.environ.get("AF_IPG_GPU"), af_ipg_fast=os.environ.get("AF_IPG_FAST"), gpu=torch.cuda.get_device_name(0))
 json.dump(summ, open(os.path.join(a.out, "err.json"), "w"), ensure_ascii=False, indent=1)
 if a.dump:
     nd = len(errs) if DIV is None else max(len(errs) - 1, 0)
