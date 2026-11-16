@@ -87,19 +87,22 @@ if os.path.exists(BLF):
             NA[(r["method"], r["scene"])] = r.get("note") or "실패"
         P.append(dict(r, src="final_pa/bl/pareto_bl.json"))
 json.dump(dict(pareto=P, na={f"{k[0]}:{k[1]}": v for k, v in NA.items()}), open(f"{C}/fpa_summary.json", "w"), ensure_ascii=False, indent=1)
-SHORT = dict(ours="K={N}", mpm="서브스텝 {N} (공식)", vrgs="서브스텝 {N} $\\times$ 반복 11", phystwin="서브스텝 $N_0$={N}", springgaus="학습 n\\_step {N}")
+SHORT = dict(ours="K={N}", mpm="서브스텝 {N} (공식)", vrgs="서브스텝 {N} $\\times$ 반복 11", phystwin="서브스텝 $N_0$={N}", springgaus="학습 n\\_step {N}",
+             ipg="서브스텝 {N} (공식)", omni="서브스텝 {N} (공식)")
 for p in P:
     if p.get("N"):
         p["setting"] = SHORT[p["method"]].format(N=p["N"])
+        if p.get("ext") == "material":                                              # 절 CM193 재질 확장 (원 논문 탄성 전용)
+            p["setting"] += "$^\\dagger$"
         if p["method"] == "vrgs" and p.get("iters"):                                # 절 CM191: 논문 6.1 반복 1 판
             p["setting"] = p["setting"].replace("반복 11", "반복 %d" % p["iters"])
     elif p.get("N") == 0:
         p["setting"] = "--"
-LAB = dict(ours="우리", mpm="정답 MPM (PhysGaussian)", vrgs="VR-GS", phystwin="PhysTwin", springgaus="Spring-Gaus")
+LAB = dict(ours="우리", mpm="정답 MPM (PhysGaussian)", ipg="i-PG", omni="OmniPhysGS", vrgs="VR-GS", phystwin="PhysTwin", springgaus="Spring-Gaus")
 L = ["% 자동 생성 (exe/fpa_table.py)", r"\begin{center}\scriptsize\begin{tabular}{llllrrr}\toprule",
      r"장면 & 방법 & 설정 & 완주/회 & 오차 \% (3 회) & ms (3 회 중앙값) & ms 3 회 \\\midrule"]
 for s, nm in SC:
-    for m in ("ours", "mpm", "vrgs", "phystwin", "springgaus"):
+    for m in ("ours", "mpm", "ipg", "omni", "vrgs", "phystwin", "springgaus"):
         q = [p for p in P if p["scene"] == s and p["method"] == m]
         if not q:
             if m in ("vrgs", "phystwin", "springgaus") and s in ("bread", "wolf"):
@@ -126,8 +129,8 @@ try:
     fm.fontManager.addfont(f); plt.rcParams["font.family"] = fm.FontProperties(fname=f).get_name()
 except Exception:
     pass
-ST = dict(ours=("우리", "#d62728", "o"), mpm=("정답 MPM (PhysGaussian, 공식 서브스텝)", "#1f77b4", "s"), vrgs=("VR-GS", "#2ca02c", "^"),
-          phystwin=("PhysTwin", "#ff7f0e", "D"), springgaus=("Spring-Gaus", "#17becf", "X"))
+ST = dict(ours=("우리", "#2a78d6", "o"), mpm=("정답 MPM (PhysGaussian, 공식 서브스텝)", "#eb6834", "*"), ipg=("i-PG", "#1baf7a", "s"), omni=("OmniPhysGS", "#eda100", "D"),
+          phystwin=("PhysTwin", "#e87ba4", "^"), vrgs=("VR-GS", "#008300", "v"), springgaus=("Spring-Gaus", "#6250d6", "P"))     # 절 CM192: ffx_rf_choice 와 같은 고정 색 순서 (검사 통과 팔레트)
 TT = dict(L000="레고 (탄성)", pillow2sofa="pillow2sofa (탄성, 충돌)", bread="bread (소성, 찢어짐)", wolf="wolf (모래)")
 for lin in (False, True):
     fig, ax = plt.subplots(2, 2, figsize=(11, 8.4), squeeze=False)
