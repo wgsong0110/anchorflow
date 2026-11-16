@@ -30,9 +30,11 @@ MET = [("detneg_max", "phys", "뒤집힘 (det F≤0 비율 최대)", True), ("pe
        ("niqe", "vis", "NIQE", True), ("brisque", "vis", "BRISQUE", True), ("clipiqa", "vis", "CLIP-IQA", False), ("musiq", "vis", "MUSIQ", False),
        ("warp_err", "vis", "깜빡임 (warping error)", True)]
 
-for f in ("Noto Sans CJK KR", "Noto Serif CJK KR", "NanumGothic"):
-    if any(f in x.name for x in font_manager.fontManager.ttflist):
-        plt.rcParams["font.family"] = f; break
+_FP = "/home/wgsong/.fonts/NotoSansCJKkr-Regular.otf"                               # fpa_table.py 와 같은 글꼴
+try:
+    font_manager.fontManager.addfont(_FP); plt.rcParams["font.family"] = font_manager.FontProperties(fname=_FP).get_name()
+except Exception:
+    pass
 plt.rcParams["axes.unicode_minus"] = False
 
 P = json.load(open(f"{C}/fpa_summary.json"))["pareto"]
@@ -145,7 +147,45 @@ for k, src, name, low in MET:
                      mpm_rank=(S.mean(mpm_ok) if mpm_ok else None), n_mpm=len(mpm_ok),
                      corr=(S.mean(cors) if cors else None), n_corr=len(cors),
                      noise=(S.mean(noise) if noise else None), n_noise=len(noise)))
-json.dump(dict(rows=rows, points=[{k: v for k, v in p.items() if k not in ("phys", "vis")} for p in pts]), open(f"{C}/rf_choice.json", "w"), ensure_ascii=False, indent=1)
+# 지배 판정 (절 CM192 사용자 목표: 우리 점이 파레토 프런트에): 장면 x 세로축 (정답 대비 오차 + 정답 없는 지표) 마다
+#   우리 K 점마다 '시간 <= 이고 지표가 같거나 나은 (하나는 엄격히) 다른 방법 점' 이 있으면 지배됨. 정답 MPM 도 다른 방법으로 셈.
+def dominated(o, others, key, low):
+    def better(a, b):                                                                  # a 가 b 보다 같거나 나음
+        return a <= b if low else a >= b
+    for q in others:
+        a, b = q["_v"], o["_v"]
+        if q["ms"] <= o["ms"] and better(a, b) and (q["ms"] < o["ms"] or a != b):
+            return q
+    return None
+
+
+DOM = []
+AX = [("err", "src_err", "정답 대비 오차 (%)", True)] + MET
+for k, src, name, low in AX:
+    for s, sn in SC:
+        Q = []
+        for p in pts:
+            if p["scene"] != s:
+                continue
+            v = p["err"] if src == "src_err" else val(p, k, src)
+            if v is None:
+                continue
+            Q.append(dict(p, _v=v))
+        ours = [q for q in Q if q["method"] == "ours"]
+        oth = [q for q in Q if q["method"] != "ours"]
+        res = {}
+        for o in ours:
+            d = dominated(o, oth, k, low)
+            res[int(o["N"])] = None if d is None else f"{d['method']} ({d['_v']:.3g}, {d['ms']:.1f} ms)"
+        DOM.append(dict(axis=k, name=name, scene=s, ours={kk: v for kk, v in res.items()}, any_front=any(v is None for v in res.values()) if res else None, n_other=len(oth)))
+L2 = ["% 자동 생성 (exe/ffx_rf_choice.py): 우리 점 지배 판정", "\\begin{center}\\scriptsize\\begin{tabular}{llllll}\\toprule",
+      "세로축 & 장면 & K=1 & K=2 & K=4 & 비교 점 수\\\\\\midrule"]
+for d in DOM:
+    c = [("프런트" if d["ours"].get(K, "x") is None else ("--" if K not in d["ours"] else "지배: " + d["ours"][K].replace("_", "\\_"))) for K in (1, 2, 4)]
+    L2.append(f"{d['name']} & {dict(SC)[d['scene']]} & " + " & ".join(c) + f" & {d['n_other']}\\\\")
+L2 += ["\\bottomrule\\end{tabular}\\end{center}"]
+open(f"{OUT}/pareto_final_1115_front_table.tex", "w").write("\n".join(L2) + "\n")
+json.dump(dict(rows=rows, dominance=DOM, points=[{k: v for k, v in p.items() if k not in ("phys", "vis")} for p in pts]), open(f"{C}/rf_choice.json", "w"), ensure_ascii=False, indent=1)
 
 
 def f(x, fmt="%.2f"):
