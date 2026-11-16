@@ -409,7 +409,7 @@ def stage_gtest():
     G = f"{ST}/{S}/gtest"; os.makedirs(G, exist_ok=True)
     out = json.load(open(f"{G}/gtest.json")) if os.path.exists(f"{G}/gtest.json") else {}
     for n in [int(q) for q in a.gt_ns.split(",")]:
-        for v, dr in (("d1", True), ("d2", True), ("g1", False)):
+        for v, dr in (("d1", True), ("d2", True), ("g1", False), ("s1", False)):     # s1 = 그래프 + 진단 플래그 뺌 (단독 시간 판과 같은 DIAG_DROP, 안정성 기록 stats 1 은 그대로)
             d = f"{G}/N{n}_{v}"
             if os.path.exists(f"{d}/FIN"):
                 continue
@@ -417,12 +417,12 @@ def stage_gtest():
             while subprocess.run("nvidia-smi --query-compute-apps=pid --format=csv,noheader", shell=True, capture_output=True, text=True).stdout.strip():
                 time.sleep(20)
             mon = subprocess.Popen(f"nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits -lms 2000 > {d}/util.csv", shell=True)
-            t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, direct=dr, frames=a.gt_fr)}", f"{d}/log.txt")
+            t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, direct=dr, frames=a.gt_fr, speed=(v == 's1'))}", f"{d}/log.txt")
             mon.terminate(); subprocess.run("pkill -f 'nvidia-smi --query-gpu=utilization.gpu,memory.used'", shell=True)
             open(f"{d}/FIN", "w").write(f"rc={rc} {time.time() - t0:.0f}s")
             say("gtest", S, n, v, "rc", rc, f"{time.time() - t0:.0f}s")
         R = {}
-        for v in ("d1", "d2", "g1"):
+        for v in ("d1", "d2", "g1", "s1"):
             r = L.hex_load(f"{G}/N{n}_{v}", a.gt_fr)
             u = np.loadtxt(f"{G}/N{n}_{v}/util.csv", delimiter=",", ndmin=2) if os.path.exists(f"{G}/N{n}_{v}/util.csv") else np.zeros((0, 2))
             R[v] = dict(r=r, util=float(u[:, 0].mean()) if len(u) else None, mem_max=float(u[:, 1].max()) if len(u) else None,
@@ -434,7 +434,7 @@ def stage_gtest():
             Lb = float(np.linalg.norm(X["d1"][0].max(0) - X["d1"][0].min(0)))
             dd = lambda p, q: [float(np.sqrt(((X[p][t] - X[q][t]) ** 2).sum(-1).mean()) / Lb) for t in range(T)]
             o.update(rmse_d1_d2=dd("d1", "d2"), rmse_d1_g1=dd("d1", "g1"), rmse_d2_g1=dd("d2", "g1"),
-                     max_d1_d2=max(dd("d1", "d2")), max_d1_g1=max(dd("d1", "g1")))
+                     max_d1_d2=max(dd("d1", "d2")), max_d1_g1=max(dd("d1", "g1")), rmse_d1_s1=dd("d1", "s1"), max_d1_s1=max(dd("d1", "s1")))
         out[str(n)] = o; json.dump(out, open(f"{G}/gtest.json", "w"), indent=1)
         say("gtest", S, n, {k: v for k, v in o.items() if not k.startswith("rmse")})
 
