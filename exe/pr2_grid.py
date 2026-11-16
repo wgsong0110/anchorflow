@@ -608,7 +608,7 @@ if a.jobs:
         open(f"{OUT}/prep.END", "w").write(time.strftime("%F %T") + "\n")
         say("[준비만 끝]")
         os._exit(0)
-    for k in range(1, a.reps + 1):                                     # 반복을 바깥으로: 같은 설정이 시간상 떨어져 측정됨 (워밍업·열 효과 분산)
+    for k in (range(1, a.reps + 1) if os.environ.get("BLX_NOTIME", "0") != "1" else []):   # [blx] BLX_NOTIME=1: 시간 판 없이 덤프·지표만 (A6000 이 아닌 카드): 같은 설정이 시간상 떨어져 측정됨 (워밍업·열 효과 분산)
         for j in JOBS:
             if time.time() >= a.until:
                 break

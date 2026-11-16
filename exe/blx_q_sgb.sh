@@ -1,5 +1,5 @@
 #!/bin/bash
-# [blx] final_blx_sgb 대기열 (사용자 11-16: 새 인스턴스 금지·destroy 금지): Spring-Gaus bread 준비 판 끝 -> 같은 카드에서 단독 시간 3 회 + 덤프·물리·시각 지표 -> R2 동기화·대조. destroy 안 함.
+# [blx] final_blx_sgb 대기열 (사용자 11-16: 새 인스턴스 금지·destroy 금지): Spring-Gaus bread 준비 판 끝 -> 같은 카드에서 덤프·물리·시각 지표만 (시간은 A6000 에서 따로: exe/blx_time_sgb.sh) -> R2 동기화·대조. destroy 안 함.
 source /root/fbenv.sh; source /root/pr/shenv.sh; [ -f /root/pr/bl_env.sh ] && source /root/pr/bl_env.sh
 O=/dev/shm/dkta/lbours/paper_remeasure2/stab; OX=r2:storage/result/anchorflow/lbours/final_pa/blx; T=SGB
 log() { echo "[q $(date -u '+%F %T')] $*" | tee -a /root/pr/q.log; rclone copyto /root/pr/q.log $OX/marks_$T/q.log -q; }
@@ -8,10 +8,10 @@ until [ -s $O/p/springgaus_bread_prep/res.json ] && grep -q "준비만 끝" $O/g
   if grep -q "준비 실패" $O/stab.log 2>/dev/null; then log "준비 실패 -- 멈춤 (destroy 안 함)"; exit 1; fi
   sleep 60; done
 log "준비 끝: $(cat $O/p/springgaus_bread_prep/res.json | tr -d '\n ')"
-cd $D
+cd $D; rclone cat $OX/code/blx_$(cat /root/pr/qcommit).tar | tar -x -C $D
 python -c "import pyiqa" 2>/dev/null || pip install -q pyiqa -c <(pip freeze | grep -iE "^(torch|torchvision|numpy|opencv-python-headless|scikit-image|scipy)==") > /root/pr/pyiqa.log 2>&1
 ( while true; do sleep 300; rclone copy $O $OX/$T -q --transfers 8 --exclude "*/h5/**"; done ) & SY=$!
-BLX_DUMP=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python -u exe/pr2_grid.py --out $O --jobs exe/blx_jobs_sgb.json --reps 3 --scenes L000 \
+BLX_NOTIME=1 BLX_DUMP=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python -u exe/pr2_grid.py --out $O --jobs exe/blx_jobs_sgb.json --reps 3 --scenes L000 \
   --until $(( $(date +%s) + 20 * 3600 )) --hard $(( $(date +%s) + 21 * 3600 )) >> $O/grid_main.log 2>&1
 log "[측정 끝] $(tail -1 $O/grid_main.log)"
 kill $SY 2>/dev/null
