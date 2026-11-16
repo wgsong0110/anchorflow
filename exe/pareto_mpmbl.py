@@ -244,7 +244,7 @@ for f in range(1, L + 1):
 summ = dict(args=vars(a), method=a.method, nsub=nsub, dt=dt, n_grid=n_grid, material=MAT, EXT=EXT, n_particles=N, frames_total=L, frames_done=len(errs),
             err_mean=float(np.mean(errs)) if errs else None, err_pct=(100 * float(np.mean(errs))) if (errs and DIV is None) else None, div=DIV,
             err=errs, sec=time.time() - t0, ms=MS, ms_mean=(float(np.mean(MS[2:])) if len(MS) > 2 else None), ms_max=(float(np.max(MS[2:])) if len(MS) > 2 else None),
-            af_ipg_fused=os.environ.get("AF_IPG_FUSED"), gpu=torch.cuda.get_device_name(0))
+            af_ipg_fused=os.environ.get("AF_IPG_FUSED"), af_ipg_gpu=os.environ.get("AF_IPG_GPU"), gpu=torch.cuda.get_device_name(0))
 json.dump(summ, open(os.path.join(a.out, "err.json"), "w"), ensure_ascii=False, indent=1)
 if a.dump:
     nd = len(errs) if DIV is None else max(len(errs) - 1, 0)

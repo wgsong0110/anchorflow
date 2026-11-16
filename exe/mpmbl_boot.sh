@@ -105,13 +105,15 @@ for s in $SCN; do
     esac
   fi
   export AF_IPG_FUSED=$FUSED
+  # 통합 커널을 못 쓰는 소성 장면은 AF_IPG_GPU=1 (같은 힘 계산을 GPU 안에서; bread 3 프레임 오차 CPU 경로와 같음 0.020·0.052·0.084 %, 12 배 빠름)
+  if [ $FUSED = 0 ]; then export AF_IPG_GPU=1; else unset AF_IPG_GPU; fi
   # 판 a (시간 + 덤프). 발산하면 공식 범위 안에서 N 을 키움 (i-PG: k 20 -> 10 -> 5 -> 2 -> 1 = PG 공식 서브스텝; omni: dt 를 1/2 씩, 4 배까지)
   if [ $M = ipg ]; then CANDS=$(python -c "print(' '.join(str(max(1, round($NPG / k))) for k in (20, 10, 5, 2, 1)))"); else CANDS="$NOFF $((NOFF*2)) $((NOFF*4))"; fi
   N=""; TRIED=""
   for n in $CANDS; do
     R1=$O/N${n}_a
     if [ ! -s $R1/err.json ]; then
-      say "[실행] $J N $n 판 a (덤프) fused=$FUSED $OEX"
+      say "[실행] $J N $n 판 a (덤프) fused=$FUSED gpu=${AF_IPG_GPU:-0} $OEX"
       timeout 43200 python -u exe/pareto_mpmbl.py --method $M --nsub $n $SIM $OEX --time --dump --out $R1 > $O/N${n}_a.log 2>&1
       [ -s $R1/pred.pt ] && rclone copyto $R1/pred.pt $RB/$J/N${n}_a/pred.pt -q
     fi
@@ -122,7 +124,7 @@ for s in $SCN; do
   done
   echo "$TRIED" > $O/tried.txt; echo "${N:-none} $NOFF $FUSED $OEX" > $O/chosen.txt
   [ -z "$N" ] && { say "[전부 발산] $J $TRIED"; continue; }
-  for rep in b c; do
+  for rep in ${MB_REPS:-b c}; do
     [ -s $O/N${N}_$rep/err.json ] && continue
     say "[실행] $J N $N 판 $rep (시간)"
     timeout 43200 python -u exe/pareto_mpmbl.py --method $M --nsub $N $SIM $OEX --time --out $O/N${N}_$rep > $O/N${N}_$rep.log 2>&1
