@@ -20,7 +20,7 @@ def _install():
         if F0 <= n[0] <= F1:
             torch.cuda.synchronize()
             ip = s.IP.cpu().tolist(); nn = ip[9]; nb = ip[6:9]
-            mn = s.mn[:nn].double(); vk = s.vk[:nn * 3].view(-1, 3).double(); pm = s.pm[:nn]; an = s.an[:nn].double(); mqn = s.mqn[:nn].double()
+            mn = s.mn[:nn].double(); vk = s.vk[:nn].reshape(-1, 3).double(); pm = s.pm[:nn]; an = s.an[:nn].double(); mqn = s.mqn[:nn].double()
             act = mn > 0; med = float(mn[act].median())
             sp = vk.norm(dim=1); fast = act & (sp > 1.0)
             pv = s.v.double().norm(dim=1); top = torch.topk(pv, 20).indices
