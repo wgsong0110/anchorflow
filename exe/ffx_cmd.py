@@ -82,6 +82,10 @@ for m in mods:
         c = c.replace("exe/startpt_wrap.py", f"exe/ssdiag_wrap.py --sd_f0 {a_} --sd_f1 {b_} exe/startpt_wrap.py", 1)
     elif re.match(r"xg[0-9.e-]+$", m):                  # 절 CM193: --xit_from 문 문턱 (ssfix --ssf_xgT)
         assert "--ssf_bec " in c; c = c.replace("--ssf_bec ", f"--ssf_xgT {m[2:]} --ssf_bec ", 1)
+    elif m == "gbe":                                    # 절 CM193 진단: 후퇴 오일러 적분기 (fpa_cmd 판 be 와 같은 바꿈) 를 ssN 위에
+        assert " --ga hht " in c and " --ue be " in c; c = c.replace(" --ga hht ", " --ga be ").replace(" --ue be ", " --ue beall "); c = re.sub(r" --ue_loc \d+ ", " ", c)
+    elif re.match(r"rho\d+$", m):                      # 절 CM193 진단: HHT ρ∞ = 숫자/10 (rho5 = 0.5)
+        assert re.search(r" --rho \S+ ", c); c = re.sub(r" --rho \S+ ", f" --rho {int(m[3:]) / 10:g} ", c)
     elif m == "dump":
         if " --dump " not in c: c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1)
     else:
