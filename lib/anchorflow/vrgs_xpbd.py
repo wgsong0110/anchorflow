@@ -22,7 +22,7 @@
   - 초기 속도: 입자 속도의 질량·무게중심 가중 평균 (한 번, 프레임 0).
   - [final_fix_vrgs] 물체-물체 충돌: 논문은 충돌을 다루지만 (4.3.1 "relative density between two objects based on their deformations under collision",
     6.2 "dining table and objects on it serve as collision boundaries ... [Deul et al. 2016]", 표 1 "CD: collision detections per step" 5~20) 알고리즘 세부가 없음 ->
-    XPBD 표준: 물체 = 케이지 연결 성분, 다른 물체 정점 쌍의 비관통 부등식 구속 |x_i − x_j| >= d (d = 케이지 칸 h, α = 0) + 접촉 중 접선 상대 변위 취소 (고착),
+    XPBD 표준: 물체 = 케이지 연결 성분, 다른 물체 정점 쌍의 비관통 부등식 구속 |x_i − x_j| >= d (d = 케이지 칸 h, α = 0), 마찰 없음 (cfric 0; 1 = 고착),
     해시 격자 검출을 반복마다 (서브스텝당 CD = 반복 수), 야코비 + 구속 평균. 성분 하나 (레고) 면 커널 없음.
   - [final_fix_vrgs] PG bounding_box: 격자 노드 i < 3 / i >= n_grid − 3 의 바깥 방향 속도 0 (미끄럼 벽) -> 정점 축별 [2 dx, grid_lim − 3 dx] 투영.
 서브스텝 안에서는 입자를 쓰지 않는다 (가우시안 갱신은 프레임 끝 한 번).
@@ -150,7 +150,7 @@ __global__ void vg_floor(int n, float* x, const float* xp, const float* w, float
 
 // [final_fix_vrgs] 물체-물체 충돌 (XPBD 표준 정점 비관통 부등식 구속, 논문에 세부 없음 -- doc/pareto.md 절 P.1c)
 //   해시 격자 (칸 = 접촉 거리 d = 케이지 칸 h) 에 정점을 넣고, 다른 성분 (케이지 연결 성분 = 물체) 정점 j 와 |x_i − x_j| < d 이면
-//   C = |x_i − x_j| − d >= 0 를 강성 무한 (α = 0) 으로 투영 + 접선 상대 변위 취소 (고착; 정답 MPM 격자 접촉의 무미끄럼, 기존 바닥 처리와 같음).
+//   C = |x_i − x_j| − d >= 0 를 강성 무한 (α = 0) 으로 투영. 마찰 없음이 기본 (fr 0); fr 1 = 접선 상대 변위 취소 (고착, 예전 판).
 //   야코비 + 구속 평균 (Macklin et al. 2014 Unified Particle Physics 4.2): 정점마다 접촉 보정 합 / 접촉 수.
 __device__ __forceinline__ unsigned vg_hash(int ix, int iy, int iz, unsigned mask) {
   return (((unsigned)ix * 73856093u) ^ ((unsigned)iy * 19349663u) ^ ((unsigned)iz * 83492791u)) & mask;
@@ -165,7 +165,7 @@ __global__ void vg_hins(int n, const float* x, const int* comp, float ih, unsign
   if (k < cap) slot[b*cap + k] = i;
 }
 __global__ void vg_contact(int n, const float* x, const float* xp, const float* w, const int* comp, float ih, unsigned mask, int cap,
-                           const int* cnt, const int* slot, float d, float* dx) {
+                           const int* cnt, const int* slot, float d, float fr, float* dx) {
   int i = blockIdx.x * blockDim.x + threadIdx.x; if (i >= n) return;
   float ax = 0.f, ay = 0.f, az = 0.f; int nc = 0;
   float wi = w[i];
@@ -194,7 +194,7 @@ __global__ void vg_contact(int n, const float* x, const float* xp, const float* 
         float dux = ui - (xj - xp[3*j]), duy = vi - (yj - xp[3*j+1]), duz = si - (zj - xp[3*j+2]);
         float dn = dux*nx + duy*ny + duz*nz;
         float tx = dux - dn*nx, ty = duy - dn*ny, tz = duz - dn*nz;
-        ax += sw*(pen*nx - tx); ay += sw*(pen*ny - ty); az += sw*(pen*nz - tz);
+        ax += sw*(pen*nx - fr*tx); ay += sw*(pen*ny - fr*ty); az += sw*(pen*nz - fr*tz);   // fr 0 = 마찰 없음 (기본), 1 = 고착
         nc++;
       }
     }
@@ -333,7 +333,7 @@ class VRGS:
     """케이지 XPBD. x0 [Np,3] 입자 rest, v0 [Np,3], m [Np] 입자 질량, rho_p [Np] 입자 밀도."""
 
     def __init__(s, x0, v0, m, rho_p, E, nu, g, frame_dt, N, iters, vmax=30000, floor_z=None, fix_boxes=(), damp_scale=1.0, damp_dt=None,
-                 h=None, nrot=5, rot_bcs=(), fix_boxes_t=(), origin=None, collide=True, bbox=None, hcap=16):
+                 h=None, nrot=5, rot_bcs=(), fix_boxes_t=(), origin=None, collide=True, bbox=None, hcap=16, cfric=0.0):
         dev = "cuda"
         s.Np = x0.shape[0]
         x0 = x0.to(dev).double()
@@ -431,6 +431,7 @@ class VRGS:
         s.comp = comp.int().contiguous()
         s.cd_d = float(s.h)                                                              # 접촉 거리 = 케이지 칸 (같은 격자 위 다른 물체 정점은 처음에 >= h; 칸 면 구멍 h/√2 < h 라 정점이 면을 못 지나감)
         s.hcap = int(hcap)
+        s.cfric = float(cfric)                                                           # [final_fix_vrgs] 접촉 접선 처리: 0 = 마찰 없음 (논문·인용에 마찰 계수 없음 -> 기본), 1 = 고착 (예전 판 94f47ec)
         hs = 1
         while hs < 2 * s.nv:
             hs *= 2
@@ -498,7 +499,7 @@ class VRGS:
                     ih, mk, hc = f32(1.0 / s.cd_d), np.uint32(s.hsize - 1), i32(s.hcap)
                     f_hclear(((s.hsize + B - 1) // B,), (B,), (i32(s.hsize), _P(s.hcnt)))
                     f_hins(gv, (B,), (i32(s.nv), _P(s.x), _P(s.comp), ih, mk, hc, _P(s.hcnt), _P(s.hslot)))
-                    f_contact(gv, (B,), (i32(s.nv), _P(s.x), _P(s.xp), _P(s.w), _P(s.comp), ih, mk, hc, _P(s.hcnt), _P(s.hslot), f32(s.cd_d), _P(s.cdx)))
+                    f_contact(gv, (B,), (i32(s.nv), _P(s.x), _P(s.xp), _P(s.w), _P(s.comp), ih, mk, hc, _P(s.hcnt), _P(s.hslot), f32(s.cd_d), f32(s.cfric), _P(s.cdx)))
                     f_addx(gv, (B,), (i32(s.nv), _P(s.x), _P(s.cdx)))
                 if s.bbox is not None:
                     lo_, hi_ = s.bbox
@@ -570,5 +571,5 @@ class VRGS:
         return (Ds @ s.Dmi.reshape(-1, 3, 3))[s.tid.long()]
 
     def info(s):
-        return dict(h=s.h, nv=s.nv, nt=s.nt, ncolor=len(s.colors), ncomp=s.ncomp, comp_sizes=s.comp_sizes, collide=s.collide, contact_d=s.cd_d, bbox=s.bbox, nfixed=int(s.fixed.sum()), nfixed_t=[int(q[0].sum()) for q in s.fixw], mass_cage=s.mass_cage, mass_part=s.mass_part,
+        return dict(h=s.h, nv=s.nv, nt=s.nt, ncolor=len(s.colors), ncomp=s.ncomp, comp_sizes=s.comp_sizes, collide=s.collide, contact_d=s.cd_d, contact_fric=s.cfric, bbox=s.bbox, nfixed=int(s.fixed.sum()), nfixed_t=[int(q[0].sum()) for q in s.fixw], mass_cage=s.mass_cage, mass_part=s.mass_part,
                     bind_min=s.bind_min, N=s.N, iters=s.iters, dt=s.dt, damp=s.damp, E=s.E, nu=s.nu)
