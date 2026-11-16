@@ -9,7 +9,7 @@ for n in "$@"; do
     pillow2sofa) GTD=$NW/gt_pillow2sofa; CF=$NW/gt_pillow2sofa/config.json; SHAPE=pillow2sofa; FR=300;;
     bread) GTD=$AG/gt_bread_full; CF=$AG/gt_bread_full/config.json; SHAPE=bread; FR=300;;
     wolf) GTD=$AG/gt_wolf; CF=$AG/gt_wolf/config.json; SHAPE=wolf; FR=50;; esac
-  while [ "$(df --output=avail -BG /workspace | tail -1 | tr -dc 0-9)" -lt 30 ]; do sleep 60; done
+  while [ "$(df --output=avail -BG /workspace | tail -1 | tr -dc 0-9)" -lt ${GQ_MINDISK:-30} ]; do sleep 60; done
   D=/workspace/gq/rr_$n; mkdir -p $D
   rclone copy $RG/$n $D -q --exclude "png.tar" --exclude "*.mp4" --multi-thread-streams 8
   python -u exe/lb_roll_to_h5.py --dump $D/pred.pt --traj $GTD --out $D/h5 > $D/roll_h5.log 2>&1
