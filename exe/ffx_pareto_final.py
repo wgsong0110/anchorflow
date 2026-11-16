@@ -121,6 +121,8 @@ open(f"{OUT}/pareto_final_1115_table.tex", "w").write("\n".join(T) + "\n")
 def avg_pts(key):
     out = []
     for m, mn in METH:
+        if key == "err" and m == "mpm":                                                # 정답 대비 오차 그림에는 정답 MPM 을 넣지 않음 (정의상 0; 사용자 11-16), 정답 없는 지표 그림에만
+            continue
         rs = [(s, ROWS[(m, s)]) for s, _ in SC if (m, s) in ROWS and ROWS[(m, s)].get(key) is not None]
         if not rs:
             continue
