@@ -220,17 +220,17 @@ def ex_rows(s):
     return rows
 
 
-t = [r"\begin{table}[h]\centering\small\caption{확정 최소 $N$ 에서 정답 없는 물리 지표 (그 $N$ 의 세 판 평균; 기준 PG 는 한 판). 에너지 증가 = $\max(0, \max_t (E_t - E_0)/|E_0|)$, $E$ = 운동 + 위치 에너지 (안정 판정과 같은 $E$). 부피 변화 = $\max_t |V_t/V_0 - 1|$, $V_t$ = 표본점 (같은 번호 32768 점) 이 차지한 복셀 수 (복셀 한 변 = 격자 $2\,dx$). 값은 \%. 뒤집힘$\cdot$관통$\cdot$떨림$\cdot$자유낙하$\cdot$Chamfer 는 위 정합성 표.}",
+t = [r"\begin{table}[h]\centering\small\caption{확정 최소 $N$ 에서 정답 없는 물리 지표 (그 $N$ 의 세 판 평균; 기준 PG 는 한 판). 정의는 파레토 표와 같음 (R2 \texttt{lbours/final\_fix/metrics\_def.md}). 에너지 증가 = $\max_t (E_t - E_0)/|E_0|$ (\texttt{e\_drift\_max}, 음수 = 줄기만 함), $E$ = 운동 + 중력 위치 에너지 (탄성 에너지 뺌, 안정 판정과 같은 $E$). 부피 변화 = 프레임마다 $\mathrm{mean}_i |J_i - 1|$ ($J = \det F$) 의 최대 (\texttt{jdev\_max}). 값은 \%. 뒤집힘$\cdot$관통$\cdot$떨림$\cdot$자유낙하$\cdot$Chamfer 는 위 정합성 표.}",
      r"\begin{tabular}{llccc}\toprule 장면 & 방법 & $N$ & 에너지 증가 $\downarrow$ & 부피 변화 $\downarrow$ \\\midrule"]
 for s in SC:
     first = True
     for nm, n, key in ex_rows(s):
         v = EX[s].get("phys", {}).get(key)
         if not v: continue
-        t.append(f"{SN[s] if first else ''} & {nm} & {n} & {f2(100 * v['energy_inc']) if 'energy_inc' in v else '--'} & {f2(100 * v['vol_change']) if 'vol_change' in v else '--'} \\\\"); first = False
+        t.append(f"{SN[s] if first else ''} & {nm} & {n} & {f2(100 * v['e_drift_max']) if 'e_drift_max' in v else '--'} & {f2(100 * v['jdev_max']) if 'jdev_max' in v else '--'} \\\\"); first = False
     t.append(r"\midrule")
 t[-1] = r"\bottomrule"; t.append(r"\end{tabular}\end{table}"); out.append("\n".join(t))
-t = [r"\begin{table}[h]\centering\scriptsize\caption{확정 최소 $N$ 에서 시각 품질 (같은 렌더러$\cdot$카메라, 프레임 1..T 평균). 무참조 품질 (\texttt{pyiqa} 기본 가중치): NIQE$\downarrow$, BRISQUE$\downarrow$, CLIP-IQA$\uparrow$, MUSIQ$\uparrow$ -- 흰 배경 렌더라 절대값보다 방법 사이 차이를 볼 것. 깜빡임 = warping error$\downarrow$ ($\times 10^{3}$): 프레임 $t{+}1$ 을 RAFT (torchvision \texttt{raft\_large}) 광류로 $t$ 에 맞춘 뒤 가려지지 않은 픽셀 (앞-뒤 광류 일관성) 의 RGB 제곱 차 평균. PSNR$\cdot$SSIM$\cdot$LPIPS = 기준 PG $N{=}1024$ 렌더 대비 (시각 지표 표와 같음).}",
+t = [r"\begin{table}[h]\centering\scriptsize\caption{확정 최소 $N$ 에서 시각 품질 (같은 렌더러$\cdot$카메라, 프레임 1..T 평균). 무참조 품질 (\texttt{pyiqa} 기본 가중치): NIQE$\downarrow$, BRISQUE$\downarrow$, CLIP-IQA$\uparrow$, MUSIQ$\uparrow$ -- 흰 배경 렌더라 절대값보다 방법 사이 차이를 볼 것. 깜빡임 = warping error$\downarrow$ ($\times 10^{3}$, Lai et al.\ 2018; 파레토 표와 같은 코드): 프레임 $t$ 를 RAFT (torchvision \texttt{raft\_large} C\_T\_SKHT\_V2) 뒤 광류로 $t{+}1$ 에 맞춘 뒤 가려지지 않은 영상 안 픽셀 (앞-뒤 광류 일관성) 의 RGB 채널 합 제곱 차 평균, 프레임 $0\to1 .. T{-}1\to T$. PSNR$\cdot$SSIM$\cdot$LPIPS = 기준 PG $N{=}1024$ 렌더 대비 (시각 지표 표와 같음).}",
      r"\begin{tabular}{llccccccccc}\toprule 장면 & 방법 & $N$ & NIQE & BRISQUE & CLIP-IQA & MUSIQ & warp.\ err. & PSNR & SSIM & LPIPS \\\midrule"]
 for s in SC:
     first = True
