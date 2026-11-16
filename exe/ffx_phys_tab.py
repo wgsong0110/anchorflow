@@ -49,9 +49,34 @@ def missing(rows):
     return sorted(rows + add, key=order)
 
 
+def var_of(r):
+    j = r.get("job", "")
+    return j[len(f"ours_{r['scene']}_"):] if j.startswith("ours_") else None
+
+
+PAR = ("def", "k2", "k4")
+for r in P + V:
+    if r["method"] == "ours":
+        r["variant"] = var_of(r)
+AP = [r for r in P if r["method"] == "ours"]
+AV = [r for r in V if r["method"] == "ours"]
+P = [r for r in P if r["method"] != "ours" or r.get("variant") in PAR]
+V = [r for r in V if r["method"] != "ours" or r.get("variant") in PAR]
 P, V = missing(P), missing(V)
 json.dump(P, open(f"{out}/phys_metrics.json", "w"), ensure_ascii=False, indent=1)
 json.dump(V, open(f"{out}/vis_metrics.json", "w"), ensure_ascii=False, indent=1)
+AVARS = ["def", "be", "mid", "q1", "nofpi", "q27", "q64", "c075", "c15", "c20", "k2", "k4"] + [f"ss{n}.dump" for n in (1, 2, 4, 8, 16, 32, 64, 128)]
+
+
+def amiss(rows):
+    have = {(r["scene"], r["variant"]) for r in rows}
+    rows = rows + [dict(method="ours", scene=s, variant=v, N=v, note="미측정") for s, _ in SC for v in AVARS if (s, v) not in have]
+    return sorted(rows, key=lambda r: ([s for s, _ in SC].index(r["scene"]), AVARS.index(r["variant"]) if r["variant"] in AVARS else 99))
+
+
+AP, AV = amiss(AP), amiss(AV)
+json.dump(AP, open(f"{out}/abl_phys_metrics.json", "w"), ensure_ascii=False, indent=1)
+json.dump(AV, open(f"{out}/abl_vis_metrics.json", "w"), ensure_ascii=False, indent=1)
 
 
 def f(v, sc=1.0, d=2, sci=False):
@@ -133,4 +158,29 @@ L += [r"\end{tabular}", "",
       r"정답 렌더 대비 (참고): PSNR, SSIM (skimage), LPIPS (alex). final\_blx = 탄성 전용 베이스라인의 bread$\cdot$wolf 는 재질 확장 실험에서 같은 정의로 잼.",
       r"\end{minipage}", r"\end{center}"]
 open(f"{paper}/pareto_final_1115_vis.tex", "w").write("\n".join(L) + "\n")
-print("ok", len(P), len(V))
+
+# ablation 표 (우리 판마다: 물리 + 시각)
+VI = {(r["scene"], r["variant"]): r for r in AV}
+L = [r"\begin{center}", r"\scriptsize", r"\setlength{\tabcolsep}{2.5pt}",
+     r"\begin{tabular}{ll" + "c" * 13 + "}", r"\toprule",
+     r"장면 & 판 & det$\le$0 (\%) & det 최소 & $\Delta V$ (\%) & 관통 (\%$L$) & $\Delta E_{\max}/|E_0|$ & 자유낙하 (\%) & 떨림 ($10^{-3}L$) & NIQE$\downarrow$ & MUSIQ$\uparrow$ & CLIP-IQA$\uparrow$ & warp ($10^{-3}$) & PSNR & LPIPS \\",
+     r"\midrule"]
+for s_, sn in SC:
+    rows = [r for r in AP if r["scene"] == s_]
+    for i, r in enumerate(rows):
+        v = VI.get((s_, r["variant"]), {})
+        cells = [f(r.get("detneg_max"), 100, 3), f(r.get("detmin"), 1, 3), f(r.get("dV_last"), 100, 2), f(r.get("pen_depth_max"), 100, 2),
+                 f(r.get("e_drift_max"), 1, 3), f(r.get("freefall_mom_err"), 100, 2), f(r.get("jitter_d2"), 1e3, 2),
+                 f(v.get("niqe"), 1, 2), f(v.get("musiq"), 1, 1), f(v.get("clipiqa"), 1, 3), f(v.get("warp_err"), 1e3, 2), f(v.get("psnr"), 1, 2), f(v.get("lpips"), 1, 3)]
+        if r.get("frames") is None:
+            cells = [r"\multicolumn{13}{c}{미측정}"]
+        L.append(f"{sn if i == 0 else ''} & " + r["variant"].replace(".dump", "").replace("_", r"\_") + " & " + " & ".join(cells) + r" \\")
+    L.append(r"\midrule")
+L[-1] = r"\bottomrule"
+L += [r"\end{tabular}", "", r"\begin{minipage}{0.97\linewidth}\scriptsize",
+      r"ablation 판마다 정답 없이 재는 물리 지표와 시각 품질 (파레토 표와 같은 정의$\cdot$같은 코드 \texttt{exe/ffx\_phys.py}$\cdot$\texttt{exe/ffx\_vis.py}, 정의 R2 \texttt{lbours/final\_fix/metrics\_def.md}). "
+      r"덤프 = R2 \texttt{lbours/final\_fix/runs\_nd/<장면>\_<판>\_r1} (반복 1); ss$N$ (E, 프레임당 걸음 $N$, 50 프레임) 은 같은 명령에 덤프만 붙여 다시 돌림 (\texttt{ss$N$.dump}). "
+      r"지표 정의는 파레토 물리$\cdot$시각 표 주석과 같음; 관통$\cdot$자유낙하는 바닥 없는 장면 (pillow2sofa$\cdot$bread) 에서 --; PSNR$\cdot$LPIPS 는 같은 카메라 정답 MPM 렌더 대비 (ss$N$ 은 50 프레임까지).",
+      r"\end{minipage}", r"\end{center}"]
+open(f"{paper}/ablation_final_1115_metrics.tex", "w").write("\n".join(L) + "\n")
+print("ok", len(P), len(V), len(AP), len(AV))
