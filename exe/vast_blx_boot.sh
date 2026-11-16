@@ -82,6 +82,16 @@ python -c "import pyiqa" 2>/dev/null || pip install -q pyiqa -c <(pip freeze | g
 BLX_DUMP=1 PR2_PREP_TMO_H=${FB_PREP_TMO_H:-40} python -u exe/pr2_grid.py --out $O --jobs exe/$FB_JOBS --reps 3 --scenes L000 $EX \
   --until $(( $(date +%s) + 60 * 3600 )) --hard $(( $(date +%s) + 61 * 3600 )) >> $O/grid_main.log 2>&1
 say "[끝] $(tail -1 $O/grid_main.log)"
+VF=${FB_VIS_FROM:-}; for f in ${VF//,/ }; do                                                   # [blx] 다른 태그 덤프 판의 시각 지표 (exe/ffx_vis.py; 그 인스턴스에 pyiqa 가 없었던 판)
+  for J in $(rclone lsf $OX/$f/g/ --dirs-only | grep _dump/); do
+    J=${J%/}; t=$(echo $J | cut -d_ -f2); V=/dev/shm/dkta/visx/$f/$J; mkdir -p $V
+    rclone lsf $OX/$f/g/$J/vis_ffx.json >/dev/null 2>&1 && continue
+    rclone copy $OX/$f/g/$J/png $V/png -q --transfers 16; rclone copy $OX/$f/gt_$t/png /dev/shm/dkta/visx/gt_$t -q --transfers 16
+    CUDA_VISIBLE_DEVICES=0 python -u exe/ffx_vis.py --png $V/png --ref /dev/shm/dkta/visx/gt_$t --out $V/vis_ffx.json > $V/vis_ffx.log 2>&1
+    rclone copyto $V/vis_ffx.json $OX/$f/g/$J/vis_ffx.json -q; rclone copyto $V/vis_ffx.log $OX/$f/g/$J/vis_ffx.log -q
+    say "[시각 $f $J] $(tail -1 $V/vis_ffx.log | cut -c1-200)"
+  done
+done
 kill $SY 2>/dev/null
 rclone copy $O $OX/$T -q --transfers 8 --exclude "*/h5/**"
 if rclone check $O $OX/$T --one-way --size-only -q --exclude "*/h5/**" 2>/root/pr/check.txt; then
