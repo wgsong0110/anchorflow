@@ -16,6 +16,7 @@ scene() { case $1 in
   bread) DATA=$AG/bread.pt; GTD=$AG/gt_bread_full; CF=$AG/gt_bread_full/config.json; SHAPE=bread; FR=300; FLOOR=none;;
   wolf) DATA=$AG/wolf.pt; GTD=$AG/gt_wolf; CF=$AG/gt_wolf/config.json; SHAPE=wolf; FR=50; FLOOR=vel;; esac; }
 others() { nvidia-smi -i $GPU --query-compute-apps=pid --format=csv,noheader | grep -c .; }
+foreign() { local n=0; for p in $(nvidia-smi -i $GPU --query-compute-apps=pid --format=csv,noheader); do tr '\0' ' ' < /proc/$p/cmdline 2>/dev/null | grep -q "/workspace/gq/" || n=$((n+1)); done; echo $n; }   # 다른 에이전트 계산 (겹치지 않게)
 clean() { rm -rf "${X:?}/${1:?}" "${X:?}/${1:?}.claim"; }
 idle=0
 while :; do
@@ -45,6 +46,7 @@ while :; do
       flock -u 8; exec 8>&-
     else
       exec 8>$CL; flock -s 8
+      while [ "$(foreign)" != 0 ]; do sleep 30; done
       say "$n 시작 (카드 $GPU, 다른 프로세스 $(others))"
       CUDA_VISIBLE_DEVICES=$GPU timeout ${GQ_TMO:-5400} bash -c "$(cat $D/cmd.txt)" < /dev/null > $D/log.txt 2>&1; rc=$?
       flock -u 8; exec 8>&-
