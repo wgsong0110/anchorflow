@@ -20,7 +20,8 @@ import os
 import sys
 
 W = "/home/dkta/work"
-MODEL = {"lego": "lego_whitebg-trained", "ficus": "ficus_whitebg-trained", "mic": "mic_whitebg-trained", "hotdog": "hotdog_whitebg-trained"}
+MODEL = {"lego": "lego_whitebg-trained", "ficus": "ficus_whitebg-trained", "mic": "mic_whitebg-trained", "hotdog": "hotdog_whitebg-trained",
+         "wolf": "wolf_whitebg-trained", "bread": "bread-trained"}                     # [blx] PG 소성 씬 (lb_render 와 같은 3DGS)
 ap = argparse.ArgumentParser()
 ap.add_argument("--sim", required=True)
 ap.add_argument("--config", required=True)

@@ -476,6 +476,21 @@ for _t, _s in NS.items():
         _c = _c.replace(" " + _f, "")
     TMPL[_t] = dict(cmd=_c)
 
+# ---------- [blx] wolf·bread 재질 확장 베이스라인 (VR-GS·PhysTwin·Spring-Gaus; 원 논문은 탄성 전용, 재질 모델만 PG 소성 식) ----------
+#   자료 = /dev/shm/dkta/ag_data/{wolf,bread}.pt (R2 lbours/fem_ag_data, 우리 판·정답 MPM 과 같은 파일), 경계 = config (wolf 순차 방출·sticky 바닥, bread 당김 띠)
+for _t in ("wolf", "bread"):
+    DATA[_t] = f"/dev/shm/dkta/ag_data/{_t}.pt"
+_da_old0 = da_elastic
+
+
+def da_elastic(t):                                                                   # noqa: F811
+    if t == "wolf":
+        return ["--data", DATA[t], "--tag", t, "--frames", str(a.smoke or FRAMES[t]), "--floor", "vel", "--cfg_bc"]
+    if t == "bread":
+        return ["--data", DATA[t], "--tag", t, "--frames", str(a.smoke or FRAMES[t]), "--floor", "none", "--cfg_bc", "--pg_vdamp"]
+    return _da_old0(t)
+
+
 _g_old = gt_render_dir
 
 
@@ -558,7 +573,7 @@ def one_run_cached(m, t, N, k):
     return json.load(open(f)) if os.path.exists(f) else None
 
 
-VR_REF = dict(vasedeck=400, pillow2sofa=200)                                         # VR-GS E 를 맞추는 기준 서브스텝 (프레임 간격 / 논문 비교 dt 1e-4), 반복 11
+VR_REF = dict(vasedeck=400, pillow2sofa=200, wolf=400, bread=100)                    # [blx] wolf 0.04 s / 1e-4, bread 0.01 s / 1e-4                                         # VR-GS E 를 맞추는 기준 서브스텝 (프레임 간격 / 논문 비교 dt 1e-4), 반복 11
 
 
 def ensure_E(t):
@@ -603,6 +618,20 @@ if a.jobs:
                 say(f"[오류] {j} r{k}: {ex}")
             collect()
     collect()
+    if os.environ.get("BLX_DUMP", "0") == "1":                         # [blx] 덤프 판 (같은 설정, 시간 안 잼) -> 렌더 PNG·정답 렌더 대비 (stab_vis) + 정답 없는 물리 지표 (exe/blx_phys_metrics.py)
+        for j in JOBS:
+            O = f"{GRID}/{j['m']}_{j['t']}_n{j['N']}_dump"
+            try:
+                r = run_free(j["m"], j["t"], j["N"], "dump", O, VR_E.get(j["t"]) if j["m"] == "vrgs" else None)
+                if not (r and r.get("stable")):
+                    say(f"[덤프 실패] {j}: {r}"); continue
+                if not os.path.exists(f"{O}/phys.json"):
+                    subprocess.run([PY, "-u", "exe/blx_phys_metrics.py", "--pred", f"{O}/pred.pt", "--data", DATA[j["t"]], "--out", f"{O}/phys.json"], cwd=D,
+                                   stdout=open(f"{O}/phys.log", "w"), stderr=subprocess.STDOUT)
+                vq = visual(j["m"], j["t"], O)
+                say(f"[덤프] {j['m']} {j['t']}: 시각 {vq} 물리 {os.path.exists(O + '/phys.json')}")
+            except Exception as ex:                                    # noqa: BLE001
+                say(f"[덤프 오류] {j}: {ex}")
     open(f"{OUT}/grid.END", "w").write(time.strftime("%F %T") + "\n")
     say("[격자 끝]")
 os._exit(0)

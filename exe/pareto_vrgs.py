@@ -56,20 +56,16 @@ if a.floor == "vel":
     pl = [b for b in cfg["boundary_conditions"] if b.get("type") == "surface_collider"][0]
     assert abs(float(pl["normal"][2]) - 1.0) < 1e-6, "바닥 법선이 z 가 아님"
     FZ = float(pl["point"][2])
-BOX, BOXW = [], []
-if a.cfg_bc:
-    for bc in (cfg.get("boundary_conditions") or []):
-        if bc.get("type") == "cuboid":
-            assert max(abs(float(q)) for q in bc["velocity"]) == 0.0
-            _t0, _t1 = float(bc.get("start_time", 0.0)), float(bc.get("end_time", 1e3))
-            if _t0 <= 0.0 and _t1 > L * float(cfg["frame_dt"]):
-                BOX.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]]))
-            else:                                                                        # final_pa_bl: PG 시간 구간 cuboid (start <= t < end 동안만 고정, 뒤엔 자유; pillow2sofa 방석 받침)
-                assert int(bc.get("reset", 0)) == 0, "구간 안에서 끝나는 reset cuboid 는 미지원"
-                BOXW.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]], _t0, _t1))
-        elif bc.get("type") == "enforce_particle_translation":                          # paper_remeasure2: 정지 영역 (속도 0) 도 고정 정점으로 (vasedeck 윗부분·pillow2sofa 소파)
-            assert max(abs(float(q)) for q in bc["velocity"]) == 0.0 and float(bc.get("start_time", 0.0)) == 0.0 and float(bc.get("end_time", 1e3)) >= 1e3 * 0.0 + 0.9, "시간 구간이 있는 translation 은 미지원"
-            BOX.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]]))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import stab_bl_common as BC                                                          # noqa: E402  [blx] 경계 해석을 공개 코드 베이스라인 실행기와 하나로
+BOX, BOXW, MOV = BC.parse_bcs(cfg, L * float(cfg["frame_dt"])) if a.cfg_bc else ([], [], [])
+for _b in BOXW:
+    assert len(_b) == 4
+PLAST = None
+if cfg.get("material", "jelly") in ("sand", "plasticine"):                            # [blx] 재질 확장 (원 논문은 탄성 전용): PG 반환 사상 (lib/anchorflow/vrgs_xpbd.py vg_plast)
+    PLAST = BC.plastic_params(cfg)                                                     # mu·lam 은 실행 중 맞춘 E 로 (set_E -> s.ml), 나머지 (항복 응력·마찰각·softening) 는 config
+elif cfg.get("material", "jelly") != "jelly":
+    raise SystemExit(f"VR-GS 재질 미지원: {cfg.get('material')}")
 ROT = {}
 if a.cfg_bc:                                                                             # paper_remeasure2: PG enforce_particle_velocity_rotation -> 구동 정점 (lib/anchorflow/vrgs_xpbd.py rot_bcs)
     import numpy as _np
@@ -98,10 +94,11 @@ def parse(sv):
 SETS = [parse(q) for q in a.set]
 S = VG.VRGS(x0, d["v"][0], m, rho_p, E_GT, NU, cfg["g"], float(cfg["frame_dt"]), SETS[0][0], SETS[0][1], vmax=a.vmax, floor_z=FZ, fix_boxes=BOX,
             damp_scale=DSC, damp_dt=float(cfg["substep_dt"]), rot_bcs=ROT, fix_boxes_t=BOXW,
-            origin=(0.5 * (x0.min(0).values + x0.max(0).values)).tolist() if BOXW else None)   # [final_pa_bl] 구간 고정 장면 (정지에서 풀려 떨어짐) 만 float32 반올림 정지 막는 원점 이동 (vrgs_xpbd 주석)
+            origin=(0.5 * (x0.min(0).values + x0.max(0).values)).tolist() if (BOXW or MOV) else None,
+            plast=PLAST, mov_boxes=MOV)   # [final_pa_bl] 구간 고정 장면 (정지에서 풀려 떨어짐) 만 float32 반올림 정지 막는 원점 이동 (vrgs_xpbd 주석)
 INFO = S.info()
 print(f"[VR-GS] {a.tag} 입자 {S.Np}, 케이지 정점 {S.nv} 사면체 {S.nt} 칸 {S.h:.5f} 색 {len(S.colors)} 고정 정점 {INFO['nfixed']} (구간 고정 {INFO.get('nfixed_t')}), 질량 케이지 {S.mass_cage:.4g} / 입자 {S.mass_part:.4g}, "
-      f"결속 무게중심 최소 {S.bind_min:.2e}, 바닥 {FZ}, 감쇠 {DSC}, 정답 E {E_GT:g} ν {NU}, 프레임 {L}, EXT {EXT:.5f}", flush=True)
+      f"결속 무게중심 최소 {S.bind_min:.2e}, 재질 {INFO['mat']} {PLAST}, 구동 상자 정점 {INFO['nmov']}, 바닥 {FZ}, 감쇠 {DSC}, 정답 E {E_GT:g} ν {NU}, 프레임 {L}, EXT {EXT:.5f}", flush=True)
 print(f"[명령] {' '.join(sys.argv)}", flush=True)
 
 
@@ -127,7 +124,7 @@ def rollout(E, keep=False):
             PF[f] = S.F_part().cpu()
     sc = ms[a.warm:] if len(ms) > a.warm else ms
     return dict(E=E, err=(float(np.mean(errs)) if div is None else None), err_done=(float(np.nanmean(errs)) if np.isfinite(errs).any() else None),
-                div=div, frames=len(errs), ms_mean=float(np.mean(sc)) if sc else None, ms_max=float(np.max(sc)) if sc else None, errs=errs), \
+                div=div, frames=len(errs), ndead=int(S.dead.sum()), ms_mean=float(np.mean(sc)) if sc else None, ms_max=float(np.max(sc)) if sc else None, errs=errs), \
         (P if PF is None else (P, PF))
 
 

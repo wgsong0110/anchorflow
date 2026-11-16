@@ -58,19 +58,7 @@ def load_scene(a, dev="cpu"):
         pl = [b for b in cfg["boundary_conditions"] if b.get("type") == "surface_collider"][0]
         assert abs(float(pl["normal"][2]) - 1.0) < 1e-6, "바닥 법선이 z 가 아님"
         FZ = float(pl["point"][2])
-    BOX, BOXW = [], []
-    if a.cfg_bc:
-        for bc in (cfg.get("boundary_conditions") or []):
-            if bc.get("type") == "cuboid":
-                assert max(abs(float(q)) for q in bc["velocity"]) == 0.0
-                w_ = cuboid_window(bc, L * float(cfg["frame_dt"]))
-                if w_ is None:
-                    BOX.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]]))
-                else:                                                                    # final_pa_bl: 시간 구간 cuboid (pillow2sofa 방석 받침) -> BOXW
-                    BOXW.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]], w_[0], w_[1]))
-            elif bc.get("type") == "enforce_particle_translation":                       # paper_remeasure2: 정지 영역 (속도 0) 도 조작점 상자로 (vasedeck 윗부분·pillow2sofa 소파)
-                assert max(abs(float(q)) for q in bc["velocity"]) == 0.0, "속도가 있는 translation 은 미지원"
-                BOX.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]]))
+    BOX, BOXW, MOV = parse_bcs(cfg, L * float(cfg["frame_dt"])) if a.cfg_bc else ([], [], [])
     ROT = []                                                                             # paper_remeasure2: PG 회전 구동기 -> [(점, 단위 법선, 반 높이, 반지름, [(회전 몫, 이동 몫, 시작, 끝), ..]), ..]
     if a.cfg_bc:
         _grp = {}
@@ -83,9 +71,96 @@ def load_scene(a, dev="cpu"):
     g = [float(q) for q in cfg["g"]]
     assert abs(g[0]) < 1e-12 and abs(g[1]) < 1e-12 and g[2] <= 0, f"중력이 -z 또는 0 이 아님 {g}"   # ficus 공식 config = 0
     S = dict(d=d, cfg=cfg, L=L, x0=x0, X=d["x"][:L + 1], v0=d["v"][0].double(), vol=vol, rho=rho, mass=vol * rho,
-             EXT=float((x0.max(0).values - x0.min(0).values).norm()), FZ=FZ, BOX=BOX, BOXW=BOXW, ROT=ROT, g=g, frame_dt=float(cfg["frame_dt"]),
+             EXT=float((x0.max(0).values - x0.min(0).values).norm()), FZ=FZ, BOX=BOX, BOXW=BOXW, MOV=MOV, ROT=ROT, g=g, frame_dt=float(cfg["frame_dt"]),
              E=float(cfg["E"]), nu=float(cfg["nu"]))
     return S
+
+
+def parse_bcs(cfg, horizon):
+    """config 고정·구동 경계 -> (BOX 상시 고정 [(점, 크기)], BOXW 구간 고정 [(점, 크기, 시작, 끝)], MOV 구간 등속 구동 [(점, 크기, 시작, 끝, 속도)]).
+    상자 안 판정은 처음 위치 (PG selection_enforce_particle_velocity_translation 은 경계 추가 때 = 0 프레임 입자 위치로 마스크).
+      cuboid (격자 속도 0): 예전 그대로 (구간이 롤아웃 전체면 BOX, 아니면 BOXW).
+      enforce_particle_translation: 속도 0 이고 구간이 롤아웃 전체면 BOX (예전 그대로), 속도 0 구간 -> BOXW,
+        [blx] 속도 ≠ 0 -> MOV (bread: 위·아래 띠를 ±0.2 m/s 로 당김, 아래 띠는 2.2 s 까지).
+      [blx] release_particles_sequentially (wolf): PG mpm_solver_warp.release_particles_sequentially 와 같은 50 개 속도 0 상자
+        (법선 축: 중심 end_position, 반폭 |start−end|/50 x (50−i), 다른 축: 중심 1 반폭 1; 구간 [start_time, end_time/50 x (i+1))) -> BOXW 50 개."""
+    BOX, BOXW, MOV = [], [], []
+    for bc in (cfg.get("boundary_conditions") or []):
+        ty = bc.get("type")
+        if ty == "cuboid":
+            assert max(abs(float(q)) for q in bc["velocity"]) == 0.0
+            w_ = cuboid_window(bc, horizon)
+            if w_ is None:
+                BOX.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]]))
+            else:                                                                        # final_pa_bl: 시간 구간 cuboid (pillow2sofa 방석 받침)
+                BOXW.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]], w_[0], w_[1]))
+        elif ty == "enforce_particle_translation":
+            pt, sz = [float(q) for q in bc["point"]], [float(q) for q in bc["size"]]
+            vel = [float(q) for q in bc["velocity"]]
+            t0, t1 = float(bc.get("start_time", 0.0)), float(bc.get("end_time", 1e3))
+            if max(abs(q) for q in vel) == 0.0:
+                if t0 <= 0.0 and t1 > horizon:
+                    BOX.append((pt, sz))                                                 # paper_remeasure2: 정지 영역 (vasedeck 윗부분·pillow2sofa 소파)
+                else:
+                    BOXW.append((pt, sz, t0, t1))
+            else:
+                MOV.append((pt, sz, t0, t1, vel))
+        elif ty == "release_particles_sequentially":
+            nl = 50                                                                      # PG 가 인자를 무시하고 50 으로 둠
+            nv = [float(q) for q in bc["normal"]]
+            pt, sz, ax = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], -1
+            for k in range(3):
+                if nv[k] == 0:
+                    pt[k], sz[k] = 1.0, 1.0
+                else:
+                    ax, pt[k] = k, float(bc["end_position"])
+            hl = abs(float(bc["start_position"]) - float(bc["end_position"])) / nl
+            etp = float(bc["end_time"]) / nl
+            for i in range(nl):
+                s2 = list(sz); s2[ax] = hl * (nl - i)
+                BOXW.append((list(pt), s2, float(bc["start_time"]), etp * (i + 1)))
+    return BOX, BOXW, MOV
+
+
+def plastic_params(cfg, E=None):
+    """[blx] 재질 확장 (원 논문은 탄성 전용): PG config -> 소성 매개변수. E 는 각 방법이 논문 절차로 맞춘 값이 있으면 그것 (반환 사상의 mu·lam), 없으면 config.
+    PG mpm_solver_warp 기본값: softening 0.1, hardening 0, xi 0, friction_angle 25 (sin 은 3.14159265 로)."""
+    mat = cfg.get("material", "jelly")
+    E = float(cfg["E"]) if E is None else float(E)
+    nu = float(cfg["nu"])
+    mu = E / (2.0 * (1.0 + nu)); lam = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+    phi = float(cfg.get("friction_angle", 25.0))
+    sp = math.sin(phi / 180.0 * 3.14159265)
+    alpha = math.sqrt(2.0 / 3.0) * 2.0 * sp / (3.0 - sp)
+    ys = float(cfg.get("yield_stress", 0.0))
+    return dict(material=mat, E=E, nu=nu, mu=mu, lam=lam, friction_angle=phi, alpha=alpha,
+                cdp=(3.0 * lam + 2.0 * mu) / (2.0 * mu) * alpha,                         # PG sand: δγ = |ε̂| + (3λ+2μ)/(2μ) α tr ε
+                yield_stress=ys, softening=float(cfg.get("softening", 0.1)), hardening=int(cfg.get("hardening", 0)),
+                eps_y=(math.sqrt(1.5) * ys / E if E > 0 else 0.0))                       # 스프링 항복 로그 변형률: 단축 응력에서 PG von Mises 항복 (|dev τ| = σy) 이 되는 축 변형률
+
+
+def spring_plastic_update(cur, rest, pp, tr=None):
+    """[blx] 스프링 소성 휴지 길이 (표준 방식: 변형률이 항복을 넘으면 휴지 길이가 따라감). cur·rest 같은 모양 텐서, 로그 변형률 ε = log(cur/rest).
+      plasticine (PG von Mises): |ε| > ε_y 이면 rest = cur exp(−sign(ε) ε_y)  (ε_y = sqrt(3/2) σy / E; 단축 응력 환산).
+      sand (PG Drucker–Prager, 스프링 근사 -- 정확히 옮길 수 없음): tr = 스프링 양 끝 점의 체적 변형률 추정 (점마다 이어진 스프링 ε 평균 x 3) 의 평균,
+        축 편차 e = ε − tr/3, |ε̂| ≈ sqrt(3/2)|e| (축대칭 상태), δγ = sqrt(3/2)|e| + cdp tr.
+        δγ ≤ 0: 그대로 / δγ > 0 · tr > 0 (인장): rest = cur (응력 0, PG F_e = U Vᵀ) / δγ > 0 · tr ≤ 0: e 를 δγ 만큼 줄임 (PG H = ε − ε̂ δγ/|ε̂|) -> rest = cur exp(−(tr/3 + e'))."""
+    eps = torch.log(cur.clamp(min=1e-12) / rest.clamp(min=1e-12))
+    if pp["material"] == "plasticine":
+        ey = pp["eps_y"]
+        if ey <= 0:
+            return rest
+        over = eps.abs() > ey
+        return torch.where(over, cur * torch.exp(-torch.sign(eps) * ey), rest)
+    if pp["material"] == "sand":
+        e = eps - tr / 3.0
+        en = math.sqrt(1.5) * e.abs()
+        dg = en + pp["cdp"] * tr
+        e2 = e * (1.0 - dg / en.clamp(min=1e-30))
+        r_c = cur * torch.exp(-(tr / 3.0 + e2))
+        r_t = cur
+        return torch.where(dg <= 0, rest, torch.where(tr > 0, r_t, r_c))
+    return rest
 
 
 def cuboid_window(bc, horizon):

@@ -94,7 +94,7 @@ if a.mode == "prep":
     lo, hi = Xs.reshape(-1, 3).min(0).values, Xs.reshape(-1, 3).max(0).values
     pad = 0.1 * float((hi - lo).max())
     lo, hi = (lo - pad).tolist(), (hi + pad).tolist()
-    fix = bool(S["BOX"]) or bool(S["ROT"]) or bool(S["BOXW"])
+    fix = bool(S["BOX"]) or bool(S["ROT"]) or bool(S["BOXW"]) or bool(S["MOV"])
     if S["FZ"] is not None:
         gz = float(to_sg(torch.tensor([[0.0, 0.0, S["FZ"]]]))[0, 2])
         zmin = Xs[..., 2].amin(dim=1)                                                           # 프레임별 최저점
@@ -160,6 +160,8 @@ DYNAMIC:
             bc["fix_boxes_sg"].append((to_sg(torch.tensor([pt]))[0].tolist(), [float(q) * Ks for q in sz]))
         if S["BOXW"]:                                                                           # [final_pa_bl] PG 시간 구간 cuboid (시각은 시뮬 초, 실행 때 c 로 나눠 비교)
             bc["fix_boxes_sg_w"] = [(to_sg(torch.tensor([b_[0]]))[0].tolist(), [float(q) * Ks for q in b_[1]], b_[2], b_[3], c) for b_ in S["BOXW"]]
+        if S["MOV"]:                                                                            # [blx] 구간 등속 구동 상자 (bread 당김; SG 길이·시간 단위 속도 v Ks / c)
+            bc["mov_sg"] = [(to_sg(torch.tensor([b_[0]]))[0].tolist(), [float(q) * Ks for q in b_[1]], b_[2], b_[3], [float(q) * Ks / c for q in b_[4]], c) for b_ in S["MOV"]]
         bc["rot_sg"] = [dict(pt=to_sg(torch.tensor([g_[0]]))[0].tolist(), n=g_[1], hh=g_[2] * Ks, rr=g_[3] * Ks, wins=g_[4], c=c) for g_ in S["ROT"]]   # paper_remeasure2: PG 회전 구동기 (SG 길이 단위, 시간은 c 배)
         torch.save(dict(x0=to_sg(x0).float(), v0=(S["v0"] * (Ks / c)).float()), f"{FIT}/af_v0.pt")
         bc["v0"] = f"{FIT}/af_v0.pt"
@@ -174,7 +176,7 @@ sys.path.insert(0, SG)
 GPU = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
 BC = json.load(open(BCJ))
 import lib.models.spring_mass.Spring_Mass as SMM                                              # noqa: E402
-if BC["fix_boxes_sg"] or BC["v0"] or BC.get("rot_sg") or BC.get("fix_boxes_sg_w"):                                          # (2) ficus 화분 고정·초기 속도장 (+ 회전 구동 앵커)
+if BC["fix_boxes_sg"] or BC["v0"] or BC.get("rot_sg") or BC.get("fix_boxes_sg_w") or BC.get("mov_sg"):                                          # (2) ficus 화분 고정·초기 속도장 (+ 회전 구동 앵커)
     _V = torch.load(BC["v0"])
     _init0, _step0 = SMM.Spring_Mass.initialize, SMM.Spring_Mass.step
 
@@ -192,11 +194,16 @@ if BC["fix_boxes_sg"] or BC["v0"] or BC.get("rot_sg") or BC.get("fix_boxes_sg_w"
             self.af_rot.append((m_, n_, p_, g_)); self.af_fix = self.af_fix | m_
         self.af_nstep = 0
         self.af_fixw = [(C.in_boxes(self.init_xyz.float(), [b_[:2]]) & ~self.af_fix, b_[2], b_[3], b_[4]) for b_ in (BC.get("fix_boxes_sg_w") or [])]
+        self.af_mov = [(C.in_boxes(self.init_xyz.float(), [b_[:2]]) & ~self.af_fix, b_[2], b_[3], torch.tensor(b_[4], device=xyz.device), b_[5])
+                       for b_ in (BC.get("mov_sg") or [])]
         v = V0[idx].mean(1)
         v[self.af_fix] = 0.0
         for (m_, t0_, t1_, c_) in self.af_fixw:                                                   # 시각 0 에 켜진 구간 고정 앵커도 속도 0
             if C.box_active(t0_, t1_, 0.0):
                 v[m_] = 0.0
+        for (m_, t0_, t1_, vv_, c_) in self.af_mov:                                               # [blx] 시각 0 에 켜진 구동 앵커는 구동 속도
+            if C.box_active(t0_, t1_, 0.0):
+                v[m_] = vv_.to(v.dtype)
         self.init_v = v.to(self.init_xyz.dtype)
         print(f"[ficus 처리] 앵커 {self.n_points}, 고정 {int(self.af_fix.sum())}, 구간 고정 {[(int(q[0].sum()), q[1], q[2]) for q in self.af_fixw]}, 초기 속력 최대 {float(v.norm(dim=1).max()):.3g}", flush=True)
 
@@ -231,17 +238,63 @@ if BC["fix_boxes_sg"] or BC["v0"] or BC.get("rot_sg") or BC.get("fix_boxes_sg_w"
             if bool(on.any()):
                 keep = keep | on[:, None]
                 v = torch.where(on[:, None], torch.zeros_like(v), v)
-        return torch.where(keep, self.init_xyz, xyz), torch.where(self.af_fix[:, None], vnew, v)
+        xyz, v = torch.where(keep, self.init_xyz, xyz), torch.where(self.af_fix[:, None], vnew, v)
+        for (m_, t0_, t1_, vv_, c_) in self.af_mov:                                               # [blx] PG enforce_particle_translation (속도 ≠ 0) start <= t < end: 앵커 = 처음 위치 + 등속, 속도 = 구동 속도; 뒤엔 자유
+            if C.box_active(t0_, t1_, t_w / c_):
+                mm = m_[:, None]
+                xyz = torch.where(mm, (xyz_in + vv_ * float(dt)).to(xyz.dtype), xyz)
+                v = torch.where(mm, vv_.to(v.dtype).expand_as(v), v)
+        return xyz, v
 
     _fwd0 = SMM.Spring_Mass.forward
 
     def _forward(self, xyz_all, xyz, v, frame_id, *x, **k):
-        if self.af_fixw:                                                                          # [final_pa_bl] 시각 = 프레임 번호에서 (학습 반복마다 처음부터 다시 도는 롤아웃도 맞게)
+        if self.af_fixw or self.af_mov:                                                           # [final_pa_bl] 시각 = 프레임 번호에서 (학습 반복마다 처음부터 다시 도는 롤아웃도 맞게)
             self.af_nstep = (int(frame_id) - 1) * int(self.n_step)
         return _fwd0(self, xyz_all, xyz, v, frame_id, *x, **k)
     SMM.Spring_Mass.forward = _forward
     SMM.Spring_Mass.initialize = _initialize
     SMM.Spring_Mass.step = _step
+PLAST = C.plastic_params(S["cfg"]) if S["cfg"].get("material", "jelly") in ("sand", "plasticine") else None
+if PLAST is not None:
+    # [blx] 재질 확장 (원 논문은 탄성 전용) -- 스프링 소성 휴지 길이 (stab_bl_common.spring_plastic_update; PhysTwin 확장과 같은 식). 공식 kNN 스프링 (앵커마다 K_NEIGHBORS 개,
+    #   방향마다 따로) 의 휴지 길이 origin_len 대신 상태 af_rest 를 compute_force 에 씀 (강성 정규화 K / origin_len 은 공식 그대로 처음 길이).
+    #   서브스텝마다 공식 step 끝 (적분·경계 뒤) 에 갱신, 롤아웃 시작 (frame_id 1) 마다 처음 값. 휴지 길이는 미분하지 않는 상태 (detach).
+    _cf0, _st1, _fw1 = SMM.Spring_Mass.compute_force, SMM.Spring_Mass.step, SMM.Spring_Mass.forward
+
+    def _compute_force_pl(self, xyz, v, K, damp):
+        r = getattr(self, "af_rest", None)
+        if r is None:
+            return _cf0(self, xyz, v, K, damp)
+        o = self.origin_len
+        self.origin_len = r
+        try:
+            return _cf0(self, xyz, v, K, damp)
+        finally:
+            self.origin_len = o
+
+    def _step_pl(self, xyz, v, K, m, rebound_k, fric_k, damp, dt):
+        xyz, v = _st1(self, xyz, v, K, m, rebound_k, fric_k, damp, dt)
+        with torch.no_grad():
+            if getattr(self, "af_rest", None) is None:
+                self.af_rest = self.origin_len.detach().clone()
+            xd = xyz.detach()
+            cur = torch.norm(xd[self.knn_index] - xd.unsqueeze(1), dim=2)                         # [N, k]
+            tr = None
+            if PLAST["material"] == "sand":                                                       # 점 체적 변형률 추정 = 3 x 그 점 스프링 로그 변형률 평균, 스프링은 두 끝점 평균
+                ev = 3.0 * torch.log(cur.clamp(min=1e-12) / self.af_rest.clamp(min=1e-12)).mean(1)
+                tr = 0.5 * (ev[:, None] + ev[self.knn_index])
+            self.af_rest = C.spring_plastic_update(cur, self.af_rest, PLAST, tr)
+        return xyz, v
+
+    def _forward_pl(self, xyz_all, xyz, v, frame_id, *x, **k):
+        if int(frame_id) == 1:
+            self.af_rest = self.origin_len.detach().clone()
+        return _fw1(self, xyz_all, xyz, v, frame_id, *x, **k)
+    SMM.Spring_Mass.compute_force = _compute_force_pl
+    SMM.Spring_Mass.step = _step_pl
+    SMM.Spring_Mass.forward = _forward_pl
+    print(f"[Spring-Gaus] 재질 확장 {PLAST['material']}: ε_y {PLAST['eps_y']:.4g} cdp {PLAST['cdp']:.4g}", flush=True)
 import train as T                                                                               # noqa: E402  (공식 train.py, __main__ 블록은 안 돎)
 
 if a.mode == "train":

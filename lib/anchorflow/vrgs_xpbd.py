@@ -40,6 +40,48 @@ __device__ __forceinline__ void qmat(const float* q, float* R) {   // q = (x,y,z
   R[6]=2*(x*z-y*w);   R[7]=2*(y*z+x*w);   R[8]=1-2*(x*x+y*y);
 }
 
+// [blx] 3x3 SVD (야코비: A = Fᵀ F 고유분해 -> V, σ; U = F V / σ, Gram-Schmidt; U·V 회전, 뒤집힘이면 σ3 < 0 -- warp svd3 와 같은 부호 규약)
+__device__ void svd3x3(const float* F, float* U, float* S, float* V) {
+  double A[9];
+  for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) { double a = 0; for (int k = 0; k < 3; k++) a += (double)F[3*k+i]*F[3*k+j]; A[3*i+j] = a; }
+  double Q[9] = {1,0,0, 0,1,0, 0,0,1};
+  for (int sw = 0; sw < 12; sw++) {
+    double off = A[1]*A[1] + A[2]*A[2] + A[5]*A[5];
+    if (off < 1e-30 * (A[0]*A[0] + A[4]*A[4] + A[8]*A[8]) + 1e-300) break;
+    for (int pq = 0; pq < 3; pq++) {
+      int p = pq == 2 ? 1 : 0, q = pq == 0 ? 1 : 2;
+      double apq = A[3*p+q]; if (fabs(apq) < 1e-300) continue;
+      double th = (A[3*q+q] - A[3*p+p]) / (2.0*apq);
+      double t = (th >= 0 ? 1.0 : -1.0) / (fabs(th) + sqrt(th*th + 1.0));
+      double c = 1.0 / sqrt(t*t + 1.0), sn = t*c;
+      for (int k = 0; k < 3; k++) { double akp = A[3*k+p], akq = A[3*k+q]; A[3*k+p] = c*akp - sn*akq; A[3*k+q] = sn*akp + c*akq; }
+      for (int k = 0; k < 3; k++) { double apk = A[3*p+k], aqk = A[3*q+k]; A[3*p+k] = c*apk - sn*aqk; A[3*q+k] = sn*apk + c*aqk; }
+      for (int k = 0; k < 3; k++) { double qkp = Q[3*k+p], qkq = Q[3*k+q]; Q[3*k+p] = c*qkp - sn*qkq; Q[3*k+q] = sn*qkp + c*qkq; }
+    }
+  }
+  double ev[3] = {A[0], A[4], A[8]}; int o[3] = {0, 1, 2};
+  for (int i = 0; i < 2; i++) for (int j = 0; j < 2 - i; j++) if (ev[o[j]] < ev[o[j+1]]) { int tt = o[j]; o[j] = o[j+1]; o[j+1] = tt; }
+  double v[3][3];
+  for (int c = 0; c < 3; c++) for (int r = 0; r < 3; r++) v[c][r] = Q[3*r+o[c]];
+  // det V = +1
+  double dv = v[0][0]*(v[1][1]*v[2][2]-v[1][2]*v[2][1]) - v[0][1]*(v[1][0]*v[2][2]-v[1][2]*v[2][0]) + v[0][2]*(v[1][0]*v[2][1]-v[1][1]*v[2][0]);
+  if (dv < 0) for (int r = 0; r < 3; r++) v[2][r] = -v[2][r];
+  double fv[3][3];
+  for (int c = 0; c < 3; c++) for (int r = 0; r < 3; r++) fv[c][r] = F[3*r]*v[c][0] + F[3*r+1]*v[c][1] + F[3*r+2]*v[c][2];
+  double u[3][3];
+  double n0 = sqrt(fv[0][0]*fv[0][0] + fv[0][1]*fv[0][1] + fv[0][2]*fv[0][2]);
+  if (n0 > 1e-30) { for (int r = 0; r < 3; r++) u[0][r] = fv[0][r] / n0; } else { u[0][0] = 1; u[0][1] = 0; u[0][2] = 0; }
+  double d1 = u[0][0]*fv[1][0] + u[0][1]*fv[1][1] + u[0][2]*fv[1][2];
+  double w1[3] = {fv[1][0] - d1*u[0][0], fv[1][1] - d1*u[0][1], fv[1][2] - d1*u[0][2]};
+  double n1 = sqrt(w1[0]*w1[0] + w1[1]*w1[1] + w1[2]*w1[2]);
+  if (n1 > 1e-30) { for (int r = 0; r < 3; r++) u[1][r] = w1[r] / n1; }
+  else { double e[3] = {0, 0, 0}; e[fabs(u[0][0]) < 0.9 ? 0 : 1] = 1; double dd = e[0]*u[0][0] + e[1]*u[0][1] + e[2]*u[0][2];
+         double w[3] = {e[0]-dd*u[0][0], e[1]-dd*u[0][1], e[2]-dd*u[0][2]}; double nn = sqrt(w[0]*w[0]+w[1]*w[1]+w[2]*w[2]); for (int r = 0; r < 3; r++) u[1][r] = w[r]/nn; }
+  u[2][0] = u[0][1]*u[1][2] - u[0][2]*u[1][1]; u[2][1] = u[0][2]*u[1][0] - u[0][0]*u[1][2]; u[2][2] = u[0][0]*u[1][1] - u[0][1]*u[1][0];
+  S[0] = (float)n0; S[1] = (float)(u[1][0]*fv[1][0] + u[1][1]*fv[1][1] + u[1][2]*fv[1][2]); S[2] = (float)(u[2][0]*fv[2][0] + u[2][1]*fv[2][1] + u[2][2]*fv[2][2]);
+  for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) { U[3*r+c] = (float)u[c][r]; V[3*r+c] = (float)v[c][r]; }
+}
+
 __global__ void vg_predict(int n, float* x, float* xp, float* v, const float* w, float gx, float gy, float gz, float dt, float damp) {
   int i = blockIdx.x * blockDim.x + threadIdx.x; if (i >= n) return;
   float a = x[3*i], b = x[3*i+1], c = x[3*i+2];
@@ -62,9 +104,10 @@ __global__ void vg_zero(int n, float* lam) {
 
 // 같은 색 사면체 [off, off+cnt)
 __global__ void vg_solve(int off, int cnt, const int* T, float* x, const float* w, const float* Dmi, const float* aR, const float* aV,
-                         float* lam, float* q, int nrot) {
+                         float* lam, float* q, int nrot, int mat, const unsigned char* dead) {
   int k = blockIdx.x * blockDim.x + threadIdx.x; if (k >= cnt) return;
   int t = off + k;
+  if (dead[t]) return;                                       // [blx] PG plasticine 손상: 항복 응력 ≤ 0 이면 mu = lam = 0 (응력 없음)
   int id[4]; float p[4][3], wi[4];
   for (int a = 0; a < 4; a++) { id[a] = T[4*t+a]; wi[a] = w[id[a]]; for (int r = 0; r < 3; r++) p[a][r] = x[3*id[a]+r]; }
   float D[9]; for (int r = 0; r < 3; r++) for (int j = 0; j < 3; j++) D[3*r+j] = p[j+1][r] - p[0][r];
@@ -108,6 +151,20 @@ __global__ void vg_solve(int off, int cnt, const int* T, float* x, const float* 
   Cf[2] = f0[1]*f1[2]-f0[2]*f1[1]; Cf[5] = f0[2]*f1[0]-f0[0]*f1[2]; Cf[8] = f0[0]*f1[1]-f0[1]*f1[0];
   float J = f0[0]*Cf[0] + f0[1]*Cf[3] + f0[2]*Cf[6];
   float CV = J - 1.f;
+  if (mat == 2) {                                            // [blx] PG 모래 탄성 = Hencky (kirchoff_stress_drucker_prager: τ = 2μ log σ + λ tr log σ):
+    // ψ V = ½ C1²/α_R + ½ C2²/α_V,  C1 = |ε|, C2 = tr ε (ε = log|σ|), α 는 FCR 과 같은 1/(2μV)·1/(λV); ∂C1/∂F = U diag(ε/σ) Vᵀ / |ε|, ∂C2/∂F = U diag(1/σ) Vᵀ
+    float U_[9], S_[3], V_[9];
+    svd3x3(F, U_, S_, V_);
+    float e_[3], is_[3];
+    for (int i = 0; i < 3; i++) { float sa = fmaxf(fabsf(S_[i]), 1e-14f); e_[i] = logf(sa); is_[i] = 1.f / (S_[i] >= 0.f ? sa : -sa); }
+    CR = sqrtf(e_[0]*e_[0] + e_[1]*e_[1] + e_[2]*e_[2]);
+    CV = e_[0] + e_[1] + e_[2];
+    for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) {
+      float g = 0.f, h = 0.f;
+      for (int i = 0; i < 3; i++) { g += U_[3*r+i] * e_[i] * is_[i] * V_[3*c+i]; h += U_[3*r+i] * is_[i] * V_[3*c+i]; }
+      G[3*r+c] = g; Cf[3*r+c] = h;                            // 아래 공통 식: gR = G Dm⁻ᵀ / CR, gV = Cf Dm⁻ᵀ
+    }
+  }
   // 정점 기울기: H = G Dm⁻ᵀ, 정점 j+1 = H 열 j, 정점 0 = −합
   float gR[4][3], gV[4][3];
   bool useR = CR > 1e-7f;
@@ -136,6 +193,56 @@ __global__ void vg_solve(int off, int cnt, const int* T, float* x, const float* 
     if (wi[a] <= 0.f) continue;
     for (int r = 0; r < 3; r++) x[3*id[a]+r] = p[a][r] + wi[a]*(gR[a][r]*dR + gV[a][r]*dV);
   }
+}
+
+// [blx] 서브스텝 끝 반환 사상 (PG mpm_utils.py: sand_return_mapping · von_mises_return_mapping_with_damage 줄 단위 대조). F_e = Ds Dmi (Dmi = Dm⁻¹ F_p⁻¹),
+//   F_e 새 값 = U diag(s_new) Vᵀ = F_e V diag(s_new/σ) Vᵀ  ->  Dmi <- Dmi V diag(s_new/σ) Vᵀ (위치는 안 바뀜, F_p 만 흡수).
+__global__ void vg_plast(int nt, const int* T, const float* x, float* Dmi, float* ys, unsigned char* dead, int mat, const float* ml, float cdp, float soft) {
+  int t = blockIdx.x * blockDim.x + threadIdx.x; if (t >= nt || dead[t]) return;
+  float p[4][3];
+  for (int a = 0; a < 4; a++) for (int r = 0; r < 3; r++) p[a][r] = x[3*T[4*t+a]+r];
+  float D[9]; for (int r = 0; r < 3; r++) for (int j = 0; j < 3; j++) D[3*r+j] = p[j+1][r] - p[0][r];
+  float* M = Dmi + 9*t;
+  float F[9];
+  for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) F[3*r+c] = D[3*r]*M[c] + D[3*r+1]*M[3+c] + D[3*r+2]*M[6+c];
+  float U[9], S[3], V[9];
+  svd3x3(F, U, S, V);
+  float mu = ml[0], la = ml[1];
+  float sn[3];
+  if (mat == 2) {                                            // sand_return_mapping
+    float e[3]; for (int i = 0; i < 3; i++) e[i] = logf(fmaxf(fabsf(S[i]), 1e-14f));
+    float tr = e[0] + e[1] + e[2];
+    float eh[3] = {e[0] - tr/3.f, e[1] - tr/3.f, e[2] - tr/3.f};
+    float ehn = sqrtf(eh[0]*eh[0] + eh[1]*eh[1] + eh[2]*eh[2]);
+    float dg = ehn + cdp * tr;                               // cdp = (3λ+2μ)/(2μ) α
+    if (dg <= 0.f) return;                                   // F_elastic = F_trial
+    if (tr > 0.f) { sn[0] = sn[1] = sn[2] = 1.f; }           // F_elastic = U Vᵀ
+    else { for (int i = 0; i < 3; i++) sn[i] = expf(e[i] - eh[i] * (dg / ehn)); }
+  } else if (mat == 5) {                                     // von_mises_return_mapping_with_damage
+    float sg[3] = {fmaxf(S[0], 0.01f), fmaxf(S[1], 0.01f), fmaxf(S[2], 0.01f)};
+    float e[3] = {logf(sg[0]), logf(sg[1]), logf(sg[2])};
+    float temp = (e[0] + e[1] + e[2]) / 3.f;
+    float tau[3]; for (int i = 0; i < 3; i++) tau[i] = 2.f*mu*e[i] + la*(e[0] + e[1] + e[2]);
+    float st = tau[0] + tau[1] + tau[2];
+    float cd[3] = {tau[0] - st/3.f, tau[1] - st/3.f, tau[2] - st/3.f};
+    if (!(sqrtf(cd[0]*cd[0] + cd[1]*cd[1] + cd[2]*cd[2]) > ys[t])) return;
+    if (ys[t] <= 0.f) return;
+    float eh[3] = {e[0] - temp, e[1] - temp, e[2] - temp};
+    float ehn = sqrtf(eh[0]*eh[0] + eh[1]*eh[1] + eh[2]*eh[2]) + 1e-6f;
+    float dg = ehn - ys[t] / (2.f*mu);
+    float dl = 0.f;
+    for (int i = 0; i < 3; i++) { float d = (dg / ehn) * eh[i]; e[i] -= d; dl += d*d; }
+    ys[t] = ys[t] - soft * sqrtf(dl);
+    if (ys[t] <= 0.f) dead[t] = 1;                           // model.mu = model.lam = 0
+    for (int i = 0; i < 3; i++) sn[i] = expf(e[i]);
+  } else return;
+  float r_[3];
+  for (int i = 0; i < 3; i++) { float sa = fmaxf(fabsf(S[i]), 1e-14f); r_[i] = sn[i] / (S[i] >= 0.f ? sa : -sa); }
+  float W[9];                                                // W = V diag(r) Vᵀ
+  for (int a = 0; a < 3; a++) for (int b = 0; b < 3; b++) { float w = 0.f; for (int i = 0; i < 3; i++) w += V[3*a+i] * r_[i] * V[3*b+i]; W[3*a+b] = w; }
+  float Mn[9];
+  for (int a = 0; a < 3; a++) for (int b = 0; b < 3; b++) Mn[3*a+b] = M[3*a]*W[b] + M[3*a+1]*W[3+b] + M[3*a+2]*W[6+b];
+  for (int i = 0; i < 9; i++) M[i] = Mn[i];
 }
 
 __global__ void vg_floor(int n, float* x, const float* xp, const float* w, float fz) {
@@ -264,7 +371,7 @@ class VRGS:
     """케이지 XPBD. x0 [Np,3] 입자 rest, v0 [Np,3], m [Np] 입자 질량, rho_p [Np] 입자 밀도."""
 
     def __init__(s, x0, v0, m, rho_p, E, nu, g, frame_dt, N, iters, vmax=30000, floor_z=None, fix_boxes=(), damp_scale=1.0, damp_dt=None,
-                 h=None, nrot=5, rot_bcs=(), fix_boxes_t=(), origin=None):
+                 h=None, nrot=5, rot_bcs=(), fix_boxes_t=(), origin=None, plast=None, mov_boxes=()):
         dev = "cuda"
         s.Np = x0.shape[0]
         x0 = x0.to(dev).double()
@@ -284,6 +391,16 @@ class VRGS:
         Dm = torch.stack([P[:, 1] - P[:, 0], P[:, 2] - P[:, 0], P[:, 3] - P[:, 0]], -1)
         s.vol = (torch.linalg.det(Dm).abs() / 6.0)
         s.Dmi = torch.linalg.inv(Dm).float().contiguous().reshape(-1)
+        s.Dmi0 = s.Dmi.clone()                                                          # [blx] rest Dm⁻¹ (총 F = Ds Dmi0); s.Dmi = Dm⁻¹ F_p⁻¹ (소성이면 서브스텝마다 바뀜)
+        # [blx] 재질 확장 (원 논문은 탄성 전용): plast = stab_bl_common.plastic_params 꼴 dict (material sand | plasticine), 없으면 탄성 (예전 그대로)
+        s.plast = plast
+        s.mat = {"sand": 2, "plasticine": 5}.get((plast or {}).get("material"), 0)
+        if s.mat == 5:
+            assert int(plast.get("hardening", 0)) == 0, "PG hardening 1 은 미지원 (config 에 없으면 0)"
+        s.ys0 = float((plast or {}).get("yield_stress", 0.0))
+        s.ys = torch.full((s.nt,), s.ys0, device=dev, dtype=torch.float32)
+        s.dead = torch.zeros(s.nt, device=dev, dtype=torch.uint8)
+        s.ml = torch.zeros(2, device=dev, dtype=torch.float32)
         # 질량: ρ V_T / 4, ρ = 사면체에 결속된 입자 밀도 평균 (없으면 전체 질량 가중 밀도)
         rho_p = rho_p.to(dev).double()
         rs = torch.zeros(s.nt, device=dev, dtype=torch.float64).index_add_(0, tid, rho_p)
@@ -309,10 +426,18 @@ class VRGS:
         for (pt, sz, t0, t1) in fix_boxes_t:
             mw = ((V - torch.tensor(pt, device=dev, dtype=torch.float64)).abs() < torch.tensor(sz, device=dev, dtype=torch.float64)).all(-1) & ~s.fixed
             s.fixw.append((mw, float(t0), float(t1)))
+        # [blx] 구간 등속 구동 상자 (PG enforce_particle_translation 속도 ≠ 0; bread 당김): rest 위치가 상자 안인 정점은 start <= t < end 동안 질량 무한 + 속도 v 로 이동, 뒤엔 자유 (속도 유지)
+        s.movw = []
+        for (pt, sz, t0, t1, vel) in mov_boxes:
+            mw = ((V - torch.tensor(pt, device=dev, dtype=torch.float64)).abs() < torch.tensor(sz, device=dev, dtype=torch.float64)).all(-1) & ~s.fixed
+            s.movw.append((mw, float(t0), float(t1), [float(q) for q in vel]))
         s.w_free = w.float().contiguous().clone()
         s.w_free[s.fixed] = 0.0
         w[s.fixed] = 0.0
         for (mw, t0, t1) in s.fixw:
+            if t0 <= 1e-6 < t1:
+                w[mw] = 0.0
+        for (mw, t0, t1, _v) in s.movw:
             if t0 <= 1e-6 < t1:
                 w[mw] = 0.0
         s.fr = 0
@@ -328,6 +453,9 @@ class VRGS:
         vv = torch.where(Ms[:, None] > 0, Ps / Ms.clamp(min=1e-300)[:, None], vbar[None])
         vv[s.fixed] = 0.0
         vv[w == 0.0] = 0.0
+        for (mw, t0, t1, vel) in s.movw:
+            if t0 <= 1e-6 < t1:
+                vv[mw] = torch.tensor(vel, device=dev, dtype=torch.float64)
         # [final_pa_bl] 좌표 원점 옮김 (평행 이동만; 동역학 불변): float32 위치에서 서브스텝 변위 g dt² 가 위치의 반 ulp 보다 작으면 (pillow2sofa: g 5, dt 1e-4 -> 5e-8,
         #   z >= 1 의 반 ulp 6e-8) 정지에서 출발한 정점이 반올림으로 제자리에 머물고 v = (x − xp)/dt = 0 이 되어 영영 안 떨어진다 -> 시뮬 내부 좌표를 origin 기준으로.
         #   출력 xo 는 프레임 끝 (시간 밖) 에 origin 을 더해 원래 좌표. origin None = 예전 그대로.
@@ -361,11 +489,13 @@ class VRGS:
         dt2 = s.dt * s.dt
         s.aR.copy_((1.0 / (2.0 * mu * s.vol) / dt2).float())
         s.aV.copy_((1.0 / (la * s.vol) / dt2).float())
+        s.ml.copy_(torch.tensor([mu, la], dtype=torch.float32))
 
     def reset(s):
         s.fr = 0
         s.x.copy_(s.X0); s.xp.copy_(s.X0); s.v.copy_(s.V0); s.q.zero_(); s.q[:, 3] = 1.0
-        if s.fixw:
+        s.Dmi.copy_(s.Dmi0); s.ys.fill_(s.ys0); s.dead.zero_()
+        if s.fixw or s.movw:
             s._pin()
 
     def _pin(s):
@@ -377,8 +507,17 @@ class VRGS:
             if t0 <= t + 1e-6 < t1:
                 on |= mw
         w[on] = 0.0
-        s.w.copy_(w)
         s.v[on] = 0.0
+        if s.movw:                                                                       # [blx] 구동 중인 상자: 질량 무한 + vg_kin 으로 v dt 씩 (s.vd), 끝나면 자유
+            kin = s.kin.clone()
+            vd = s.vd.clone() if s.rotg else torch.zeros_like(s.vd)
+            for (mw, t0, t1, vel) in s.movw:
+                if t0 <= t + 1e-6 < t1:
+                    w[mw] = 0.0; kin |= mw
+                    vd[mw] = torch.tensor(vel, device=vd.device, dtype=vd.dtype)
+                    s.v[mw] = vd[mw]
+            s.kin_u8.copy_(kin.to(torch.uint8)); s.vd.copy_(vd)
+        s.w.copy_(w)
 
     def _rec_sub(s):
         M = _mod()
@@ -388,14 +527,18 @@ class VRGS:
         i32, f32 = np.int32, np.float32
         with RTC._Stream():
             f_pred(gv, (B,), (i32(s.nv), _P(s.x), _P(s.xp), _P(s.v), _P(s.w), f32(s.g[0]), f32(s.g[1]), f32(s.g[2]), f32(s.dt), f32(s.damp)))
-            if s.rotg:
+            if s.rotg or s.movw:
                 f_kin(gv, (B,), (i32(s.nv), _P(s.x), _P(s.vd), _P(s.kin_u8), f32(s.dt)))
             f_zero(((2 * s.nt + B - 1) // B,), (B,), (i32(2 * s.nt), _P(s.lam)))
             for _ in range(s.iters):
                 for (o, c) in s.colors:
-                    f_solve(((c + B - 1) // B,), (B,), (i32(o), i32(c), _P(s.T), _P(s.x), _P(s.w), _P(s.Dmi), _P(s.aR), _P(s.aV), _P(s.lam), _P(s.q), i32(s.nrot)))
+                    f_solve(((c + B - 1) // B,), (B,), (i32(o), i32(c), _P(s.T), _P(s.x), _P(s.w), _P(s.Dmi), _P(s.aR), _P(s.aV), _P(s.lam), _P(s.q), i32(s.nrot),
+                                                       i32(s.mat), _P(s.dead)))
                 if s.fz > -1e29:
                     f_floor(gv, (B,), (i32(s.nv), _P(s.x), _P(s.xp), _P(s.w), f32(s.fz)))
+            if s.mat:                                                                     # [blx] 서브스텝 끝 반환 사상 (구속 반복 뒤, 속도 갱신 전; 위치 불변)
+                M.get_function("vg_plast")(((s.nt + B - 1) // B,), (B,), (i32(s.nt), _P(s.T), _P(s.x), _P(s.Dmi), _P(s.ys), _P(s.dead), i32(s.mat), _P(s.ml),
+                                                                    f32(s.plast.get("cdp", 0.0)), f32(s.plast.get("softening", 0.1))))
             f_vel(gv, (B,), (i32(s.nv), _P(s.x), _P(s.xp), _P(s.v), f32(1.0 / s.dt)))
 
     def _rec_skin(s):
@@ -404,7 +547,7 @@ class VRGS:
             f(((s.Np + 127) // 128,), (128,), (np.int32(s.Np), _P(s.tid), _P(s.bw), _P(s.T), _P(s.x), _P(s.xo)))
 
     def capture(s):
-        bk = (s.x.clone(), s.xp.clone(), s.v.clone(), s.q.clone())
+        bk = (s.x.clone(), s.xp.clone(), s.v.clone(), s.q.clone(), s.Dmi.clone(), s.ys.clone(), s.dead.clone())
         st = torch.cuda.Stream(); st.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(st):
             s._rec_sub(); s._rec_skin()                                                   # 데움 (함수 적재)
@@ -416,7 +559,7 @@ class VRGS:
         with torch.cuda.graph(s.g_skin):
             s._rec_skin()
         torch.cuda.synchronize()
-        s.x.copy_(bk[0]); s.xp.copy_(bk[1]); s.v.copy_(bk[2]); s.q.copy_(bk[3])
+        s.x.copy_(bk[0]); s.xp.copy_(bk[1]); s.v.copy_(bk[2]); s.q.copy_(bk[3]); s.Dmi.copy_(bk[4]); s.ys.copy_(bk[5]); s.dead.copy_(bk[6])
 
     def frame(s):
         """한 프레임 (N 서브스텝 + 가우시안 중심 갱신). 돌려줌: GPU 시간 ms (CUDA 이벤트), 입자 위치 s.xo."""
@@ -424,7 +567,7 @@ class VRGS:
             s.capture()
         if s.rotg:
             s._drive()
-        if s.fixw:
+        if s.fixw or s.movw:
             s._pin()
         e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         e0.record()
@@ -458,8 +601,9 @@ class VRGS:
         """입자 (가우시안) 마다 결속 사면체의 변형 기울기 F = Ds Dm^-1 [Np,3,3] (렌더 공분산 F Σ0 Fᵀ, 논문 그대로; 시간 밖)."""
         P = s.x[s.T.long()]
         Ds = torch.stack([P[:, 1] - P[:, 0], P[:, 2] - P[:, 0], P[:, 3] - P[:, 0]], -1)
-        return (Ds @ s.Dmi.reshape(-1, 3, 3))[s.tid.long()]
+        return (Ds @ s.Dmi0.reshape(-1, 3, 3))[s.tid.long()]                         # [blx] 총 F (소성 포함 렌더 공분산·지표) -- 탄성이면 예전과 같음
 
     def info(s):
-        return dict(h=s.h, nv=s.nv, nt=s.nt, ncolor=len(s.colors), nfixed=int(s.fixed.sum()), nfixed_t=[int(q[0].sum()) for q in s.fixw], mass_cage=s.mass_cage, mass_part=s.mass_part,
+        return dict(h=s.h, nv=s.nv, nt=s.nt, ncolor=len(s.colors), nfixed=int(s.fixed.sum()), nfixed_t=[int(q[0].sum()) for q in s.fixw],
+                    nmov=[int(q[0].sum()) for q in s.movw], mat=s.mat, plast=s.plast, ndead=int(s.dead.sum()), mass_cage=s.mass_cage, mass_part=s.mass_part,
                     bind_min=s.bind_min, N=s.N, iters=s.iters, dt=s.dt, damp=s.damp, E=s.E, nu=s.nu)
