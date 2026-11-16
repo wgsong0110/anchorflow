@@ -5,7 +5,7 @@
   F_q = 몫 칸 입자 F 산술 평균 (빈 몫 칸은 칸 평균; 실행기는 회전·로그 신장 평균 -- 모드 수에는 영향 거의 없음). 벌점 항 (P1X·가벼움) 은 넣지 않음 (탄성 헤시안만).
 고유값: 야코비 배율 Â = D^-½ K D^-½ (지지 없는 자유도 뺌; 칸 81x81 강성을 모은 희소 행렬, cuSPARSE 곱), 체비쇼프 거름 부분공간 반복 (블록) + 레일리-리츠 (f64). λ̂ < 1e-5 λ̂_max = 영, < 1e-3 = 근사 영.
 자리: 영 모드 부분공간의 노드 몫 Σ|u_n|² (u = D^-½ z, 모드마다 단위) 을 노드 '지지 칸 점유 수' (노드를 27 노드 판에 넣는 칸 27 개 중 점유 칸 수) 구간별로.
-사용: python exe/q27_eig.py --pred pred.pt --solver q27solver.pt --frames 0,c --q 1|8|27 --out out.json [--kb 2400]
+사용: python exe/q27_eig.py --pred pred.pt --solver q27solver.pt --frames 0,c --q 1|8|27|64 --out out.json [--kb 2400]
 """
 import argparse
 import json
@@ -52,9 +52,27 @@ def axis_tab(q):
         d = [0.0]; w = [1.0]; edges = []
     elif q == 8:
         d = [-0.5 / math.sqrt(3), 0.5 / math.sqrt(3)]; w = [0.5, 0.5]; edges = [1.0]
+    elif q == 64:                                                                        # 절 CM195: 가우스 4x4x4 (fem_q27b.py --q27n 4 와 같은 점·무게·몫 칸 경계 = 누적 무게)
+        ga = math.sqrt(3 / 7 - 2 / 7 * math.sqrt(6 / 5)); gb = math.sqrt(3 / 7 + 2 / 7 * math.sqrt(6 / 5))
+        wa = (18 + math.sqrt(30)) / 36; wb = (18 - math.sqrt(30)) / 36
+        d = [-0.5 * gb, -0.5 * ga, 0.5 * ga, 0.5 * gb]; w = [0.5 * wb, 0.5 * wa, 0.5 * wa, 0.5 * wb]
+        edges = [0.5 + w[0], 0.5 + w[0] + w[1], 0.5 + w[0] + w[1] + w[2]]
     else:
         s = 0.5 * math.sqrt(0.6); d = [-s, 0.0, s]; w = [5 / 18, 8 / 18, 5 / 18]; edges = [0.5 + 5 / 18, 0.5 + 13 / 18]
     return d, w, edges
+
+
+def n_components(ids_c, nn):
+    """절 CM195: 노드를 함께 쓰는 칸끼리 이은 연결 성분 수 (성분마다 강체 모드 6 개 = 탄성 헤시안의 자명한 영 모드)."""
+    lab = torch.arange(nn, device=ids_c.device)
+    for _ in range(100000):
+        cl = lab[ids_c].min(1).values
+        new = lab.clone().scatter_reduce_(0, ids_c.reshape(-1), cl[:, None].expand_as(ids_c).reshape(-1), reduce="amin")
+        new = new[new]                                                                   # 포인터 건너뛰기
+        if torch.equal(new, lab):
+            break
+        lab = new
+    return int(torch.unique(lab[ids_c.reshape(-1)]).numel())
 
 
 def build(fi, q):
@@ -111,7 +129,10 @@ def build(fi, q):
     ids = ids_c[qcell]
     # 노드 지지 칸 점유 수
     occ = torch.zeros(nu.numel(), device=dev, dtype=torch.long).index_add_(0, ids_c.reshape(-1), torch.ones(ids_c.numel(), device=dev, dtype=torch.long))
-    return dict(nc=nc, nq=int(keep.sum()), nn=int(nu.numel()), ids=ids, G=G.float(), V=Vq.float(), occ=occ, np=int(ok.sum()), qcell=qcell, ids_c=ids_c)
+    I3 = torch.eye(3, device=dev, dtype=torch.float64)
+    f0 = dict(F_dev_max=float((F - I3).abs().amax()), x_sum=float(x.sum()), F_sum=float(F.sum()))     # 절 CM195: 같은 첫 상태인지 판끼리 대조
+    return dict(nc=nc, nq=int(keep.sum()), nn=int(nu.numel()), ids=ids, G=G.float(), V=Vq.float(), occ=occ, np=int(ok.sum()), qcell=qcell, ids_c=ids_c,
+                ncomp=n_components(ids_c, int(nu.numel())), f0=f0)
 
 
 def make_op(S):
@@ -225,10 +246,10 @@ for fi in fr:
                 row["%d-%d" % (lo, hi)] = dict(node_frac=float(m.float().mean()), mode_frac=float(wn[m].sum()))
         loc[nm] = row
     rec = dict(frame=fi, frame_label="f%d" % (fi + 1), nc=S["nc"], nq=S["nq"], nn=S["nn"], np=S["np"], nnz=S.get("nnz"), ndof_act=int(act.sum()), kb=KB[0], lmax=lmax,
-               n_zero=int(z5.sum()), n_near=int((z3 & ~z5).sum()), n_zero_conv=int((z5 & conv).sum()), all_kb_small=bool(z3.all()),
+               n_zero=int(z5.sum()), ncomp=S["ncomp"], n_rigid=6 * S["ncomp"], n_zero_nonrigid=int(z5.sum()) - 6 * S["ncomp"], f0=S["f0"], n_near=int((z3 & ~z5).sum()), n_zero_conv=int((z5 & conv).sum()), all_kb_small=bool(z3.all()),
                ev_head=[float(q) / lmax for q in ev[:12]], ev_at=[float(ev[min(len(ev) - 1, j)]) / lmax for j in (6, 30, 100, 300, 1000)], loc=loc, hist=hist[-3:], sec=round(time.time() - t0, 1))
     OUT["cases"].append(rec)
-    print("[q27 eig] 프레임", fi, "q", a.q, {k: rec[k] for k in ("nc", "nq", "nn", "n_zero", "n_near", "n_zero_conv", "all_kb_small")}, flush=True)
+    print("[q27 eig] 프레임", fi, "q", a.q, {k: rec[k] for k in ("nc", "nq", "nn", "n_zero", "ncomp", "n_zero_nonrigid", "n_near", "n_zero_conv", "all_kb_small")}, flush=True)
     json.dump(OUT, open(a.out, "w"), indent=1)
     del Ah, X
     torch.cuda.empty_cache()
