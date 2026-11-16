@@ -92,6 +92,9 @@ for m in mods:
         assert " --fpi_el 1 " in c; c = c.replace(" --fpi_el 1 ", " ", 1)
     elif m == "rmpos":                                  # 절 CM193: 모래 반환 사상 특이값 부호를 PhysGaussian 공식대로 (env AF_AO_RMPOS=1, 절 CM187 R)
         c = " AF_AO_RMPOS=1" + c
+    elif re.match(r"nd\d+-\d+$", m):                  # 절 CM193 진단 (결과 불변): exe/wfn_nd_wrap.py 프레임 a..b 노드 기록
+        a_, b_ = m[2:].split("-"); assert "exe/startpt_wrap.py" in c
+        c = (f" WND_F0={a_} WND_F1={b_}" + c).replace("exe/startpt_wrap.py", "exe/wfn_nd_wrap.py exe/startpt_wrap.py", 1)
     elif m == "dump":
         if " --dump " not in c: c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1)
     else:
