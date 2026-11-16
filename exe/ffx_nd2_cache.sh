@@ -34,7 +34,7 @@ for d in sorted(glob.glob(f"{R}/*.bs2_r*/")):
 print("CM193 판", len(seen))
 # 절 CM194: E (ssN) 는 --be_sub_mf 100 --be_sub_nk 1 판 (runs_wolfN/<장면>_ssN[.dump].bs2.bsm100.nk_r1) 이 있으면 그것으로 (N=1 은 규칙이 안 걸려 그대로)
 n194 = 0
-for d in sorted(glob.glob(f"{R}/*_ss*.bs2.bsm100.nk_r1/")):
+for d in (sorted(glob.glob(f"{R}/*_ss*.bs2.bsm100.nk_r1/")) if os.environ.get("FFX_CM194") == "1" else []):   # 절 CM194 규칙은 채택 안 함 -> 기본 끔
     m = re.match(r"(wolf|bread)_(ss\d+(?:\.dump)?)\.bs2\.bsm100\.nk_r1$", os.path.basename(d.rstrip("/")))
     if not m or not os.path.exists(f"{d}/metrics.json"):
         continue
