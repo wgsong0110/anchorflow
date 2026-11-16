@@ -17,8 +17,8 @@ SC = ["lego", "pillow2sofa", "ship_plastic_lego", "mic_metal_lego"]
 SN = dict(lego="레고", pillow2sofa="pillow2sofa", ship_plastic_lego="ship (plasticine)", mic_metal_lego="mic (metal)")
 MS = [("pg", "PhysGaussian"), ("ipg", "i-PhysGaussian"), ("omni", "OmniPhysGS"), ("ours", "우리")]          # MPM 베이스라인 셋 + 우리 (GF·MPMAvatar 뺌)
 TAG = "_f5"
-# [절 CM191] 새 기본 판 (--fpi_el 1): 소성 재질 장면 (ship plasticine·mic metal) 우리 판은 _f6 으로 다시 잼; 레고·pillow2sofa 는 계산 불변이라 _f5 그대로
-TAGS = dict(lego="_f5", pillow2sofa="_f5", ship_plastic_lego="_f6", mic_metal_lego="_f6")
+# [절 CM191·CM192] ship·mic 우리 판 = 새 기본 판 (--fpi_el 1) + 큰 N 공통 규칙 --ssf_cgk 0.5 (_f7); 레고·pillow2sofa 는 둘 다 계산 불변이라 _f5 그대로
+TAGS = dict(lego="_f5", pillow2sofa="_f5", ship_plastic_lego="_f7", mic_metal_lego="_f7")
 AN = {s: json.load(open(f"{root}/{s}/an.json")) for s in SC if os.path.exists(f"{root}/{s}/an.json")}
 VIS = {s: (json.load(open(f"{root}/{s}/vis/vis.json")) if os.path.exists(f"{root}/{s}/vis/vis.json") else {}) for s in SC}
 OLD = json.load(open(hexan))["shapes"]["lego"]["methods"]
