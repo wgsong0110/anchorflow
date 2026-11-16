@@ -11,7 +11,7 @@ case $S in
 esac
 O=/workspace/mb/ipg_${S}; T=N${N}_ls$REP; P=$O/post_$T; mkdir -p $P
 [ -s $O/$T/pred.pt ] || rclone copy $RB/ipg_${S}/$T $O/$T -q
-[ -d /root/mb/ref/$S ] && [ "$(ls /root/mb/ref/$S | wc -l)" -gt 10 ] || rclone copy $RB/../phys/mpm_${S}/png /root/mb/ref/$S --transfers 16 -q
+[ -d /root/mb/ref/$S ] && [ "$(ls /root/mb/ref/$S | wc -l)" -gt 10 ] || rclone copy r2:storage/result/anchorflow/lbours/final_fix/phys/mpm_${S}/png /root/mb/ref/$S --transfers 16 -q
 python -u exe/lb_roll_to_h5.py --dump $O/$T/pred.pt --traj $GTD --out $P/h5 > $P/roll_h5.log 2>&1
 python -u exe/lb_render.py --sim $P/h5 --config $CF --shape $SH --out $P/ipg_${S}.mp4 --png $P/png --frames $FR < /dev/null > $P/render.log 2>&1; rm -rf $P/h5
 python -u exe/ffx_phys.py --method ipg --scene $S --N $N --data $DATA --pred $O/$T/pred.pt --floor $FL --frames $FR --out $P/phys.json --note "AF_LS_REJECT=1 판 $T" > $P/phys.log 2>&1
