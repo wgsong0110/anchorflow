@@ -21,9 +21,11 @@ CELLS = {
     ("omni", "pillow2sofa"): ("omni_pillow2sofa", 67, 67, "OmniPhysGS 공식 dt 3e-4 s (서브스텝 67)", "", "ddfd74b"),
     ("omni", "bread"): ("omni_bread", 34, 34, "OmniPhysGS 공식 dt 3e-4 s (서브스텝 34), Corotated + VonMises 항복 200",
                         "항복 응력 = config 200 (PG 정답 경로 전 구간 확인에서 200 쪽이 정답과 더 가까움)", "ddfd74b"),
-    ("omni", "wolf"): ("omni_wolf_n1999", 1999, 134, "OmniPhysGS 공식 dt 3e-4 (N 134) 폭주 -> PG 공식 dt 2e-5 (N 1999), StVK + DruckerPrager 마찰각 30",
-                       "공식 dt 판 N 134·268 은 프레임 1, N 536 은 프레임 12 에 바닥을 뚫고 영역 바닥까지 빠짐 (E 5e7 모래), N 1072 는 3 회 중 1 회 프레임 16 폭주 "
-                       "(오차 22.3·20.1 %·발산) -> 3 회 모두 완주하는 N 1999; 마찰각 = config 30 (PG 전 구간 확인: 25 vs 30 의 정답 오차 0.014 vs 0.006 %)", "e60bce9"),
+    ("omni", "wolf"): ("omni_wolf_corot", 1072, 134, "OmniPhysGS 공식 dt 3e-4 (N 134) 폭주 -> N 1072 (dt 3.7e-5), Corotated + DruckerPrager 마찰각 30",
+                       "공식 dt (N 134·268) 은 프레임 1 에 바닥을 뚫고 영역 바닥까지 빠짐 (E 5e7 모래, 명시 MPM CFL dt < dx/sqrt(E/rho) ~ 6e-5), N 536 은 프레임 22 폭주; "
+                       "처음 쓴 StVK + DruckerPrager (PG 모래의 StVK 대응) 는 N 1072·1999 에서도 Green 변형률 StVK 가 압축에 무너져 바닥을 뚫음 (N1999 3 회 중 2 회 발산, 완주 판 오차 20 %) "
+                       "-> 공식 물리 구성모델 목록의 Corotated + DruckerPrager (OmniPhysGS bear_sand 후보) 로 바꿈 (lbours/final_fix/bl_mpm/omni_wolf_n1072·omni_wolf_n1999 = StVK 기록); "
+                       "마찰각 = config 30 (PG 전 구간 확인: 25 vs 30 의 정답 오차 0.014 vs 0.006 %); 시간 = bread 카드 (재시작 뒤 CPU 가 느려진 호스트, 같은 판 StVK N1072 가 다른 A6000 에서 29.6 vs 37.3 s)", "4fd9633b"),
 }
 NOTE_OMNI = "공식 MPMModel·물리 구성모델, 길이 0.5 배 축소, 입자 질량 균일 (공식), clip_bound 상자"
 
