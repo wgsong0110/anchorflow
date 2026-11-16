@@ -3,14 +3,14 @@
 #   -> 물리 지표 (exe/ffx_phys.py) + 같은 카메라 3DGS 렌더 (exe/lb_roll_to_h5.py + exe/lb_render.py) -> 시각 지표 (exe/ffx_vis.py).
 #   코드 = 베이스라인 실행기 판 fpabl_<FB_COMMIT>.tar (브랜치 final_fix_vrgs: VR-GS 충돌 판, PhysTwin·Spring-Gaus 실행기) + 이 판 파일 ffxphys_<FX_COMMIT>.tar 덮어씀.
 #   설정은 exe/vast_fpabl_boot.sh 와 같은 순서 (pip·3DGS 휠·stab_bl_setup.sh·장면 자료). 결과 R2 lbours/final_fix/phys/<방법>_<장면>_n<N>/, 표식 lbours/final_fix/marks/final_fix_phys.*
-#   env: R2_* FB_COMMIT FX_COMMIT [FX_ONLY 공백 구분 작업 이름만] CONTAINER_ID
+#   env: R2_* FB_COMMIT FX_COMMIT [FX_HOURS 기한, 기본 10] CONTAINER_ID
 set -u
 R=r2:storage/result/anchorflow; RX=$R/lbours/paper_remeasure2; OX=$R/lbours/final_pa/bl; FX=$R/lbours/final_fix; RP=$FX/phys; MK=$FX/marks/final_fix_phys
 mkdir -p /workspace/shm /workspace/tmpd /root/pr
 LOG=/root/pr/vast.log
 say() { echo "[fxp $(date '+%F %T')] $*" | tee -a $LOG; rclone copyto $LOG $MK.log -q 2>/dev/null; }
 command -v ffmpeg >/dev/null || (apt-get update -qq && apt-get install -y -qq ffmpeg) >/dev/null 2>&1
-say "[시작] 코드 $FB_COMMIT + $FX_COMMIT $(hostname) 인스턴스 ${CONTAINER_ID:-?} 작업 ${FX_ONLY:-전부}"
+say "[시작] 코드 $FB_COMMIT + $FX_COMMIT $(hostname) 인스턴스 ${CONTAINER_ID:-?}"
 nvidia-smi --query-gpu=index,name,power.limit,power.default_limit,memory.total --format=csv | tee -a $LOG; free -g | tee -a $LOG
 PL=$(nvidia-smi --query-gpu=power.limit --format=csv,noheader,nounits | head -1 | cut -d. -f1); PD=$(nvidia-smi --query-gpu=power.default_limit --format=csv,noheader,nounits | head -1 | cut -d. -f1)
 if [ -n "$PL" ] && [ -n "$PD" ] && [ "$PL" -lt "$PD" ]; then echo "전력 제한 $PL < $PD $(date)" | rclone rcat $MK.POWERCAP; say "[전력 제한] 일 안 함"; exit 1; fi
@@ -40,6 +40,9 @@ if [ ! -f /root/pr/pip.done ]; then
   python -c "import torch, warp, cupy, h5py, lpips, diff_gaussian_rasterization, simple_knn; print('[pip] torch', torch.__version__, torch.cuda.is_available())" 2>&1 | tail -1 | tee -a $LOG && touch /root/pr/pip.done
 fi
 wait
+# 시각 지표 pyiqa (인스턴스 안에서만 설치; torch·numpy 등 기존 판 고정)
+pip install -q pyiqa -c <(pip freeze | grep -iE "^(torch|torchvision|numpy|scipy|scikit-image|opencv-python-headless)==") 2>&1 | tail -1 | tee -a $LOG
+python -c "import pyiqa, torch; print('[pyiqa]', pyiqa.__version__, torch.__version__)" 2>&1 | tail -1 | tee -a $LOG
 cd $D || exit 1
 export PYTHONUTF8=1 OMP_NUM_THREADS=8 CUPY_CACHE_DIR=/dev/shm/dkta/cache/cupy_pr XDG_CACHE_HOME=/dev/shm/dkta/cache TORCH_EXTENSIONS_DIR=/dev/shm/dkta/cache/torch_ext CUDA_VISIBLE_DEVICES=0
 mkdir -p $CUPY_CACHE_DIR
