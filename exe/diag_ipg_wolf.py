@@ -20,6 +20,18 @@ for k in range(len(sol.particle_velocity_modifiers)):
     wp.launch(kernel=sol.particle_velocity_modifiers[k], dim=sol.n_particles,
               inputs=[sol.time, sol.mpm_state, sol.particle_velocity_modifier_params[k]], device=dev)
 print(f"[준비] 입자 속도 수정기 {len(sol.particle_velocity_modifiers)} 개, 격자 후처리 {len(sol.grid_postprocess)} 개, dt {dt:.3e}", flush=True)
+# 처음 상태의 F·응력
+_F = wp.to_torch(sol.mpm_state.particle_F).reshape(-1, 3, 3); _Ft = wp.to_torch(sol.mpm_state.particle_F_trial).reshape(-1, 3, 3)
+_I = g["torch"].eye(3, device=_F.device)
+print(f"[F0] |F-I| 최대 {float((_F - _I).abs().max()):.3e}, |F_trial-I| 최대 {float((_Ft - _I).abs().max()):.3e}, "
+      f"|stress| 최대 {float(wp.to_torch(sol.mpm_state.particle_stress).abs().max()):.3e}", flush=True)
+_sel = wp.to_torch(sol.mpm_state.particle_selection)
+print(f"[선택] selection 0 (계산) {int((_sel == 0).sum())} / {_sel.numel()}", flush=True)
+from mpm_solver_warp import mpm_utils as _mu  # noqa: E402
+wp.launch(kernel=_mu.compute_stress_from_F_trial,
+          dim=sol.n_particles, inputs=[sol.mpm_state, sol.mpm_model, dt], device=dev)
+_s = wp.to_torch(sol.mpm_state.particle_stress).reshape(-1, 3, 3); _F2 = wp.to_torch(sol.mpm_state.particle_F).reshape(-1, 3, 3)
+print(f"[F=F_trial 응력] |stress| 최대 {float(_s.abs().max()):.3e} 중앙 {float(_s.abs().amax((1, 2)).median()):.3e}, 되돌림 뒤 |F-I| 최대 {float((_F2 - _I).abs().max()):.3e}", flush=True)
 sol._save_state()
 mom, mass = sol._p2g_momentum_only(dt)
 mask = mass > 1e-8 * mass.max()
