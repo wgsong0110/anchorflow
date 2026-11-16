@@ -90,6 +90,8 @@ for m in mods:
         assert " --K " in c; c = c.replace(" --K ", f" --be_sub {m[2:]} --K ", 1)
     elif m == "nofel":                                  # 절 CM193 진단: --fpi_el 1 뺌 (반환 사상 재질도 가우스 점 F 보간 교체)
         assert " --fpi_el 1 " in c; c = c.replace(" --fpi_el 1 ", " ", 1)
+    elif m == "rmpos":                                  # 절 CM193: 모래 반환 사상 특이값 부호를 PhysGaussian 공식대로 (env AF_AO_RMPOS=1, 절 CM187 R)
+        c = " AF_AO_RMPOS=1" + c
     elif m == "dump":
         if " --dump " not in c: c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1)
     else:
