@@ -3,6 +3,8 @@
 프레임마다: 운동+위치 에너지(바닥 기준), NaN·상자 밖·det F ≤ 0 비율, 최대 속력, 고정 부분표본 위치.
 탄성 에너지는 음이 아니므로 안정한(보존·소산) 계라면 운동+위치 에너지는 처음 값을 넘지 못한다.
 """
+import os
+
 import numpy as np
 
 NSUB = 32768
@@ -24,6 +26,17 @@ def elastic_fcr(F, vol, E, nu):
     """고정 공회전(fixed corotated) 탄성 에너지 합 Σ V (μ‖F−R‖² + λ/2 (J−1)²). 방법마다 구성모델이 조금씩 달라도
     같은 자로 비교하려고 하나로 고정한다 (PG jelly 와 같은 모델)."""
     mu, lam = E / (2 * (1 + nu)), E * nu / ((1 + nu) * (1 - 2 * nu))
+    try:                                                                       # [CM192] 같은 식을 GPU float64 로 (CPU numpy SVD 가 프레임당 1 초 -- ship 49 만 입자); 차이는 float64 반올림 수준
+        import torch
+        if torch.cuda.is_available() and len(F) > 4096 and os.environ.get("STABSTAT_CPU") != "1":
+            Ft = torch.as_tensor(np.ascontiguousarray(F), dtype=torch.float64, device="cuda")
+            U_, S_, Vh_ = torch.linalg.svd(Ft)
+            R_ = U_ @ Vh_
+            J_ = S_.prod(1)
+            psi_ = mu * ((Ft - R_) ** 2).sum((1, 2)) + 0.5 * lam * (J_ - 1) ** 2
+            return float((torch.as_tensor(vol, dtype=torch.float64, device="cuda") * psi_).sum())
+    except ImportError:
+        pass
     U, S, Vt = np.linalg.svd(F)
     R = U @ Vt
     J = np.prod(S, axis=1)
