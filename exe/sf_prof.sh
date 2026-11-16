@@ -13,8 +13,7 @@ D=/home/dkta/work/stab/$s/prof/N$n
 run() {   # $1 = 이름, $2 = 명령
   rm -rf $D; mkdir -p $D
   bash -c "$2" > $O/$1.log 2>&1 & P=$!
-  sleep 3; PY=$(pgrep -P $P -f python | head -1); for k in 1 2 3; do c=$(pgrep -P ${PY:-0} | head -1); [ -n "$c" ] && PY=$c; done
-  PY=$(pgrep -f "sh_npz $D/res.npz" | grep -v "^$P$" | tail -1)
+  PY=""; for k in $(seq 1 30); do sleep 1; PY=$(ps -eo pid,args | grep "sh_npz $D/res.npz" | grep -v -E "grep|bash -c" | awk '{print $1}' | tail -1); [ -n "$PY" ] && break; done
   echo "pid $PY" > $O/$1.pid
   pidstat -t -u -p $PY 2 > $O/$1.pidstat 2>&1 & S1=$!
   nvidia-smi pmon -d 2 > $O/$1.pmon 2>&1 & S2=$!
@@ -32,5 +31,6 @@ python - <<PY > $O/B_top.txt 2>&1
 import pstats
 p = pstats.Stats("$O/B.prof"); p.sort_stats("tottime").print_stats(40); p.sort_stats("cumulative").print_stats(40)
 PY
+for r in A B; do P2=$(cut -d' ' -f2 $O/$r.pid); awk -v p="$P2" '$2==p && $4!="-" {s+=$4; n++} END{printf "이 프로세스 SM %% 평균 %.1f (표본 %d)\n", (n?s/n:0), n}' $O/$r.pmon > $O/$r.sm; done
 rclone copy $O $RX/diag192/prof/$tag -q
 echo "[sf_prof] 끝 $tag"
