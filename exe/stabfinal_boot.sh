@@ -136,6 +136,7 @@ rclone copy $OUT $RX/res -q --update --transfers 8 "${EXC[@]}"
 rclone copy /root/sf $MK/logs -q --include "*.log"
 if rclone check $OUT $RX/res --one-way --size-only -q "${EXC[@]}" --exclude "drv*.log" 2>/root/sf/check.txt; then
   say "[R2 확인 차이 0] -> destroy"; echo "$(date)" | rclone rcat $MK/ALL_DONE
+  if pgrep -f "stab1115_drv.py|sfq_worker.sh" >/dev/null; then say "[다른 부팅의 드라이버·일꾼이 아직 돎] destroy 안 함"; exit 0; fi   # [CM192] 한 인스턴스에 부팅 둘 (예 mc_e sf·sf2)
   [ -n "${CONTAINER_ID:-}" ] && [ -n "${CONTAINER_API_KEY:-}" ] && vastai destroy instance $CONTAINER_ID -y --api-key $CONTAINER_API_KEY 2>&1 | tee -a $LOG
 else
   say "[R2 확인 차이 있음] destroy 안 함"; echo "$(date)" | rclone rcat $MK/ALL_DONE_CHECK_FAIL
