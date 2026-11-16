@@ -12,6 +12,7 @@
   --ssf_bec 1     매 걸음 끝 갱신을 국소 후퇴 오일러 (--ue be --ue_loc 비트 와 같이; HHT 는 자유 노드만) -- 접촉 노드의 HHT 가속도 외삽이 큰 N 발산의 원인 (절 CM186)
   --ssf_kmax 256  다시 풀 때 걸음 수 상한 (기본 256; 그래프 캡처 메모리)
   --ssf_tolp 1    PCG 허용치 tolP 에도 1/N 곱함 (선택)
+  --ssf_wrxr 1    (절 CM192) 다시 푼 뒤 X3 켬 상태를 다시 풀기 전 값으로 되돌림 (0 = 옛 동작: 항상 끔 -> --wrx_col 0 판은 첫 다시 풀기 뒤 X3 가 영영 꺼짐)
   --ssf_tsum 1    (wolffix 11-15) 다시 푼 프레임의 시간 s.last_ms = 버린 시도들 + 마지막 시도 합 (실시간 판정용; 0 = 마지막 시도만, 옛 동작)
 사용: python exe/ssfix_wrap.py --ssf_tol 1 exe/stabhex_wrap.py ... exe/fem_an_rt_sim.py ... (바깥 첫 감싸개로)
 """
@@ -22,7 +23,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 argv = sys.argv[1:]
-C = dict(tol="0", tolp="0", kex="0", split="0", bigT="1.0", wrx="1", dumpfail="", det="1", bec="0", tsum="0", kmax="256")
+C = dict(tol="0", tolp="0", kex="0", split="0", bigT="1.0", wrx="1", dumpfail="", det="1", bec="0", tsum="0", kmax="256", wrxr="0")
 while argv and argv[0].startswith("--ssf_"):
     C[argv[0][6:]] = argv[1]; del argv[:2]
 _orig = runpy.run_path; _done = [False]
@@ -81,6 +82,7 @@ def _install():
         def step(s, t):
             ST["frames"] += 1
             bk = s._bk(); K0 = int(s.K); h = float(s.h); cm0 = s.cap_mul
+            w0 = getattr(s, "_wrxv", 0) if float(C["wrxr"]) != 0 else 0                # 다시 풀기 전 X3 상태 (--ssf_wrxr 1 일 때만 되돌림)
             oom = False
             try:
                 redo = ostep(s, t)
@@ -119,7 +121,7 @@ def _install():
                 ART.set_K_an(s, K0, h)
                 if hasattr(s, "wrx") and float(C["wrx"]) != 0:
                     from anchorflow import fem_wmrx as WRX
-                    WRX.on(s, 0)
+                    WRX.on(s, w0)
                 if oom:
                     s.x.fill_(float("nan"))
             return redo

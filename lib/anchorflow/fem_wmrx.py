@@ -90,6 +90,7 @@ def setup(s, bits, skc):
 def on(s, v):
     from . import fem_an_rt as ART
     _set(s, "AF_WRXON", int(v), ART.cp.int32)
+    s._wrxv = int(v)                                                                   # 절 CM192: 호스트 쪽 기억 (exe/ssfix_wrap.py --ssf_wrxr 1 이 다시 풀기 뒤 되돌림)
 
 
 def split_col(s, t, h, sub_dt, depth, fn=None):
