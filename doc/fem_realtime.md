@@ -11723,3 +11723,23 @@ bloc 2 는 chair 무게중심을 프레임 9 까지 정답에 맞춤 (0.361 대 
 | vasedeck | 50/50 9.94 % 32.7 | 50/50 9.70 % 16.2 |
 | pillow2sofa | 50/50 12.46 % 19.7 | 50/50 12.39 % 14.5 |
 발산 없음, 나빠진 장면 없음 (레고 +0.11 %p). -> exe/nshape_cmd.py (PG 장면 기본 판 명령) 에 `--cg 4` 기본 (NS_CG4=0 이면 옛 판). --bloc 2 는 레고 세팅 chair 발산·drums 메모리 부족이라 기본 아님.
+
+## CM193. 가속 베이스라인 재질 확장 (원 논문은 탄성 전용) -- VR-GS·PhysTwin·Spring-Gaus 의 wolf (PG 모래)·bread (PG tear_bread + plasticine σy 200) 측정 (조정자 11-16 위임, 사용자 "지원 안 하면 지원하게 만들어서 재야지") -- **VR-GS·PhysTwin 4 칸 완료 (3/3 완주, 발산 없음), Spring-Gaus 2 칸은 공식 3 단계 학습 중** -- 가지 final_pa_bl, 커밋 702f93d (확장 구현·경계·pr2_grid·부팅) · 9ac2755 (지표 = final_fix b06c860 의 exe/ffx_phys.py·ffx_vis.py 그대로) · 44cc2cf (VR-GS SVD 단정밀도, bread 정답 렌더 궤적 전 프레임) · 680b54f (다른 태그 시각 지표); vast.ai final_blx_a 60859392 (RTX A6000, machine 141683, 300 W = 기본; 연기 시험·VR-GS 맞춤·PhysTwin 준비·시간·덤프, R2 대조 뒤 destroy), final_blx_sgw 60860715 (RTX 4090, Spring-Gaus wolf 준비), final_blx_sgb 60860713 (RTX 6000 Ada, Spring-Gaus bread 준비); 결과 R2 lbours/final_pa/blx/{A,SGW,SGB,smoke,smoke_full,pareto_blx.json,code}, 논문 폴더 pareto_final_1115_table.tex (해당 칸) · pareto_final_1115_blx.tex (설명·물리·시각 지표, notes 에서 \input; 원본 backup_20261031/*_pre_blx.tex)
+
+### CM193.1 확장 원칙
+표현·적분기는 그대로, 재질 모델만 PG 원본 (R2 _vastmirror/PhysGaussian_upstream_8339ed6 mpm_solver_warp/mpm_utils.py) 소성 식.
+- VR-GS (lib/anchorflow/vrgs_xpbd.py): 사면체마다 Dmi = Dm⁻¹ F_p⁻¹ 상태 (총 F = Ds Dm⁻¹ 는 Dmi0 로 렌더·지표). 매 서브스텝 구속 반복 뒤 vg_plast: F_e = Ds Dmi 의 SVD (야코비, warp svd3 와 같은 부호 규약 -- U·V 회전, 뒤집힘이면 σ3 < 0) -> PG sand_return_mapping (|σ| 1e-14 바닥, tr>0 이면 U Vᵀ) / von_mises_return_mapping_with_damage (σ 0.01 바닥, ε̂ 노름 +1e-6, softening 0.1 로 항복 응력 감소, ≤ 0 이면 사면체 dead = mu·lam 0) 를 줄 단위로, Dmi <- Dmi V diag(s_new/σ) Vᵀ. 모래 탄성은 PG 와 같은 Hencky: C1 = ‖log Σ‖ (α 1/(2μV)), C2 = tr log Σ (α 1/(λV)) -- 2x2 결합 풀이는 기존 그대로. plasticine 은 기존 고정 공회전 (PG material 5 = FCR 응력). mu·lam 은 논문 절차로 맞춘 E, 소성 매개변수는 config.
+  SVD 는 처음 배정밀도였는데 A6000 에서 wolf 400x11 프레임 6.8 s -> 단정밀도 (warp svd3 와 같음) 0.81 s.
+- PhysTwin·Spring-Gaus (exe/stab_phystwin.py (8) · exe/stab_sg.py · exe/stab_bl_common.spring_plastic_update): 스프링 소성 휴지 길이. plasticine ε_y = sqrt(3/2) σy/E = 0.1225 (단축 응력에서 PG von Mises 항복이 되는 로그 축 변형률), |ε| > ε_y 면 l0 = l exp(−sign ε ε_y). 모래 = 근사: 점 체적 변형률 = 그 점 스프링 ε 평균 x 3, 스프링 tr = 두 끝점 평균, e = ε − tr/3, δγ = sqrt(3/2)|e| + (3λ+2μ)/(2μ) α tr (PG 와 같은 α·ν; cdp 1.061), δγ>0·tr>0 이면 l0 = l (인장 무응력, PG U Vᵀ), δγ>0·tr≤0 이면 e 를 δγ 만큼 줄임. 서브스텝마다 적분 뒤 갱신 (PhysTwin: 공식 integrate 커널 launch 를 가로채 같은 CUDA 그래프에 잡힘, Spring-Gaus: 공식 step 뒤), 휴지 길이는 미분 안 하는 상태 (PhysTwin 학습 2 단계 역전파의 eval_springs 역방향은 프레임 끝 휴지 길이를 읽음 -- 근사), 롤아웃 시작 (frame 1) 마다 처음 값. Spring-Gaus 강성 정규화 K/origin_len 은 공식 그대로 처음 길이.
+- 경계 (exe/stab_bl_common.parse_bcs, pareto_vrgs 도 같은 함수): wolf release_particles_sequentially = PG 와 같은 50 상자 구간 고정, bread 당김 띠 = 구간 등속 구동 (VR-GS 질량 무한 정점 + vg_kin, PhysTwin 고정 커널에 속도 pinv, Spring-Gaus 앵커). 상자 판정은 처음 위치 (PG selection 과 같음).
+- 물성: VR-GS E = 황금분할 10 회 (Δt 1e-4 s·반복 11: wolf N 400, bread N 100) -> wolf 7.751e5 (정답 5e7, 오차 3.29 %), bread 4876 (정답 2000, 4.86 %). PhysTwin = CMA-ES 20 + 학습 200 (synthetic 경로, wolf N0 400 0.19 h, bread N0 200 0.35 h). Spring-Gaus = 공식 3 단계 (wolf 4090 17.7 s/반복 n_step 100, bread 진행 중).
+
+### CM193.2 결과 (A6000 단독 3 회 중앙값, R2 lbours/final_pa/blx/A/grid.json)
+| 장면 | 방법 | 설정 | 완주 | 오차 % | ms |
+|---|---|---|---|---|---|
+| wolf | VR-GS | 400 x 11 | 3/3 | 3.29 | 855.4 |
+| wolf | PhysTwin | N0 400 | 3/3 | 4.56 | 41.8 |
+| bread | VR-GS | 100 x 11 | 3/3 | 4.86 | 167.7 |
+| bread | PhysTwin | N0 200 | 3/3 | 4.96 | 28.6 |
+물리 (ffx_phys) wolf VR-GS det≤0 0 %·|J−1| 최대 0.447 (모래 인장 투영 U Vᵀ 로 부피 증가)·관통 0, PhysTwin 관통 18.3 % (깊이 0.76 % L); 시각 (ffx_vis) PSNR wolf 29.7/31.7, bread 25.7/27.4 (VR-GS/PhysTwin). 전체 값은 pareto_final_1115_blx.tex.
+연기 시험 (짧은 프레임, R2 smoke·smoke_full): 세 방법 wolf·bread 모두 완주.
