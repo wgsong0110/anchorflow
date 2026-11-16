@@ -7,7 +7,7 @@ last=0
 until rclone lsf $R/marks_SGB/ 2>/dev/null | grep -q "^MEAS_DONE"; do
   st=$(vastai show instance $ID --raw 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('actual_status'))")
   cr=$(vastai show user --raw 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);print(1 if (d.get('credit') or 0) > 0.5 and not d.get('billing_failed') else 0)")
-  if [ "$st" != running ] && [ "$cr" = 1 ] && [ $(( $(date +%s) - last )) -gt 1800 ]; then log "크레딧 회복, $ID 상태 $st -> start"; vastai start instance $ID 2>&1 | tail -1; last=$(date +%s); fi
+  if [ -z "${NOSTART:-}" ] && [ "$st" != running ] && [ "$cr" = 1 ] && [ $(( $(date +%s) - last )) -gt 1800 ]; then log "크레딧 회복, $ID 상태 $st -> start"; vastai start instance $ID 2>&1 | tail -1; last=$(date +%s); fi
   rclone lsf $R/marks_SGB/ 2>/dev/null | grep -q "^MEAS_CHECK_FAIL" && log "MEAS_CHECK_FAIL 표식 -- 결과 확인 필요"
   sleep 120
 done
