@@ -54,7 +54,7 @@ rclone copyto $MI/PhysGaussian/config/wolf_config.json $W/PhysGaussian/config/wo
 D=/root/pr/code/$H; mkdir -p $D; rclone cat $OX/code/blx_$H.tar | tar -x -C $D
 wait
 cd $D || exit 1
-export PYTHONUTF8=1 OMP_NUM_THREADS=8 CUPY_CACHE_DIR=/dev/shm/dkta/cache/cupy_pr XDG_CACHE_HOME=/dev/shm/dkta/cache TORCH_EXTENSIONS_DIR=/dev/shm/dkta/cache/torch_ext
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True PYTHONUTF8=1 OMP_NUM_THREADS=8 CUPY_CACHE_DIR=/dev/shm/dkta/cache/cupy_pr XDG_CACHE_HOME=/dev/shm/dkta/cache TORCH_EXTENSIONS_DIR=/dev/shm/dkta/cache/torch_ext
 mkdir -p $CUPY_CACHE_DIR
 mkdir -p $W/one/L000; cp $SD/L000.pt $W/one/L000/L000.pt 2>/dev/null
 O=/dev/shm/dkta/lbours/paper_remeasure2/stab; mkdir -p $O/p
