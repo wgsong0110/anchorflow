@@ -31,13 +31,15 @@
 - 표 1: "CD: collision detections per step" -- Ring Toss 10/10, Table Brick 10/10, Toy Collection 20/20, Animal Crossing 10/5 (반복/CD), 물체 하나 장면은 "/".
 -> 충돌 검출·해소 알고리즘·접촉 거리·마찰은 논문에 없음. 그래서 XPBD 표준 (Müller 2007 PBD 3.5 부등식 충돌 구속, Macklin 2014 Unified Particle Physics 의 입자 접촉·구속 평균) 으로:
 - 물체 = 케이지 연결 성분 (사면체로 이어진 정점). 다른 성분 정점 쌍에 |x_i − x_j| >= d (α = 0) 부등식 구속, d = 케이지 칸 h (같은 격자 위 다른 물체 정점은 처음에 >= h, 격자 면 구멍 h/√2 < d 라 정점이 상대 면을 못 지나감).
-- 접촉 중 접선 상대 변위 취소 (고착) = 정답 MPM 격자 접촉의 무미끄럼, 기존 바닥 처리와 같은 선택. 고정 정점 (역질량 0) 은 정적 충돌체.
-- 검출 = 해시 격자 (칸 d) 를 반복마다 다시 지음 -> 서브스텝당 CD = 반복 수 (11; 표 1 충돌 장면 범위 5~20 안, CD = 반복 장면과 같은 꼴). 해소 = 야코비 + 구속 평균, 반복마다 탄성 색 순회 뒤.
+- 마찰 없음 (11-16 기본, --contact_fric none): 인용 Deul et al. 2016 6 절은 Coulomb 마찰 (속도·위치 두 단계, 마찰 원뿔, 걸음당 이산 근접 검출 한 번) 이지만 VR-GS 가 계수를 안 밝힘 -> 논문에 없는 선택을 넣지 않음. 예전 판 (94f47ec) 은 고착 (--contact_fric stick). 고정 정점 (역질량 0) 은 정적 충돌체.
+- 바닥 (레고) 고착은 장면 config surface_collider surface "sticky" (friction 0) 근거라 그대로.
+- 검출 = 해시 격자 (칸 d) 를 반복마다 다시 지음 -> 서브스텝당 CD = 반복 수 (반복 1 이면 1). 해소 = 야코비 + 구속 평균, 반복마다 탄성 색 순회 뒤.
 - 상대 밀도: 정답 config 가 물체 모두 같은 밀도 (pillow2sofa 2000) 라 맞출 것 없음 -> E 만 기존 절차 (황금분할 10 회).
 - 성분 하나 장면 (레고) 은 충돌 커널을 그래프에 넣지 않아 예전과 같음 (exe/ffvrgs_smoke.sh 로 확인).
 PG bounding_box (mpm_solver_warp add_bounding_box: 노드 i < 3 · i >= n_grid − 3 의 바깥 방향 속도 0, grid_lim 기본 2.0) -> 정점 축별 [2 dx, (n_grid − 3) dx] 투영 (접선 자유), --cfg_bc 장면만.
-주의: 논문 6.1 PG 비교 문장은 "we set the XPBD iteration per substep to 1" (v1·v2 HTML 모두) -- 이 표의 반복 11 (P.1) 과 다름. 기존 절차 (레고 점과 같은 11) 를 그대로 둠.
-결과 (vast 60853052, A6000 1 장 300/300 W, 커밋 0f5a510, R2 lbours/final_pa/bl/FV1 · lbours/final_fix/vrgs_pillow2sofa.json): pillow2sofa 케이지 성분 6 개, 300 프레임 완주 (예전 128 발산), 맞춘 E 6071.5 (정답의 0.607 배), 오차 중앙값 1.563% (1.569/1.494/1.563), 단독 428.7 ms/프레임 (3 회 중앙값). 레고 같은 명령 7.538% 그대로. 인스턴스 R2 확인 차이 0 뒤 destroy.
+반복 수: 논문 6.1 "we set the XPBD iteration per substep to 1" (raw HTML alttext="1") -- 예전 반복 11 은 텍스트 추출 오독. 11-16 부터 pr2_grid 기본 반복 1 (PR2_VR_IT), E 는 그 설정에서 다시 맞춤.
+결과 (반복 1·마찰 없음, 기본 판; vast 60859035, A6000 300/300 W, 커밋 32e95ea, R2 lbours/final_pa/bl/FV2, lbours/final_fix/vrgs_pillow2sofa.json · vrgs_lego_it1.json): 레고 E 264617.8, 오차 7.434% (3 회 같음), 26.8 ms; pillow2sofa E 7736.5, 오차 중앙값 1.830% (1.769/1.830/2.102), 40.1 ms, 300 프레임 완주. 인스턴스 R2 확인 차이 0 뒤 destroy.
+참고 (반복 11·고착 예전 판; vast 60853052, A6000 1 장 300/300 W, 커밋 0f5a510, R2 lbours/final_pa/bl/FV1 · lbours/final_fix/vrgs_pillow2sofa.json): pillow2sofa 케이지 성분 6 개, 300 프레임 완주 (예전 128 발산), 맞춘 E 6071.5 (정답의 0.607 배), 오차 중앙값 1.563% (1.569/1.494/1.563), 단독 428.7 ms/프레임 (3 회 중앙값). 레고 같은 명령 7.538% 그대로. 인스턴스 R2 확인 차이 0 뒤 destroy.
 
 ## P.2 프록시 계열 공개 코드 (PhysTwin·Simplicits 제외)
 - **Spring-Gaus** (ECCV 2024): 코드 공개 (github Colmar-zlicheng/Spring-Gaus, Apache-2.0). 공식 절차 = 다시점 영상 -> 정적 3DGS 30k -> 속도 100 -> 동역학 300 반복, 서브스텝 n_step (dt = frame_dt/n_step), 바닥 투영 + 학습 마찰. 이 프로젝트에서 10-06 벤치에 다른 낙하 궤적 (taichi MPM, 34 프레임) 으로 돌린 적 있음 (exe/bench_sg.py, R2 bench-2026-10-06).
