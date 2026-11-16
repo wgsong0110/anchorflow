@@ -26,7 +26,7 @@ while true; do
     [ "$(rclone cat $QD/lock/$id 2>/dev/null | cut -d' ' -f1)" = "$ME" ] && { pick=$line; break; }
   done < /tmp/sfq_$ME.list
   if [ -z "$pick" ]; then
-    IDLE=$(( ${IDLE:-0} + 1 )); [ $IDLE -ge 3 ] && { say "목록 $Q 에 남은 작업 없음 (5 분 간격 3 번) -> 끝"; break; }
+    IDLE=$(( ${IDLE:-0} + 1 )); [ $IDLE -ge 3 ] && { say "목록 $Q 에 남은 작업 없음 (5 분 간격 3 번) -> 올리기 끝 기다린 뒤 끝"; wait; break; }
     sleep 300; continue
   fi
   IDLE=0
@@ -42,10 +42,11 @@ while true; do
   t0=$(date +%s)
   if [ "${args:0:1}" = "!" ]; then eval "${args:1}" >> /root/sf/drv_${s}_$ME.log 2>&1; rc=$?          # ! = 셸 명령 그대로 (코드 폴더에서)
   else eval python -u exe/stab1115_drv.py --scene $s --par ${SF_PAR:-4} $args >> /root/sf/drv_${s}_$ME.log 2>&1; rc=$?; fi
-  rclone copy $OUT/$s $RX/res/$s -q --update --transfers 8 "${EXC[@]}"
-  rclone copy /root/sf $RX/marks/${SF_TAG:-q}/logs -q --include "*.log"
-  echo "rc=$rc $(( $(date +%s) - t0 ))s $ME" | rclone rcat $QD/done/$id
-  [ $rc != 0 ] && echo "rc=$rc $ME" | rclone rcat $QD/fail/$id
-  say "[끝] $id rc $rc $(( $(date +%s) - t0 ))s"
+  el=$(( $(date +%s) - t0 ))
   rm -f /tmp/sfq_run/$ME; [ "$solo" = 1 ] && rm -f /tmp/sfq_solo
+  say "[끝] $id rc $rc ${el}s -- 올리기는 뒤에서 (다 올린 뒤 done 표시)"
+  ( rclone copy $OUT/$s $RX/res/$s -q --update --transfers 8 "${EXC[@]}"                 # [CM192] 업로드는 백그라운드, GPU 는 바로 다음 작업
+    rclone copy /root/sf $RX/marks/${SF_TAG:-q}/logs -q --include "*.log"
+    [ $rc != 0 ] && echo "rc=$rc $ME" | rclone rcat $QD/fail/$id
+    echo "rc=$rc ${el}s $ME" | rclone rcat $QD/done/$id; echo "[sfq $ME $(date '+%F %T')] [올림 끝] $id" >> $LOG ) &
 done
