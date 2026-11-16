@@ -1,2 +1,2 @@
 cd /home/wgsong/workspace/execute/anchorflow/ffl_wt
-FPA_ND=1 FPA_SG_P2S_NOTE="${SGNOTE:-진행 중: 공식 동역학 학습 (final\\_fix\\_sg) 끝나면 채움}" FPA_SG_MAT_NOTE='재질 확장 학습 중 (final\_blx)' FPA_NOFPI_LABEL='F 전달 반대 (탄성: G2P 누적, 소성: 가우스점 보간)' FPA_DEF_LABEL='기본 (2$^3$ 가우스점, HHT $\rho_\infty{=}0.8$, F: 탄성 가우스점 보간$\cdot$소성 G2P 누적)' python3 exe/fpa_table.py /tmp/cm192/tab "$1"
+FPA_EIG_DIR=$HOME/r2/result/anchorflow/lbours/final_fix/abl_eig FPA_ND=1 FPA_SG_P2S_NOTE="${SGNOTE:-진행 중: 공식 동역학 학습 (final\\_fix\\_sg) 끝나면 채움}" FPA_SG_MAT_NOTE='재질 확장 학습 중 (final\_blx)' FPA_NOFPI_LABEL='F 전달 반대 (탄성: G2P 누적, 소성: 가우스점 보간)' FPA_DEF_LABEL='기본 (2$^3$ 가우스점, HHT $\rho_\infty{=}0.8$, F: 탄성 가우스점 보간$\cdot$소성 G2P 누적)' python3 exe/fpa_table.py /tmp/cm192/tab "$1"
