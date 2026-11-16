@@ -190,7 +190,7 @@ axs[0].set_ylabel("자기 기준 궤적 대비 RMSE/L (%)"); axs[0].legend(fonts
 plt.tight_layout(); os.makedirs(f"{paper}/fig", exist_ok=True); plt.savefig(f"{paper}/fig/stabfinal_err.png", dpi=150)
 out.append(r"\begin{figure}[h]\centering\includegraphics[width=\linewidth]{fig/stabfinal_err.png}\caption{$N$-오차 곡선 (방법마다 자기 기준 궤적 대비, 전 프레임 평균; 안정 판정에 통과한 $N$ 만, 점이 없는 $N$ 은 발산$\cdot$미측정$\cdot$기준). 레고의 PG$\cdot$i-PG 는 2026-11-12 기존 결과.}\end{figure}")
 # 표 5: 프레임 시간
-t = [r"\begin{table}[h]\centering\small\caption{우리 판 프레임당 시간 (ms, RTX A6000 단독: 같은 카드에 다른 계산 프로세스 없음, 시뮬 재생 GPU 시간 평균, 다시 푼 프레임은 버린 시도까지 합산 (\\texttt{--ssf\\_tsum 1}), 루프 안 렌더 제외; 빈 칸 = 사다리에서 발산 또는 미측정; 굵게 = 확정 최소 $N$).}",
+t = [r"\begin{table}[h]\centering\small\caption{우리 판 프레임당 시간 (ms, RTX A6000 단독: 같은 카드에 다른 계산 프로세스 없음, 시뮬 재생 GPU 시간 평균, 다시 푼 프레임은 버린 시도까지 합산 (\texttt{-{}-ssf\_tsum 1}), 루프 안 렌더 제외; 빈 칸 = 사다리에서 발산 또는 미측정; 굵게 = 확정 최소 $N$).}",
      r"\begin{tabular}{lccccc}\toprule 장면 & $N{=}1$ & $N{=}2$ & $N{=}4$ & $N{=}8$ & $N{=}16$ \\\midrule"]
 for s in SC:
     cells = []
@@ -199,11 +199,48 @@ for s in SC:
         p = f"{root}/{s}/speed/t_N{n}{TAG}/log.txt"
         v = ""
         if os.path.exists(p):
-            mm = re.findall(r"프레임당 ([0-9.]+) ms", open(p, errors="ignore").read())
-            if mm: v = f"{float(mm[-1]):.1f}"
+            ro = re.findall(r"\[롤아웃\][^\n]*", open(p, errors="ignore").read())
+            mm = re.findall(r"프레임당 ([0-9.]+) ms", ro[-1]) if ro else []
+            if mm and "발산" not in ro[-1]: v = f"{float(mm[-1]):.1f}"      # [stabfinal] 시간 판이 발산하면 빈 칸 (주석)
+            elif mm: v = "발산"
         cells.append(("\\textbf{" + v + "}") if (v and n == nmo) else v)
     t.append(SN[s] + " & " + " & ".join(cells) + r" \\")
 t.append(r"\bottomrule\end{tabular}\end{table}"); out.append("\n".join(t))
+# 표 6·7: 추가 지표 (exe/stab_extra.py -> <장면>/extra.json)
+EX = {s: (json.load(open(f"{root}/{s}/extra.json")) if os.path.exists(f"{root}/{s}/extra.json") else {}) for s in SC}
+
+
+def ex_rows(s):
+    rows = [("기준 PG", 1024, "pg_N1024")]
+    for m, nm in MS:
+        n = nmin_val(s, m)
+        if n: rows.append((nm, n, f"{m}{TAG if m == 'ours' else ''}_N{n}"))
+    return rows
+
+
+t = [r"\begin{table}[h]\centering\small\caption{확정 최소 $N$ 에서 정답 없는 물리 지표 (그 $N$ 의 세 판 평균; 기준 PG 는 한 판). 에너지 증가 = $\max(0, \max_t (E_t - E_0)/|E_0|)$, $E$ = 운동 + 위치 에너지 (안정 판정과 같은 $E$). 부피 변화 = $\max_t |V_t/V_0 - 1|$, $V_t$ = 표본점 (같은 번호 32768 점) 이 차지한 복셀 수 (복셀 한 변 = 격자 $2\,dx$). 값은 \%. 뒤집힘$\cdot$관통$\cdot$떨림$\cdot$자유낙하$\cdot$Chamfer 는 위 정합성 표.}",
+     r"\begin{tabular}{llccc}\toprule 장면 & 방법 & $N$ & 에너지 증가 $\downarrow$ & 부피 변화 $\downarrow$ \\\midrule"]
+for s in SC:
+    first = True
+    for nm, n, key in ex_rows(s):
+        v = EX[s].get("phys", {}).get(key)
+        if not v: continue
+        t.append(f"{SN[s] if first else ''} & {nm} & {n} & {f2(100 * v['energy_inc']) if 'energy_inc' in v else '--'} & {f2(100 * v['vol_change']) if 'vol_change' in v else '--'} \\\\"); first = False
+    t.append(r"\midrule")
+t[-1] = r"\bottomrule"; t.append(r"\end{tabular}\end{table}"); out.append("\n".join(t))
+t = [r"\begin{table}[h]\centering\scriptsize\caption{확정 최소 $N$ 에서 시각 품질 (같은 렌더러$\cdot$카메라, 프레임 1..T 평균). 무참조 품질 (\texttt{pyiqa} 기본 가중치): NIQE$\downarrow$, BRISQUE$\downarrow$, CLIP-IQA$\uparrow$, MUSIQ$\uparrow$ -- 흰 배경 렌더라 절대값보다 방법 사이 차이를 볼 것. 깜빡임 = warping error$\downarrow$ ($\times 10^{3}$): 프레임 $t{+}1$ 을 RAFT (torchvision \texttt{raft\_large}) 광류로 $t$ 에 맞춘 뒤 가려지지 않은 픽셀 (앞-뒤 광류 일관성) 의 RGB 제곱 차 평균. PSNR$\cdot$SSIM$\cdot$LPIPS = 기준 PG $N{=}1024$ 렌더 대비 (시각 지표 표와 같음).}",
+     r"\begin{tabular}{llccccccccc}\toprule 장면 & 방법 & $N$ & NIQE & BRISQUE & CLIP-IQA & MUSIQ & warp.\ err. & PSNR & SSIM & LPIPS \\\midrule"]
+for s in SC:
+    first = True
+    for nm, n, key in ex_rows(s):
+        v = EX[s].get("visual", {}).get(key)
+        if not v: continue
+        w = VIS[s].get(key, {})
+        ref = key == "pg_N1024"
+        t.append(f"{SN[s] if first else ''} & {nm} & {n} & {v['niqe']:.2f} & {v['brisque']:.1f} & {v['clipiqa']:.3f} & {v['musiq']:.2f} & {1e3 * v['warp_err']:.2f} & "
+                 + ("-- & -- & --" if ref else (f"{w['psnr']:.2f} & {w['ssim']:.3f} & {w['lpips']:.3f}" if w else "-- & -- & --")) + r" \\"); first = False
+    t.append(r"\midrule")
+t[-1] = r"\bottomrule"; t.append(r"\end{tabular}\end{table}"); out.append("\n".join(t))
 out.append(open(f"{root}/notes.tex").read() if os.path.exists(f"{root}/notes.tex") else "")
 out.append(r"\end{document}")
 assert not os.path.exists(f"{paper}/stab_final_1115.tex") or os.environ.get("SF_OVERWRITE") == "1", "기존 파일 덮어쓰지 않음"
