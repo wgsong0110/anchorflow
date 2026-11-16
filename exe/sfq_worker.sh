@@ -21,7 +21,9 @@ while true; do
     [[ "$id" == *@* ]] && { deps=${id#*@}; id=${id%%@*}; }                # id@선행1,선행2 = 선행 작업이 done 일 때만
     echo "$DONE" | grep -qx "$id" && continue
     ok=1; for dp in ${deps//,/ }; do echo "$DONE" | grep -qx "$dp" || ok=0; done; [ $ok = 1 ] || continue
-    echo "$LOCK" | grep -qx "$id" && continue
+    if echo "$LOCK" | grep -qx "$id"; then                                # 잠긴 작업: 내 이름으로 잠긴 것 (인스턴스 재시작으로 끊김) 만 다시 가져감
+      [ "$(rclone cat $QD/lock/$id 2>/dev/null | cut -d' ' -f1)" = "$ME" ] && { pick=$line; break; } || continue
+    fi
     echo "$ME $(date +%s)" | rclone rcat $QD/lock/$id 2>/dev/null; sleep 5
     [ "$(rclone cat $QD/lock/$id 2>/dev/null | cut -d' ' -f1)" = "$ME" ] && { pick=$line; break; }
   done < /tmp/sfq_$ME.list
