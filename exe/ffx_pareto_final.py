@@ -24,10 +24,10 @@ MN = dict(METH)
 COL = dict(ours="#2a78d6", mpm="#eb6834", ipg="#1baf7a", omni="#eda100", phystwin="#e87ba4", vrgs="#008300", springgaus="#6250d6")
 MK = dict(ours="o", mpm="*", ipg="s", omni="D", phystwin="^", vrgs="v", springgaus="P")
 PHYS = [("detneg_max", "뒤집힘 (\\%)", 100, 3, True), ("pen_depth_max", "관통 (\\%$L$)", 100, 2, True), ("e_drift_max", "에너지 증가", 1, 3, True),
-        ("freefall_mom_err", "운동량 (\\%)", 100, 2, True), ("jitter_d2", "떨림 ($10^{-3}L$)", 1e3, 2, True), ("dV_absmax", "부피 변화 (\\%)", 100, 2, True)]
+("jitter_d2", "떨림 ($10^{-3}L$)", 1e3, 2, True), ("dV_absmax", "부피 변화 (\\%)", 100, 2, True)]
 VIS = [("niqe", "NIQE$\\downarrow$", 1, 2, True), ("brisque", "BRISQUE$\\downarrow$", 1, 1, True), ("musiq", "MUSIQ$\\uparrow$", 1, 1, False), ("clipiqa", "CLIP-IQA$\\uparrow$", 1, 3, False),
        ("warp_err", "깜빡임 ($10^{-3}$)$\\downarrow$", 1e3, 2, True), ("psnr", "PSNR$\\uparrow$", 1, 2, False), ("ssim", "SSIM$\\uparrow$", 1, 3, False), ("lpips", "LPIPS$\\downarrow$", 1, 3, True)]
-RFN = dict(detneg_max="뒤집힘 (det F≤0 비율 최대)", pen_depth_max="바닥 관통 깊이 / L", e_drift_max="에너지 증가 (최대, E0 대비)", freefall_mom_err="자유낙하 운동량 오차",
+RFN = dict(detneg_max="뒤집힘 (det F≤0 비율 최대)", pen_depth_max="바닥 관통 깊이 / L", e_drift_max="에너지 증가 (최대, E0 대비)",
            jitter_d2="떨림 (2 차 차분 / L)", jitter_hf="떨림 (고주파 에너지 비)", dV_absmax="부피 변화 |dV| 최대", niqe="NIQE", brisque="BRISQUE", clipiqa="CLIP-IQA", musiq="MUSIQ", warp_err="깜빡임 (warping error)")
 RFLOW = dict(detneg_max=True, pen_depth_max=True, e_drift_max=True, freefall_mom_err=True, jitter_d2=True, jitter_hf=True, dV_absmax=True, niqe=True, brisque=True, clipiqa=False, musiq=False, warp_err=True)
 
