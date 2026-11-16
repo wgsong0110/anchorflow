@@ -101,6 +101,9 @@ for m in mods:
         assert "--ssf_bec 1 " in c; c = c.replace("--ssf_bec 1 ", "--ssf_bec 0 ", 1)
     elif re.match(r"bst\d$", m):                        # 절 CM193 진단: 띠 고착 판 --fl_bst N
         assert re.search(r" --fl_bst \d ", c); c = re.sub(r" --fl_bst \d ", f" --fl_bst {m[3:]} ", c)
+    elif re.match(r"st\d+-\d+$", m):                  # 절 CM193 진단 (결과 불변): exe/wfn_st_wrap.py 걸음별 노드 최대 속도 기록 (프레임 a..b)
+        a_, b_ = m[2:].split("-"); assert "exe/startpt_wrap.py" in c
+        c = (f" WST_F0={a_} WST_F1={b_}" + c).replace("exe/startpt_wrap.py", "exe/wfn_st_wrap.py exe/startpt_wrap.py", 1)
     elif m == "dump":
         if " --dump " not in c: c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1)
     else:
