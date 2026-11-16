@@ -5,7 +5,7 @@
 #   설정은 exe/vast_fpabl_boot.sh 와 같은 순서 (pip·3DGS 휠·stab_bl_setup.sh·장면 자료). 결과 R2 lbours/final_fix/phys/<방법>_<장면>_n<N>/, 표식 lbours/final_fix/marks/final_fix_phys.*
 #   env: R2_* FB_COMMIT FX_COMMIT [FX_HOURS 기한, 기본 10] CONTAINER_ID
 set -u
-R=r2:storage/result/anchorflow; RX=$R/lbours/paper_remeasure2; OX=$R/lbours/final_pa/bl; FX=$R/lbours/final_fix; RP=$FX/phys; MK=$FX/marks/final_fix_phys
+R=r2:storage/result/anchorflow; RX=$R/lbours/paper_remeasure2; OX=$R/lbours/final_pa/bl; FX=$R/lbours/final_fix; RP=$FX/phys; MK=$FX/marks/${FX_LABEL:-final_fix_phys}
 mkdir -p /workspace/shm /workspace/tmpd /root/pr
 LOG=/root/pr/vast.log
 say() { echo "[fxp $(date '+%F %T')] $*" | tee -a $LOG; rclone copyto $LOG $MK.log -q 2>/dev/null; }
@@ -65,6 +65,16 @@ echo "[ok] $(date)" | rclone rcat $MK.setup.done
   touch /root/pr/bl.done
 ) &
 ( while sleep 300; do rclone copy /workspace/fxp $RP -q --transfers 8 --exclude "*/h5/**" --exclude "ours_*/pred.pt"; rclone copyto $LOG $MK.log -q; done ) & SY=$!
+if [ "${FX_MODE:-}" = q ]; then                                                    # 절 CM192: 대기열 지표 일꾼 (R2 final_fix/queue/<라벨>.txt), 다 끝나면 R2 확인 뒤 스스로 destroy
+  cp /root/pr/code_q/exe/ffx_mq_worker.sh exe/ 2>/dev/null || true
+  WP=""; for w in $(seq 0 $(( ${FX_WORKERS:-3} - 1 ))); do WID=$w FX_LABEL=${FX_LABEL:?} bash exe/ffx_mq_worker.sh > /root/pr/mq$w.log 2>&1 & WP="$WP $!"; sleep 10; done
+  wait $WP; kill $SY 2>/dev/null
+  for f in /root/pr/mq*.log; do rclone copyto $f $MK.$(basename $f) -q; done
+  rclone copy /workspace/fxp $RP -q --transfers 8 --exclude "*/h5/**" --exclude "*/pred.pt"
+  echo "$(date) 대기열 끝 -> destroy" | rclone rcat $MK.SELF_DESTROY
+  vastai destroy instance ${CONTAINER_ID:-0} -y --api-key ${CONTAINER_API_KEY:-x}
+  exit 0
+fi
 FX_WORKERS=${FX_WORKERS:-} bash exe/ffx_phys_drv.sh > /root/pr/drv.log 2>&1
 say "[작업 끝] $(tail -2 /root/pr/drv.log | tr '\n' ' ')"
 kill $SY 2>/dev/null
