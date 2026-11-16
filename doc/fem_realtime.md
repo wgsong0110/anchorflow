@@ -11766,3 +11766,7 @@ bloc 2 는 chair 무게중심을 프레임 9 까지 정답에 맞춤 (0.361 대 
 - 순위 (반올림 값): 최소 N·뒤집힘·관통·떨림·에너지·부피·깜빡임 은 측정된 장면 모두 1 위 또는 공동 1 위. 지는 칸 = Lego Chamfer·SSIM·LPIPS (PG 기준 궤적·렌더 대비라 PG 계열이 유리; 우리 Lego 궤적은 정답 대비 6 % 오차, 마지막에 버킷 팔이 접힘 -- 파레토 쪽 CM191 미수정 항목), 무참조 IQA (NIQE·BRISQUE·CLIP-IQA·MUSIQ) Lego·pillow2sofa (차이 작음, 원인 확인 못 함), pillow2sofa SSIM.
 ### CM192.3 남은 것 (대기열 ipg.txt, 인스턴스 final_stab_ipgm 60863023 L40S 한 대)
 - ship 우리 _f7 N64 -> ship 계획 -> ship 마무리 (렌더·분석·추가 지표·비교 영상), mic i-PG 사다리 (상한 64, 제한 24 시간) -> mic 마무리. 우리 _f7 A6000 단독 시간 (ship·mic N≥2) 은 A6000 인스턴스가 생기면.
+### CM192.4 우리 판 사다리·덤프 실행의 낮은 GPU 사용률 원인 (실측, 11-16 07 시) 과 최적화
+- 측정: ship N1 사다리 명령 12 프레임 (exe/sf_prof.sh, cProfile; final_stab_ipgm L40S, 다른 실행과 카드 공유). 33.1 s 중 안정성 기록 프레임 통계 stabstat.frame_stats 16.7 s (그중 탄성 에너지 numpy SVD 13.4 s = 프레임당 1.03 s, 49.5 만 3x3), startpt 진단 sp/f*.npz zlib 압축 5.2 s, 진단 _analyze 5.6 s; 시뮬 재생 GPU 시간은 프레임당 149 ms. 프레임 벽시계 2.10 s -> 시뮬 GPU 시간 / 벽시계 = 7 %. CUDA 그래프가 효과 없던 까닭 = 병목이 커널 띄우기가 아니라 프레임 끝 CPU 통계.
+- 고친 것 (구현만, 서브스텝·기본 조합 그대로): exe/stabhex_wrap.py 프레임 통계를 뒤 스레드 6 개로 (같은 numpy 함수·같은 입력; numpy SVD 가 GIL 을 놓음 확인), lib/anchorflow/fem_startpt.py sp/f*.npz 압축 쓰기를 뒤 스레드로 (같은 함수). GPU float64 SVD 는 L40S 에서 프레임당 0.72 s 로 이득이 없어 되돌림.
+- 결과: 프레임 벽시계 2.10 s -> 0.30 s (7 배), 시뮬 GPU 시간 / 벽시계 7 % -> 약 60 % (프로세스별 SM % 는 컨테이너 pid 가 nvidia-smi pmon 과 달라 못 잼, 카드 사용률은 다른 실행이 섞여 비교 못 함). 동일성: 같은 입력 프레임 통계 상대차 0 (프레임 0), 궤적은 같은 코드 반복 차 5.8e-4 L 과 전후 차 5.4e-4 L 이 같은 수준 (실행기 원자 합 비결정). 결과 R2 lbours/stabfinal/diag192/prof/shipN1_{pre,post}.
