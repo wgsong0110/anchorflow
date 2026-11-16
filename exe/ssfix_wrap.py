@@ -111,6 +111,9 @@ def _install():
             Fe = torch.zeros(capQ, 28, device=s.dev, dtype=torch.float32)
             Uk = s.Ust[K - 1].contiguous()
             mod0, fn0 = s.mod, s.fn
+            _sv = {nm: getattr(s, nm, None) for nm in ("Fe", "fiJ0", "fiJX", "fiJp0", "fiD")}  # 절 CM92 finterp 훅 (모드 0 = fpi_p 결과 그대로) 이 fpi_p 에 인자 넷을 더하므로 그 판의 버퍼를 잠깐 둠
+            _Z = lambda n_: torch.zeros(n_, device=s.dev, dtype=torch.float32)
+            s.Fe, s.fiJ0, s.fiJX, s.fiJp0, s.fiD = Fe, _Z(capQ), _Z(capQ), _Z(N), _Z(N * 8)
             s.mod, s.fn = M, {}                                                         # 같은 실행기 s.k 경로 (옛 판 mat_g2p 와 같은 발사) 로 이 모듈의 커널을 부름
             try:
                 if s.aq:
@@ -122,6 +125,8 @@ def _install():
                                  P(s.Sq if s.aq else None), P(s.ysp if s.aq else None), P(s.ljp if s.aq else None), P(s.alp if s.aq else None)))
             finally:
                 s.mod, s.fn = mod0, fn0
+                for nm, v_ in _sv.items():
+                    setattr(s, nm, v_)
             torch.cuda.synchronize()
             ST["fpic"] += 1
             print(f"[d192 fpic] 프레임 {ST['frames']} K {K}: 입자 F·상태 = 가우스 점 보간 (재질 판)", flush=True)
