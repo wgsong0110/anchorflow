@@ -3,22 +3,24 @@
 #   카드마다 일꾼 하나 (그 카드에는 이 실행 하나뿐 = 단독 시간). 결과 R2 lbours/final_fix/runs/<장면>_<판>_r<반복>/ (metrics.json·summary.json·cmd.txt·log.txt ...).
 export PATH=/home/dkta/bin:$PATH
 H=$1
-RA=r2:storage/result/anchorflow/lbours/final_fix; GPU=${FPA_GPU:-0}; O=/dev/shm/dkta/ffx$GPU; Q=/root/ffx/queue.txt; mkdir -p $O /dev/shm/dkta/tmp
+RA=r2:storage/result/anchorflow/lbours/final_fix; GPU=${FPA_GPU:-0}; O=/dev/shm/dkta/ffx$GPU; QD=/root/ffx${FFX_QD:+/$FFX_QD}; Q=$QD/queue.txt; mkdir -p $O /dev/shm/dkta/tmp $QD; touch $Q   # 절 CM193: FFX_QD = 대기열 디렉토리 (같은 인스턴스에서 다른 커밋 일꾼을 따로; 없으면 옛 자리)
 export TMPDIR=/dev/shm/dkta/tmp PYTHONUTF8=1 OMP_NUM_THREADS=8
 PY=/home/dkta/.conda/envs/af/bin/python
 say() { echo "[w$GPU $(date '+%F %T')] $*"; }
 # 대기열이 비면 R2 marks/<FFX_TAG>.queue 를 다시 읽어 아직 시작 안 한 줄을 붙임 (실행 중 작업 추가용); FFX_IDLE 초 (기본 1200) 동안 새 일이 없으면 끝
-pop() { ( flock 9; touch /root/ffx/started.txt; j=$(head -1 $Q); if [ -z "$j" ] && [ -n "${FFX_TAG:-}" ]; then
-    rclone cat $RA/marks/$FFX_TAG.queue 2>/dev/null | grep . | grep -vxF -f /root/ffx/started.txt > $Q.new; mv $Q.new $Q; j=$(head -1 $Q); fi
-  [ -n "$j" ] && { sed -i 1d $Q; echo "$j" >> /root/ffx/started.txt; }; echo "$j" ) 9>/root/ffx/queue.lock; }
+pop() { ( flock 9; touch $QD/started.txt; j=$(head -1 $Q); if [ -z "$j" ] && [ -n "${FFX_TAG:-}" ]; then
+    rclone cat ${FFX_QR:-$RA/marks/$FFX_TAG.queue} 2>/dev/null | grep . | grep -vxF -f $QD/started.txt > $Q.new; mv $Q.new $Q; j=$(head -1 $Q); fi
+  [ -n "$j" ] && { sed -i 1d $Q; echo "$j" >> $QD/started.txt; }; echo "$j" ) 9>$QD/queue.lock; }
 post() { local D=$1 n=$2 s=$3 v=$4 r=$5 rc=$6 G=$7
   CUDA_VISIBLE_DEVICES=$G ABL_EIG_VARS=def,q1,q27 timeout 1800 $PY exe/abl_an.py $D $s $v $r > $D/an.log 2>&1; say "$n 분석 rc=$? $(tail -1 $D/an.log | cut -c1-200)"
   [ -f $D/metrics.json ] || echo "{\"rc\": $rc, \"no_summary\": true}" > $D/metrics.json
   rclone copy $D $RA/${FFX_RUNS:-runs}/$n -q --transfers 8 --exclude "q27src/**" --exclude "pred.pt"
   [ -f $D/pred.pt ] && rclone copyto $D/pred.pt $RA/${FFX_RUNS:-runs}/$n/pred.pt -q --s3-chunk-size 64M --s3-upload-concurrency 16
+  [ -n "${FFX_QR:-}" ] && echo "$(date -u)" | rclone rcat $RA/${FFX_RUNS:-runs}/$n/DONE   # 절 CM193: R2 대기열 판 = 판마다 DONE 표식
   rm -rf $D; }
 idle=0
 while :; do
+  [ "${FFX_WAITFREE:-0}" = 1 ] && while [ -n "$(nvidia-smi -i $GPU --query-compute-apps=pid --format=csv,noheader)" ]; do sleep 20; done   # 절 CM193: 카드에 다른 계산이 없을 때만 다음 판
   j=$(pop); if [ -z "$j" ]; then [ $idle -ge ${FFX_IDLE:-1200} ] && break; sleep 60; idle=$((idle + 60)); continue; fi; idle=0
   IFS=: read s v r <<< "$j"; n=${s}_${v}_r$r; D=$O/$n
   if rclone cat $RA/${FFX_RUNS:-runs}/$n/metrics.json 2>/dev/null | grep -aq '"frames_done": [0-9]'; then say "$n 이미 있음"; continue; fi

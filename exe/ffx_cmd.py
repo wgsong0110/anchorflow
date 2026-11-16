@@ -80,6 +80,23 @@ for m in mods:
         assert "--ssf_bec 1 " in c; c = c.replace("--ssf_bec 1 ", "--ssf_bec 1 --ssf_wrxr 1 ", 1)
     elif re.match(r"skc[0-9.e-]+$", m):                 # 절 CM192: X1 고착 상한 문턱 --wrx_skc
         c = c.replace(" --wrx_col ", f" --wrx_skc {m[3:]} --wrx_col ", 1)
+    elif m in ("alog", "best"):                         # 절 CM193: ssfix 시도별 기록 (결과 불변) / 끝까지 무너진 프레임은 가장 덜 나쁜 시도를 받음
+        assert "--ssf_bec " in c; c = c.replace("--ssf_bec ", f"--ssf_{m} 1 --ssf_bec ", 1)
+    elif re.match(r"sdg\d+-\d+$", m):                 # 절 CM193 진단 (결과 불변): exe/ssdiag_wrap.py 반복별 |g|²·F² 기록 (프레임 a..b, 1 부터)
+        a_, b_ = m[3:].split("-"); assert "exe/startpt_wrap.py" in c
+        c = c.replace("exe/startpt_wrap.py", f"exe/ssdiag_wrap.py --sd_f0 {a_} --sd_f1 {b_} exe/startpt_wrap.py", 1)
+    elif re.match(r"xg[0-9.e-]+$", m):                  # 절 CM193: --xit_from 문 문턱 (ssfix --ssf_xgT)
+        assert "--ssf_bec " in c; c = c.replace("--ssf_bec ", f"--ssf_xgT {m[2:]} --ssf_bec ", 1)
+    elif m == "gbe":                                    # 절 CM193 진단: 후퇴 오일러 적분기 (fpa_cmd 판 be 와 같은 바꿈) 를 ssN 위에
+        assert " --ga hht " in c and " --ue be " in c; c = c.replace(" --ga hht ", " --ga be ").replace(" --ue be ", " --ue beall "); c = re.sub(r" --ue_loc \d+ ", " ", c)
+    elif re.match(r"rho\d+$", m):                      # 절 CM193 진단: HHT ρ∞ = 숫자/10 (rho5 = 0.5)
+        assert re.search(r" --rho \S+ ", c); c = re.sub(r" --rho \S+ ", f" --rho {int(m[3:]) / 10:g} ", c)
+    elif re.match(r"bs\d$", m):                        # 절 CM193: --be_sub N (K > 1 걸음 후퇴 오일러)
+        assert " --K " in c; c = c.replace(" --K ", f" --be_sub {m[2:]} --K ", 1)
+    elif m == "nofel":                                  # 절 CM193 진단: --fpi_el 1 뺌 (반환 사상 재질도 가우스 점 F 보간 교체)
+        assert " --fpi_el 1 " in c; c = c.replace(" --fpi_el 1 ", " ", 1)
+    elif m == "rmpos":                                  # 절 CM193: 모래 반환 사상 특이값 부호를 PhysGaussian 공식대로 (env AF_AO_RMPOS=1, 절 CM187 R)
+        c = " AF_AO_RMPOS=1" + c
     elif m == "dump":
         if " --dump " not in c: c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1)
     else:
