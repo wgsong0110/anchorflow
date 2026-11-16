@@ -179,14 +179,14 @@ def install(T, FIT, arg, cfg, exp_dir):
                     simulator.scheduler.load_state_dict(st["sim_sched"])
                 if st["g_opt"] is not None and gaussians.optimizer is not None:
                     gaussians.optimizer.load_state_dict(st["g_opt"])
-                for k, v in st["extra"].items():
-                    cur = getattr(simulator, k, None)
+                for kk, v in st["extra"].items():
+                    cur = getattr(simulator, kk, None)
                     if isinstance(v, torch.Tensor):
                         if isinstance(cur, torch.Tensor) and cur.shape == v.shape and not torch.equal(cur.detach().cpu(), v):
-                            _log(f"속성 {k} 가 저장값과 다름 (최대 차 {float((cur.detach().cpu().double() - v.double()).abs().max()):.3g}) -> 저장값으로")
-                        setattr(simulator, k, v.to(cur.device if isinstance(cur, torch.Tensor) else "cuda").requires_grad_(bool(cur.requires_grad) if isinstance(cur, torch.Tensor) else False))
+                            _log(f"속성 {kk} 가 저장값과 다름 (최대 차 {float((cur.detach().cpu().double() - v.double()).abs().max()):.3g}) -> 저장값으로")
+                        setattr(simulator, kk, v.to(cur.device if isinstance(cur, torch.Tensor) else "cuda").requires_grad_(bool(cur.requires_grad) if isinstance(cur, torch.Tensor) else False))
                     else:
-                        setattr(simulator, k, v)
+                        setattr(simulator, kk, v)
                 simulator.n_step = st["n_step"]
                 ctx["rng"] = st["rng"]
             else:
