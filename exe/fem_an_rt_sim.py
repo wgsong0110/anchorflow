@@ -144,10 +144,22 @@ ap.add_argument("--wrx_col", type=int, default=0, help="절 CM38: 0 모든 걸�
 ap.add_argument("--be_sub", type=int, default=0, help="절 CM193 (기본 0 = 그대로): 프레임보다 짧은 걸음 (K > 1: ssN·kN·다시 풀기·쪼개기) 은 HHT 대신 후퇴 오일러 (α_m = α_f = 0, γ = β = 1, 매 걸음 U1 = y·v1 = (y − U)/h·a 0 = 판 be 와 같은 갱신, --ue_loc 노드 집합 없이 모든 노드). 1 = 모든 재질, 2 = 반환 사상 재질 (sand·foam·plasticine·watermelon·metal) 만. K = 1 걸음은 그대로")
 ap.add_argument("--be_sub_mf", type=float, default=0.0, help="절 CM193 (--be_sub 위, 기본 0 = 그대로): K > 1 걸음에서 관성 질량 하한 m' = max(m, c τ² tr(B)/3) (--mfloor 와 같은 식, c = 이 값) -- 거의 빈 노드의 강성/질량 비 (ωτ) 를 묶음. K = 1 걸음은 그대로")
 ap.add_argument("--be_sub_mfk", type=float, default=0.0, help="절 CM194 (--be_sub 위, 기본 0): K > 1 걸음 관성 질량 하한 계수를 c = 이 값 x K^2 로 (m' = max(m, c tau^2 tr(B)/3) = 이 값 x h^2 tr(B)/3 -- 프레임 걸음 h 기준이라 K 에 무관한 하한)")
+ap.add_argument("--be_sub_mfl", type=float, default=0.0, help="절 CM194 (기본 0 = 소스 그대로): 관성 질량 하한 (--mfloor·--be_sub_mf·--be_sub_mfk) 을 거의 빈 노드 (질량 < 이 값 x 첫 프레임 노드 질량 중앙값) 에만")
 ap.add_argument("--be_sub_nk", type=int, default=0, help="절 CM194 (기본 0): 1 이면 --be_sub_mf·--be_sub_lv 를 명목 걸음 수 --K > 1 실행에만 (K = 1 실행의 ssfix 다시 풀기 걸음에는 안 씀 -> N=1 결과 불변)")
 ap.add_argument("--be_sub_lv", type=float, default=0.0, help="절 CM193 (--be_sub 위, 기본 0 = 그대로): K > 1 걸음 끝마다 가장자리 노드 (질량 < c x 27 이웃 최대 질량) 의 속도를 27 이웃 질량 가중 평균으로 (lib/anchorflow/fem_lightv.py). K = 1 걸음은 그대로")
 ap.add_argument("--wrx_el", type=int, default=0, help="절 CM192 (기본 0 = 소스 그대로): 1 이면 반환 사상 없는 탄성 재질은 --wrx_col 1 (X3 를 무너진 프레임 다시 풀기에서만), 반환 사상 재질 (sand·foam·plasticine·watermelon·metal) 은 주어진 --wrx_col 그대로")
 a = ap.parse_args()
+if a.be_sub_mfl > 0:                                                                  # 절 CM194: 질량 하한을 거의 빈 노드에만 (rt_meff 한 줄, 장치 전역 AF_MFLTHR; 0 이면 하한 그대로)
+    from anchorflow import fem_an_rt as _ARTm
+    _MOLD = "    meff[n] = (cs > 0.f) ? fmaxf(m, cs*(B[n*9] + B[n*9+4] + B[n*9+8])*(1.f/3.f)) : m;\n"
+    _MNEW = "    meff[n] = (cs > 0.f && (AF_MFLTHR <= 0.f || m < AF_MFLTHR)) ? fmaxf(m, cs*(B[n*9] + B[n*9+4] + B[n*9+8])*(1.f/3.f)) : m;   // 절 CM194 --be_sub_mfl\n"
+    _obs = _ARTm.build_src
+
+    def _bs_mfl(*a_, **kw_):
+        r_ = _obs(*a_, **kw_)
+        assert r_.count(_MOLD) == 1, "rt_meff 글자 못 찾음"
+        return r_.replace(_MOLD, _MNEW).replace('extern "C" {', 'extern "C" {\n__device__ float AF_MFLTHR;', 1)
+    _ARTm.build_src = _bs_mfl
 if a.wrx:                                                                             # 절 CM38: 소스 바꾸기는 모듈 만들기 전에
     from anchorflow import fem_wmrx as WRX
     WRX.install(new=True)
@@ -401,6 +413,12 @@ if a.be_sub and (a.be_sub == 1 or MATNAME in ("sand", "foam", "plasticine", "wat
             return r_
         S.k = _k_lv
     print(f"[절 CM193 --be_sub {a.be_sub}] 재질 {MATNAME}: K > 1 걸음은 후퇴 오일러" + (f", 관성 질량 하한 c {a.be_sub_mf:g}" if a.be_sub_mf > 0 else "") + (f", 가장자리 노드 속도 c {a.be_sub_lv:g}" if a.be_sub_lv > 0 else ""), flush=True)
+if a.be_sub_mfl > 0:                                                                  # 절 CM194: 거의 빈 노드 문턱 = 이 값 x 첫 프레임 노드 질량 중앙값 (MTHR = mlow x 중앙값)
+    assert a.mlow > 0 and MTHR > 0, "--be_sub_mfl 은 --mlow 위 (중앙값)"
+    import cupy as _cpm
+    _thr = float(a.be_sub_mfl * MTHR / a.mlow)
+    _cpm.ndarray((1,), dtype=_cpm.float32, memptr=S.mod.get_global("AF_MFLTHR"))[0] = _thr
+    print(f"[절 CM194 --be_sub_mfl] 질량 하한은 노드 질량 < {_thr:.4g} (중앙값 x {a.be_sub_mfl}) 에만", flush=True)
 if a.wrx:                                                                             # 절 CM38 후보 장치 전역 (col 이면 처음 0)
     WRX.setup(S, a.wrx, a.wrx_skc); WRX.on(S, 0 if a.wrx_col else 1)
 _split = (lambda t_: WRX.split_col(S, t_, h, None, a.ksplit, fn=lambda d_: ART.split_step(S, t_, h, d_))) if (a.wrx and a.wrx_col) else (lambda t_: ART.split_step(S, t_, h, a.ksplit))
