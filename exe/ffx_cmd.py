@@ -86,6 +86,8 @@ for m in mods:
         assert " --ga hht " in c and " --ue be " in c; c = c.replace(" --ga hht ", " --ga be ").replace(" --ue be ", " --ue beall "); c = re.sub(r" --ue_loc \d+ ", " ", c)
     elif re.match(r"rho\d+$", m):                      # 절 CM193 진단: HHT ρ∞ = 숫자/10 (rho5 = 0.5)
         assert re.search(r" --rho \S+ ", c); c = re.sub(r" --rho \S+ ", f" --rho {int(m[3:]) / 10:g} ", c)
+    elif re.match(r"bs\d$", m):                        # 절 CM193: --be_sub N (K > 1 걸음 후퇴 오일러)
+        assert " --K " in c; c = c.replace(" --K ", f" --be_sub {m[2:]} --K ", 1)
     elif m == "dump":
         if " --dump " not in c: c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1)
     else:

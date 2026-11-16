@@ -141,6 +141,7 @@ ap.add_argument("--bar_nostep", action="store_true", help="절 CM25 대조 (진�
 ap.add_argument("--wrx", type=int, default=0, help="절 CM38 재설계 후보 비트 (lib/anchorflow/fem_wmrx.py; 0 이면 안 부름): 1 고착 상한, 2 속도 수준 접촉 -- 바닥 노드 커널 rt_floor_n·mt_floor_n")
 ap.add_argument("--wrx_skc", type=float, default=1e-2, help="절 CM38 후보 1 문턱")
 ap.add_argument("--wrx_col", type=int, default=0, help="절 CM38: 0 모든 걸음, 1 무너진 프레임만 (--ksplit --ks_big 위)")
+ap.add_argument("--be_sub", type=int, default=0, help="절 CM193 (기본 0 = 그대로): 프레임보다 짧은 걸음 (K > 1: ssN·kN·다시 풀기·쪼개기) 은 HHT 대신 후퇴 오일러 (α_m = α_f = 0, γ = β = 1, 매 걸음 U1 = y·v1 = (y − U)/h·a 0 = 판 be 와 같은 갱신, --ue_loc 노드 집합 없이 모든 노드). 1 = 모든 재질, 2 = 반환 사상 재질 (sand·foam·plasticine·watermelon·metal) 만. K = 1 걸음은 그대로")
 ap.add_argument("--wrx_el", type=int, default=0, help="절 CM192 (기본 0 = 소스 그대로): 1 이면 반환 사상 없는 탄성 재질은 --wrx_col 1 (X3 를 무너진 프레임 다시 풀기에서만), 반환 사상 재질 (sand·foam·plasticine·watermelon·metal) 은 주어진 --wrx_col 그대로")
 a = ap.parse_args()
 if a.wrx:                                                                             # 절 CM38: 소스 바꾸기는 모듈 만들기 전에
@@ -355,6 +356,31 @@ S = SOLVER(X0, d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float
 if a.bar_nostep:
     assert getattr(S, "bar", False) and not S.ls, "--bar_nostep 은 선탐색 없는 장벽 판 (재질) 만"
     S.nobk = True
+if a.be_sub and (a.be_sub == 1 or MATNAME in ("sand", "foam", "plasticine", "watermelon", "metal")):   # 절 CM193: K > 1 걸음은 후퇴 오일러 (그래프는 K 마다 캡처되므로 K 별로 고정)
+    assert S.ga and S.cue, "--be_sub 는 HHT·GA 판 + --ue (갱신 바꿈 커널 컴파일) 위"
+    _BEC = dict(am=0.0, af=0.0, gm=1.0, be=1.0)
+
+    def _st_be(K_):
+        c0 = S.ga_c
+        if K_ > 1:
+            S.ga_c = _BEC
+        try:
+            return type(S).stages(S, K_)
+        finally:
+            S.ga_c = c0
+
+    def _rec_be(t_, K_=None):
+        Kx = K_ or S.K
+        if Kx <= 1:
+            return type(S).record(S, t_, K_)
+        sv = (getattr(S, "uel", 0), S.cue)
+        S.uel = 0; S.cue = 3
+        try:
+            return type(S).record(S, t_, K_)
+        finally:
+            S.uel, S.cue = sv
+    S.stages = _st_be; S.record = _rec_be
+    print(f"[절 CM193 --be_sub {a.be_sub}] 재질 {MATNAME}: K > 1 걸음은 후퇴 오일러", flush=True)
 if a.wrx:                                                                             # 절 CM38 후보 장치 전역 (col 이면 처음 0)
     WRX.setup(S, a.wrx, a.wrx_skc); WRX.on(S, 0 if a.wrx_col else 1)
 _split = (lambda t_: WRX.split_col(S, t_, h, None, a.ksplit, fn=lambda d_: ART.split_step(S, t_, h, d_))) if (a.wrx and a.wrx_col) else (lambda t_: ART.split_step(S, t_, h, a.ksplit))
