@@ -75,7 +75,7 @@ out = [r"""% lualatex stab_final_1115.tex
 \begin{document}\maketitle"""]
 out.append(open(f"{root}/settings.tex").read() if os.path.exists(f"{root}/settings.tex") else "")
 # 표 1: N_min
-t = [r"\begin{table}[h]\centering\small\caption{발산하지 않는 최소 서브스텝 수 $N$ (판정: NaN 없이 전 프레임 (Lego$\cdot$pillow2sofa 60, ship$\cdot$mic 80), 운동+위치 에너지 변화 최대 $\le 1$, 바닥 관통 $\le 0.5L$; 2 의 거듭제곱으로 잰 뒤 발산한 $N$ 과 안정한 $N$ 사이 정수를 아래부터 올라가 처음 안정한 $N$, 같은 $N$ 세 번 모두 안정이면 확정). $^\dagger$ = 2026-11-12 기존 결과 재사용. $>X$ = 사다리 상한 $X$ 까지 안정 없음 (상한: PhysGaussian 1024, i-PhysGaussian 16, OmniPhysGS 256, 우리 64), -- = 측정 못 함.}",
+t = [r"\begin{table}[h]\centering\small\caption{발산하지 않는 최소 서브스텝 수 $N$ (판정: NaN 없이 전 프레임 (Lego$\cdot$pillow2sofa 60, ship$\cdot$mic 80), 운동+위치 에너지 변화 최대 $\le 1$, 바닥 관통 $\le 0.5L$; 2 의 거듭제곱으로 잰 뒤 발산한 $N$ 과 안정한 $N$ 사이 정수를 아래부터 올라가 처음 안정한 $N$, 같은 $N$ 세 번 모두 안정이면 확정; mic 은 $N$ 마다 1 회 판정 -- 2026-11-16 사용자 지시로 반복 없이 처음 안정한 $N$). $^\dagger$ = 2026-11-12 기존 결과 재사용. $>X$ = 사다리 상한 $X$ 까지 안정 없음 (상한: PhysGaussian 1024, i-PhysGaussian 16, OmniPhysGS 256, 우리 64), -- = 측정 못 함.}",
      r"\begin{tabular}{l" + "c" * len(MS) + r"}\toprule", "장면 & " + " & ".join(n for _, n in MS) + r" \\\midrule"]
 for s in SC:
     t.append(SN[s] + " & " + " & ".join(nmin(s, m) for m, _ in MS) + r" \\")
@@ -94,7 +94,7 @@ for s in SC:
     t.append(SN[s] + " & " + " & ".join(cells) + r" \\")
 t.append(r"\bottomrule\end{tabular}\end{table}"); out.append("\n".join(t))
 # 표 2: 물리 정합성
-t = [r"\begin{table}[h]\centering\scriptsize\caption{확정 최소 $N$ 에서 물리 정합성 (그 $N$ 의 세 실행 평균; $\checkmark$ = 세 실행 모두 문턱 안). 기준 = PhysGaussian $N{=}1024$. 문턱: 뒤집힘 0, 관통 $\le\max(2\times$기준, $0.01L)$, 떨림 $\le 2\times$기준, 자유낙하 운동량 오차 $\le 5\%$, Chamfer $\le 5\%L$. 값은 \% (관통·떨림·Chamfer 는 $L$ 대비). $^\dagger$ = 2026-11-12 기존 값 (기준 = 그때의 PG $N{=}1024$). -- = 해당 없음.}",
+t = [r"\begin{table}[h]\centering\scriptsize\caption{확정 최소 $N$ 에서 물리 정합성 (그 $N$ 의 세 실행 평균, mic 은 1 회; $\checkmark$ = 모든 실행이 문턱 안). 기준 = PhysGaussian $N{=}1024$. 문턱: 뒤집힘 0, 관통 $\le\max(2\times$기준, $0.01L)$, 떨림 $\le 2\times$기준, 자유낙하 운동량 오차 $\le 5\%$, Chamfer $\le 5\%L$. 값은 \% (관통·떨림·Chamfer 는 $L$ 대비). $^\dagger$ = 2026-11-12 기존 값 (기준 = 그때의 PG $N{=}1024$). -- = 해당 없음.}",
      r"\begin{tabular}{llcccccc}\toprule", r"장면 & 방법 & $N$ & 뒤집힘 & 바닥 관통 & 떨림 & 자유낙하 & Chamfer \\\midrule"]
 CK = lambda ok: r"\,\checkmark" if ok else r"\,$\times$"
 for s in SC:
@@ -220,7 +220,7 @@ def ex_rows(s):
     return rows
 
 
-t = [r"\begin{table}[h]\centering\small\caption{확정 최소 $N$ 에서 정답 없는 물리 지표 (그 $N$ 의 세 판 평균; 기준 PG 는 한 판). 정의는 파레토 표와 같음 (R2 \texttt{lbours/final\_fix/metrics\_def.md}). 에너지 증가 = $\max_t (E_t - E_0)/|E_0|$ (\texttt{e\_drift\_max}, 음수 = 줄기만 함), $E$ = 운동 + 중력 위치 에너지 (탄성 에너지 뺌, 안정 판정과 같은 $E$). 부피 변화 = 프레임마다 $\mathrm{mean}_i |J_i - 1|$ ($J = \det F$) 의 최대 (\texttt{jdev\_max}). 값은 \%. $^\ddagger$ = 영역 상자 $[0,2]^3$ 밖으로 나간 입자가 있는 판을 뺀 평균: 상자 밖 입자는 격자 갱신을 받지 못해 $F$ 가 의미 없는 값이 됨 (pillow2sofa PhysGaussian $N{=}45$ 판 a 에서 입자 689{,}830 개 중 1 개가 프레임 3 에 상자 밖으로 튀어 $\min\det F = -1961$, 그 한 입자 때문에 평균 $|J-1|$ 이 $1.5\times10^{8}$, 세 판 평균 $5.2\times10^{9}$\,\%; 판 a 의 입자별 $F$ 는 저장되지 않아 그 입자만 빼고 다시 잴 수 없으므로 판 b$\cdot$c 평균. PG$\cdot$i-PG$\cdot$OmniPhysGS 의 다른 확정 $N$ 판 (Lego PG$\cdot$i-PG 기존 결과 제외) 은 기록상 상자 밖 입자 0). 뒤집힘$\cdot$관통$\cdot$떨림$\cdot$자유낙하$\cdot$Chamfer 는 위 정합성 표.}",
+t = [r"\begin{table}[h]\centering\small\caption{확정 최소 $N$ 에서 정답 없는 물리 지표 (그 $N$ 의 세 판 평균, mic 은 1 회; 기준 PG 는 한 판). 정의는 파레토 표와 같음 (R2 \texttt{lbours/final\_fix/metrics\_def.md}). 에너지 증가 = $\max_t (E_t - E_0)/|E_0|$ (\texttt{e\_drift\_max}, 음수 = 줄기만 함), $E$ = 운동 + 중력 위치 에너지 (탄성 에너지 뺌, 안정 판정과 같은 $E$). 부피 변화 = 프레임마다 $\mathrm{mean}_i |J_i - 1|$ ($J = \det F$) 의 최대 (\texttt{jdev\_max}). 값은 \%. $^\ddagger$ = 영역 상자 $[0,2]^3$ 밖으로 나간 입자가 있는 판을 뺀 평균: 상자 밖 입자는 격자 갱신을 받지 못해 $F$ 가 의미 없는 값이 됨 (pillow2sofa PhysGaussian $N{=}45$ 판 a 에서 입자 689{,}830 개 중 1 개가 프레임 3 에 상자 밖으로 튀어 $\min\det F = -1961$, 그 한 입자 때문에 평균 $|J-1|$ 이 $1.5\times10^{8}$, 세 판 평균 $5.2\times10^{9}$\,\%; 판 a 의 입자별 $F$ 는 저장되지 않아 그 입자만 빼고 다시 잴 수 없으므로 판 b$\cdot$c 평균. PG$\cdot$i-PG$\cdot$OmniPhysGS 의 다른 확정 $N$ 판 (Lego PG$\cdot$i-PG 기존 결과 제외) 은 기록상 상자 밖 입자 0). 뒤집힘$\cdot$관통$\cdot$떨림$\cdot$자유낙하$\cdot$Chamfer 는 위 정합성 표.}",
      r"\begin{tabular}{llccc}\toprule 장면 & 방법 & $N$ & 에너지 증가 $\downarrow$ & 부피 변화 $\downarrow$ \\\midrule"]
 for s in SC:
     first = True
