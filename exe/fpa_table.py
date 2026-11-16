@@ -182,7 +182,7 @@ def table(title, vs, extra=True):
     T = [f"\\subsection*{{{title}}}", r"\begin{center}\scriptsize\begin{tabular}{l" + "rr" * len(SC) + "}\\toprule",
          "판 & " + " & ".join(f"\\multicolumn{{2}}{{c}}{{{nm}}}" for _, nm in SC) + r"\\", " & " + " & ".join("오차 \\% & ms" for _ in SC) + r"\\\midrule"]
     for v in vs:
-        T.append(vname(v) + " & " + " & ".join(cell(agg(s, v)) + " & " + cell(agg(s, v), "ms", "%.1f") for s, _ in SC) + r"\\")
+        T.append(vname(v) + " & " + " & ".join(cell(agg(s, v)) + " & " + ("--" if (v == "q1" and os.environ.get("FPA_Q1_MS", "0") != "1") else cell(agg(s, v), "ms", "%.1f")) for s, _ in SC) + r"\\")   # 절 CM192 사용자 결정: 1^3 판 ms 는 최적화 안 된 별도 구현 (q27_wrap --q1pt 1) 이라 같은 경로로 다시 잴 때까지 --
     T.append(r"\bottomrule\end{tabular}\end{center}")
     if extra:
         T += [r"\begin{center}\scriptsize\begin{tabular}{llrrrr}\toprule", r"장면 & 판 & 완주/회 & 입자 $\det F\le0$ 최대 & 에너지 최대 증가 (규모 대비) & 영 에너지 모드 수\\\midrule"]
