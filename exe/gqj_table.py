@@ -54,6 +54,7 @@ def cell(s, v):
     allr = [o for c in CONDS for o in runs(s, v, c, MODES)]
     if R1:                                                                           # 사용자 11-16: r1 (덤프) 값 먼저
         b = [o for o in b if o["rep"] == 1]; t = [o for o in t if o["rep"] == 1]
+    allr = [o for o in allr if o.get("frames_done") is not None]                     # 요약 없는 판 (기반 실패·진행 중) 은 세지 않음
     ndiv = sum(1 for o in allr if not done(o))
     return dict(err=med([o["err"] * 100 for o in b if done(o) and o.get("err") is not None]), nerr=sum(1 for o in b if done(o)),
                 ms=med([o["ms"] for o in t if done(o)]), hg=med([g(o, "hgm", "ratio") for o in b if done(o)]),
@@ -95,7 +96,7 @@ for i, v in enumerate(V):
     xs = ALL[v]
     m = lambda k: (float(np.mean([x[k] for x in xs])) if all(x[k] is not None for x in xs) else None)
     dmin = [x["detmin"] for x in xs if x["detmin"] is not None]
-    L.append(f"{'평균' if i == 0 else ''} & {VN[v]} & {fmt(m('err'), 2)} & {fmt(m('ms'), 1)} & {fmt(m('hg'), 3)} & {fmt(m('an99'), 1)} & {fmt(m('anmax'), 0)} & "
+    L.append(f"{'평균 (det 는 최소, 발산은 합)' if i == 0 else ''} & {VN[v]} & {fmt(m('err'), 2)} & {fmt(m('ms'), 1)} & {fmt(m('hg'), 3)} & {fmt(m('an99'), 1)} & {fmt(m('anmax'), 0)} & "
              f"{fmt(min(dmin) if len(dmin) == len(xs) else None, 3)} & {sum(x['ndiv'] for x in xs)}/{sum(x['nrun'] for x in xs)} & {fmt(m('lpips'), 4)} & {fmt(m('warp'), 3)} & --\\\\")
 L.append("\\bottomrule\\end{tabular}\\end{center}")
 open(f"{OUTD}/gq_justify_table.tex", "w").write("\n".join(L) + "\n")
@@ -110,6 +111,7 @@ for k, nm in (("hg", "모래시계 에너지 비"), ("div", "발산 (판 수)"))
             if k == "hg":
                 row.append(fmt(med([g(o, "hgm", "ratio") for o in rr if done(o)]), 3))
             else:
+                rr = [o for o in rr if o.get("frames_done") is not None]
                 row.append(f"{sum(1 for o in rr if not done(o))}/{len(rr)}")
         L.append(f"{nm if j == 0 else ''} & {CN[c]} & " + " & ".join(row) + "\\\\")
     L.append("\\midrule")
