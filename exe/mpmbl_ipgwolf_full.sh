@@ -14,7 +14,7 @@ python -u exe/pareto_mpmbl.py --method ipg --nsub $N --gt $W/topo/pg_wolf_sand/s
 grep -q "^\[결과\]" <(tail -1 $O/$T.log) || { echo "[결과 없음 -- 다시 부르면 이어 돌림]"; kill $SY; exit 1; }
 kill $SY; rclone copy $O/$T $RB/$T -q; rclone copyto $O/$T.log $RB/$T.log -q
 echo "[판 $REP] $(tail -1 $O/$T.log | cut -c1-200)"
-[ "$REP" = a ] || exit 0
+case $REP in a|fa) ;; *) exit 0;; esac
 GTD=$AG/gt_wolf; P=$O/post_$T; mkdir -p $P
 python -u exe/lb_roll_to_h5.py --dump $O/$T/pred.pt --traj $GTD --out $P/h5 > $P/roll_h5.log 2>&1
 python -u exe/lb_render.py --sim $P/h5 --config $GTD/config.json --shape wolf --out $P/ipg_wolf.mp4 --png $P/png --frames 50 < /dev/null > $P/render.log 2>&1; rm -rf $P/h5
