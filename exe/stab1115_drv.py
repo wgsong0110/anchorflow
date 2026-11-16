@@ -402,6 +402,13 @@ def stage_speed():
 
 
 
+def stage_cmd():
+    """[CM192 측정] 사다리 판과 같은 우리 명령을 --gt_ns 의 N 마다 출력 (앞 --gt_fr 프레임, 결과 폴더 <장면>/prof/N<n>)"""
+    for n in [int(q) for q in a.gt_ns.split(",")]:
+        d = f"{ST}/{S}/prof/N{n}"; os.makedirs(d, exist_ok=True)
+        print("CMD", hex_cmd(n, d, direct=not a.hexgraph, frames=a.gt_fr), flush=True)
+
+
 # --------------------------------------------------------------------------------------------- 그래프 켬/끔 결과 불변 확인 (CM192)
 def stage_gtest():
     """같은 우리 판 명령을 --sh_direct 1 (그래프 끔) 두 번 + 0 (그래프 켬) 한 번, 앞 --gt_fr 프레임, 카드 단독으로 차례로.
@@ -446,6 +453,6 @@ if "ours" in a.methods.split(",") or "speed" in a.stages or "gtest" in a.stages:
         assert not NS, "새 형상 장면의 hex_in.pt 는 부팅이 pg_h5_to_pt 로 만듦"
         subprocess.run([PY, f"{HERE}/stabhex_data.py", f"{ST}/{S}", f"{ST}/{S}/hex_in.pt", str(FR)], check=True)
 for st in a.stages.split(","):
-    {"main": stage_main, "vis": stage_vis, "speed": stage_speed, "gtest": stage_gtest}[st]()
+    {"main": stage_main, "vis": stage_vis, "speed": stage_speed, "gtest": stage_gtest, "cmd": stage_cmd}[st]()
 open(f"{ST}/{S}/DRV_DONE_{a.stages.replace(',', '_')}{a.hextag}", "w").write(time.strftime("%F %T"))
 say("끝", S, a.stages)
