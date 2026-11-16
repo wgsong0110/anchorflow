@@ -19,6 +19,7 @@ others() { nvidia-smi -i $GPU --query-compute-apps=pid --format=csv,noheader | g
 mine() { local n=0; for p in $(pgrep -f "python.*/workspace/gq/"); do n=$((n+1)); done; echo $n; }
 foreign() { local a=$(others) b=$(mine); [ $a -gt $b ] && echo $((a-b)) || echo 0; }   # 다른 에이전트 계산 (겹치지 않게): 카드 계산 프로세스 수 − 내 python (컨테이너 PID 와 nvidia-smi PID 가 달라 수로 비교)
 clean() { rm -rf "${X:?}/${1:?}" "${X:?}/${1:?}.claim"; }
+/home/dkta/.conda/envs/af/bin/python exe/pr2_patch_models.py > /dev/null 2>&1   # pillow2sofa 3DGS 모델 이름 (vast_pr2 부팅과 같음)
 idle=0
 while :; do
   rclone copyto $Q /root/gq/q_$WID.txt -q 2>/dev/null

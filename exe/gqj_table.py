@@ -50,7 +50,7 @@ def cell(s, v):
     ndiv = sum(1 for o in allr if not done(o))
     return dict(err=med([o["err"] * 100 for o in b if done(o) and o.get("err") is not None]), nerr=sum(1 for o in b if done(o)),
                 ms=med([o["ms"] for o in t if done(o)]), hg=med([g(o, "hgm", "ratio") for o in b if done(o)]),
-                an99=g(d, "aniso", "p99"), anmax=g(d, "aniso", "max"), detmin=g(d, "phys", "detmin"),
+                an99=g(d, "aniso", "rel_p99"), anmax=g(d, "aniso", "rel_max"), detmin=g(d, "phys", "detmin"),
                 lpips=g(d, "vis", "lpips"), warp=(g(d, "vis", "warp_err") * 1e3 if g(d, "vis", "warp_err") is not None else None),
                 ndiv=ndiv, nrun=len(allr))
 
