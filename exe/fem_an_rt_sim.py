@@ -141,6 +141,7 @@ ap.add_argument("--bar_nostep", action="store_true", help="절 CM25 대조 (진�
 ap.add_argument("--wrx", type=int, default=0, help="절 CM38 재설계 후보 비트 (lib/anchorflow/fem_wmrx.py; 0 이면 안 부름): 1 고착 상한, 2 속도 수준 접촉 -- 바닥 노드 커널 rt_floor_n·mt_floor_n")
 ap.add_argument("--wrx_skc", type=float, default=1e-2, help="절 CM38 후보 1 문턱")
 ap.add_argument("--wrx_col", type=int, default=0, help="절 CM38: 0 모든 걸음, 1 무너진 프레임만 (--ksplit --ks_big 위)")
+ap.add_argument("--wrx_el", type=int, default=0, help="절 CM192 (기본 0 = 소스 그대로): 1 이면 반환 사상 없는 탄성 재질은 --wrx_col 1 (X3 를 무너진 프레임 다시 풀기에서만), 반환 사상 재질 (sand·foam·plasticine·watermelon·metal) 은 주어진 --wrx_col 그대로")
 a = ap.parse_args()
 if a.wrx:                                                                             # 절 CM38: 소스 바꾸기는 모듈 만들기 전에
     from anchorflow import fem_wmrx as WRX
@@ -277,6 +278,9 @@ MATNAME = cfg.get("material")
 if a.fpi_el and a.fp_interp and MATNAME in ("sand", "foam", "plasticine", "watermelon", "metal"):     # 절 CM191: 반환 사상 재질은 가우스 점 F 보간 교체를 하지 않음
     a.fp_interp = False
     print(f"[절 CM191 --fpi_el] 재질 {MATNAME}: --fp_interp 끔 (입자 F = G2P 누적)", flush=True)
+if a.wrx_el and a.wrx and not a.wrx_col and MATNAME not in ("sand", "foam", "plasticine", "watermelon", "metal"):   # 절 CM192: X3 (고착 상한 + 속도 수준 비탄성 접촉) 는 소성 흐름 재질에서만 매 걸음
+    a.wrx_col = 1
+    print(f"[절 CM192 --wrx_el] 재질 {MATNAME}: --wrx_col 1 (X3 는 무너진 프레임 다시 풀기에서만)", flush=True)
 if MATNAME in ("sand", "foam", "plasticine", "watermelon", "metal"):                            # 절 CM2: 재질 판 (lib/anchorflow/fem_mat_rt.py) -- 같은 실행기·같은 인자
     assert a.elx == "fcr", "--elx snh 는 탄성 판만 (재질 판 수박은 exe/fem_ao_rt_sim.py --elx, 절 CM13)"     # 절 CM22: --fp_interp·--qjd 재질 판도 (끄면 그대로)
     from anchorflow import fem_mat_rt as MRT

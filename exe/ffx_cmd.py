@@ -29,7 +29,7 @@ if scene in NSH:
     if base == "def":
         assert "--mlow 1e-3" in c and c.count("python -u exe/") == 1
         c = c.replace("python -u exe/", "python -u " + SSW + "exe/", 1).replace("--ue_loc 50 ", "--ue_loc 51 ").replace("--wrx_col 1 ", "--wrx_col 0 ")
-elif os.environ.get("FFX_ND", "0") == "1":              # 절 CM191 새 기본 판 = CM190 기본 판 + --fpi_el 1 (--fp_interp 탄성 재질에만); 판 nofpi = F 전달 반대 (탄성 장면은 G2P 누적, 소성 장면은 가우스점 보간 강제)
+elif os.environ.get("FFX_ND", "0") in ("1", "2"):       # 2 = 절 CM192 새 기본 판 (아래에서 --wrx_el 1 을 더함)              # 절 CM191 새 기본 판 = CM190 기본 판 + --fpi_el 1 (--fp_interp 탄성 재질에만); 판 nofpi = F 전달 반대 (탄성 장면은 G2P 누적, 소성 장면은 가우스점 보간 강제)
     ELAS = scene in ("L000", "pillow2sofa")
     c = subprocess.check_output([sys.executable, f"{HERE}/fpa_cmd.py", scene, "def" if base == "nofpi" else base, rep, out], text=True).strip()
     if base == "nofpi":
@@ -40,6 +40,8 @@ elif os.environ.get("FFX_ND", "0") == "1":              # 절 CM191 새 기본 �
 else:
     c = subprocess.check_output([sys.executable, f"{HERE}/fpa_cmd.py", scene, base, rep, out], text=True).strip()
 c = " " + c + " "
+if os.environ.get("FFX_ND", "0") == "2" and " --wrx_col " in c and " --wrx_el " not in c:   # 절 CM192 새 기본 판 = CM191 + --wrx_el 1 (탄성 재질은 X3 를 무너진 프레임에서만)
+    c = c.replace(" --wrx_col ", " --wrx_el 1 --wrx_col ", 1)
 for m in mods:
     if re.match(r"cg\d+$", m):
         assert re.search(r" --cg \d+ ", c); c = re.sub(r" --cg \d+ ", f" --cg {m[2:]} ", c)
@@ -63,6 +65,8 @@ for m in mods:
         if " --fpi_el " not in c: c = c.replace(" --K ", " --fpi_el 1 --K ", 1)
     elif re.match(r"wrx\d$", m):
         assert re.search(r" --wrx \d+ ", c); c = re.sub(r" --wrx \d+ ", f" --wrx {m[3:]} ", c)
+    elif m == "wel":                                    # 절 CM192: 탄성 재질은 X3 를 무너진 프레임에서만 (--wrx_el 1)
+        if " --wrx_el " not in c: c = c.replace(" --wrx_col ", " --wrx_el 1 --wrx_col ", 1)
     elif m == "bec2":                                   # 절 CM192: 국소 후퇴 오일러 강제는 다시 풀기에서만
         assert "--ssf_bec 1 " in c; c = c.replace("--ssf_bec 1 ", "--ssf_bec 2 ", 1)
     elif m == "ssr":                                    # 절 CM192: ssfix 다시 풀기 뒤 X3 상태 되돌림
