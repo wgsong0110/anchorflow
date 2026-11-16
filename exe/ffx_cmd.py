@@ -135,6 +135,8 @@ for m in mods:
         assert " --be_sub " in c; c = c.replace(" --be_sub ", f" --be_sub_mmc {m[3:]} --be_sub ", 1)
     elif m == "mmh":                                    # 절 CM196: --be_sub_mmh 1 (질량 하한 판정 진동수를 프레임 걸음 h 기준으로)
         assert " --be_sub " in c; c = c.replace(" --be_sub ", " --be_sub_mmh 1 --be_sub ", 1)
+    elif m == "dom":                                    # 절 CM196: --be_sub_dom 1 (명목 K > 1: 프레임 끝 입자를 장면 bounding_box 안으로)
+        assert " --be_sub " in c; c = c.replace(" --be_sub ", " --be_sub_dom 1 --be_sub ", 1)
     elif m == "dump":
         if " --dump " not in c: c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1)
     else:

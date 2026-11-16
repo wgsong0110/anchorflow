@@ -152,6 +152,7 @@ ap.add_argument("--be_sub_mmed", type=float, default=0.0, help="절 CM196 진단
 ap.add_argument("--be_sub_skc", type=int, default=0, help="절 CM196 (--be_sub·--wrx 1 비트 위, 기본 0): K > 1 걸음의 고착 상한 문턱을 프레임 기준으로 (√k_걸음 < skc^(1/K) 이면 완전 고착 = √k 의 K 거듭제곱 (프레임 고착 인자) < skc; K = 1 은 그대로)")
 ap.add_argument("--be_sub_mmc", type=float, default=0.0, help="절 CM196 (--be_sub_mmed 위, 기본 0 = 하한 그대로): 하한을 min(a x 중앙값, c τ² tr(B)/3) 로 -- 걸음 τ 로 못 푸는 진동수 (ωτ > 1/√c) 노드에만 질량을 더함 (풀리는 동역학은 그대로)")
 ap.add_argument("--be_sub_mmh", type=int, default=0, help="절 CM196 (--be_sub_mmc 위, 기본 0): 1 이면 c τ² 대신 c h² (프레임 걸음, K 무관) -- 프레임 걸음으로 못 푸는 진동수 (ωh > 1/√c) 노드에만 질량 하한")
+ap.add_argument("--be_sub_dom", type=int, default=0, help="절 CM196 (--be_sub 위, 기본 0): 1 이면 명목 K > 1 실행에서 프레임 끝마다 장면 bounding_box 경계 조건 (정답 MPM 과 같은 영역 [3 dx, grid_lim − 3 dx], dx = 정답 격자) 밖으로 나간 입자를 경계로 되돌리고 그 성분 속도·가속도 0 (입자는 프레임 끝에서만, 서브스텝 안 아님)")
 ap.add_argument("--wrx_el", type=int, default=0, help="절 CM192 (기본 0 = 소스 그대로): 1 이면 반환 사상 없는 탄성 재질은 --wrx_col 1 (X3 를 무너진 프레임 다시 풀기에서만), 반환 사상 재질 (sand·foam·plasticine·watermelon·metal) 은 주어진 --wrx_col 그대로")
 a = ap.parse_args()
 if a.be_sub_mfl > 0:                                                                  # 절 CM194: 질량 하한을 거의 빈 노드에만 (rt_meff 한 줄, 장치 전역 AF_MFLTHR; 0 이면 하한 그대로)
@@ -455,6 +456,24 @@ if a.be_sub_mfl > 0:                                                            
     _thr = float(a.be_sub_mfl * MTHR / a.mlow)
     _cpm.ndarray((1,), dtype=_cpm.float32, memptr=S.mod.get_global("AF_MFLTHR"))[0] = _thr
     print(f"[절 CM194 --be_sub_mfl] 질량 하한은 노드 질량 < {_thr:.4g} (중앙값 x {a.be_sub_mfl}) 에만", flush=True)
+if a.be_sub_dom and a.be_sub and a.K > 1 and any(b.get("type") == "bounding_box" for b in (cfg.get("boundary_conditions") or [])):   # 절 CM196: 장면 bounding_box (정답 MPM 영역) 를 프레임 끝 입자에
+    _GL = float(cfg.get("grid_lim", 2.0)); _DXP = _GL / int(cfg.get("n_grid", 100))
+    _off = (LOFF.double() if LIFT is not None else torch.zeros(3, device=dev, dtype=torch.float64))
+    _DLO = (3 * _DXP + _off).to(S.x.dtype); _DHI = (_GL - 3 * _DXP + _off).to(S.x.dtype)
+    _st_dom0 = S.step; _NDOM = [0]
+
+    def _st_dom(t_):
+        r_ = _st_dom0(t_)
+        _o = (S.x < _DLO) | (S.x > _DHI)
+        if bool(_o.any()):
+            _NDOM[0] += int(_o.any(1).sum())
+            S.x.copy_(torch.maximum(torch.minimum(S.x, _DHI), _DLO))
+            S.v.masked_fill_(_o, 0.0)
+            if getattr(S, "pa", None) is not None:
+                S.pa.masked_fill_(_o, 0.0)
+        return r_
+    S.step = _st_dom
+    print(f"[절 CM196 --be_sub_dom] 프레임 끝 입자 영역 [{float(_DLO[0]):.3f}, {float(_DHI[0]):.3f}] (bounding_box, 정답 dx {_DXP:g})", flush=True)
 if a.wrx:                                                                             # 절 CM38 후보 장치 전역 (col 이면 처음 0)
     WRX.setup(S, a.wrx, a.wrx_skc); WRX.on(S, 0 if a.wrx_col else 1)
 _split = (lambda t_: WRX.split_col(S, t_, h, None, a.ksplit, fn=lambda d_: ART.split_step(S, t_, h, d_))) if (a.wrx and a.wrx_col) else (lambda t_: ART.split_step(S, t_, h, a.ksplit))
@@ -638,6 +657,8 @@ for fi in range(L):
         print(f"[발산] 프레임 {div_at}", flush=True)
         break
 sc = [q for i, q in enumerate(ms) if i >= a.warm]
+if "_NDOM" in globals():
+    print(f"[절 CM196 --be_sub_dom] 영역 밖으로 나가 되돌린 입자-프레임 수 {_NDOM[0]}", flush=True)
 if getattr(S, "_vc_cnt", None) is not None:
     print(f"[절 CM196 --be_sub_vcap] 속도 자른 노드-걸음 수 (재생 포함 누적) {int(S._vc_cnt.item())}", flush=True)
 summ = dict(args=vars(a), frames=L, frames_done=len(errs), diverged=div_at, err_mean=(float(np.mean(errs)) if div_at is None else None),
