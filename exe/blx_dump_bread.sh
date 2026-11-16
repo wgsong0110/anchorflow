@@ -2,6 +2,7 @@
 # [blx] Spring-Gaus bread 덤프·물리·시각 지표를 다른 카드에서 병렬로 (조정자 11-17: 12 시 전 완료; 시간 1 회는 학습 카드 final_blx_sgf).
 #   지금: 코드·준비 판 정적 파일·정답 렌더 PNG·pyiqa/RAFT 가중치 미리 (정답 PNG 와 가중치 데움은 GPU 가볍게). 학습 끝 (R2 SGB/MV_TRAIN_DONE) -> sg_train.json·마지막 exp 받아
 #   pr2_grid BLX_NOTIME=1 BLX_DUMP=1 (OUT 은 이 인스턴스 다른 일과 안 겹치게 /workspace/blxd, 준비 판은 sg_train.json 절대 경로 자리) -> R2 SGB/g 로, 표식 marks_SGB/DUMP_DONE.
+#   GPU 를 쓰는 일 (정답 렌더·가중치 데움·덤프) 은 BLX_WAIT_SESS (기본 ipgwt25r: i-PG 단독 시간 측정) tmux 세션이 끝난 뒤에만.
 #   사용: bash blx_dump_bread.sh <커밋>
 set -u
 H=${1:?커밋}; export HOME=/root PATH=/home/dkta/.conda/envs/af/bin:/home/dkta/bin:$PATH PYTHONUTF8=1
@@ -17,6 +18,8 @@ export ST_SG_PYPATH=/dev/shm/dkta/pylib/sg ST_SG_REPO=/dev/shm/dkta/ext/Spring-G
 rclone copy $OX/$T/p/springgaus_bread_prep $F -q --max-depth 1 --exclude "log_*"
 log "준비: 코드 $H, 준비 판 $(ls $F | tr '\n' ' ')"
 cd $D
+log "GPU 일 대기: 이 카드의 다른 에이전트 단독 시간 측정 세션 (${BLX_WAIT_SESS:-ipgwt25r}) 끝날 때까지 (조정자 11-17)"
+for ss in ${BLX_WAIT_SESS:-ipgwt25r}; do while tmux has-session -t $ss 2>/dev/null; do sleep 30; done; done
 G=$O/gt_bread; mkdir -p $G
 if [ ! -f $G/done ]; then
   CUDA_VISIBLE_DEVICES=0 python -u exe/lb_render.py --sim /tmp/dkta/ag_data/gt_bread --config /tmp/dkta/ag_data/gt_bread/config.json --shape bread --out $G/gt_bread.mp4 --png $G/png --frames 300 < /dev/null > $G/r.log 2>&1
