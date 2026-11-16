@@ -24,8 +24,9 @@ ap.add_argument("--kb", type=int, default=2400)
 ap.add_argument("--deg", type=int, default=24)
 ap.add_argument("--iters", type=int, default=14)
 ap.add_argument("--out", required=True)
+ap.add_argument("--dev", default="cuda")                                              # 절 CM195: cpu = GPU 안 씀 (남의 카드에서 CPU 로만)
 a = ap.parse_args()
-dev = "cuda"
+dev = a.dev
 torch.manual_seed(0)
 SV = torch.load(a.solver, map_location="cpu", weights_only=False)
 D = torch.load(a.pred, map_location="cpu", weights_only=False)
@@ -252,5 +253,6 @@ for fi in fr:
     print("[q27 eig] 프레임", fi, "q", a.q, {k: rec[k] for k in ("nc", "nq", "nn", "n_zero", "ncomp", "n_zero_nonrigid", "n_near", "n_zero_conv", "all_kb_small")}, flush=True)
     json.dump(OUT, open(a.out, "w"), indent=1)
     del Ah, X
-    torch.cuda.empty_cache()
+    if dev == "cuda":
+        torch.cuda.empty_cache()
 print("[q27 eig] 끝", round(time.time() - t0, 1), "s")
