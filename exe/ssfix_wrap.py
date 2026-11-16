@@ -15,6 +15,8 @@
   --ssf_fpic M    [d192 11-16] (기본 0 = 소스 그대로) 재질 판 + --fpi_el 1 (소성 재질은 --fp_interp 꺼짐) 에서, M 1 = 받아들인 프레임이 끝 판정 무너짐 (최대 깊이에서도 덜 풀림) 이면,
                   M 2 = 다시 푼 프레임이면 그 프레임만 입자 F·재질 상태를 프레임 끝 가우스 점 보간 (옛 판 --fp_interp 와 같은 커널) 으로 교체. 탄성 재질은 아무 일 없음.
   --ssf_fpik K    (기본 0) --ssf_fpic 를 받아들인 프레임의 걸음 수 K 가 이 값 이상일 때만
+  --ssf_cgk P     [d192 11-16] (기본 0 = 소스 그대로) PCG 반복 상한 cg 를 걸음 수 K 에 맞춰: cg_K = min(--ssf_cgmax, max(cg, round(cg · K^P))) (K = 1 이면 cg 그대로 = 비트 같음).
+                  다시 풀기 (K 2^d 배) 에도 같은 식. --ssf_cgm 1 (기본) 이면 재질 판 (소성 재질 실행기) 에만, 0 이면 모든 판
   --ssf_tsum 1    (wolffix 11-15) 다시 푼 프레임의 시간 s.last_ms = 버린 시도들 + 마지막 시도 합 (실시간 판정용; 0 = 마지막 시도만, 옛 동작)
 사용: python exe/ssfix_wrap.py --ssf_tol 1 exe/stabhex_wrap.py ... exe/fem_an_rt_sim.py ... (바깥 첫 감싸개로)
 """
@@ -25,7 +27,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 argv = sys.argv[1:]
-C = dict(tol="0", tolp="0", kex="0", split="0", bigT="1.0", wrx="1", dumpfail="", det="1", bec="0", tsum="0", kmax="256", fpic="0", fpik="0")
+C = dict(tol="0", tolp="0", kex="0", split="0", bigT="1.0", wrx="1", dumpfail="", det="1", bec="0", tsum="0", kmax="256", fpic="0", fpik="0", cgk="0", cgmax="64", cgm="1")
 while argv and argv[0].startswith("--ssf_"):
     C[argv[0][6:]] = argv[1]; del argv[:2]
 _orig = runpy.run_path; _done = [False]
@@ -46,6 +48,27 @@ def _install():
             s.floor["KEX"] = s.floor["KEX"] * float(C["kex"])
         print(f"[substep_fix] KEX {getattr(s, 'floor', None) and s.floor['KEX']} tolN {s.tolN:.4g} tolP {s.tolP:.4g} (K {K}, ssf_tol {C['tol']}, ssf_tolp {C['tolp']})", flush=True)
     ART.RTSolver.__init__ = init
+    if float(C["cgk"]) != 0:                                                           # --ssf_cgk P: PCG 상한을 걸음 수에 맞춤 (K 1 은 그대로)
+        oinit_c = ART.RTSolver.__init__; oset = ART.set_K_an
+
+        def _cg_apply(s):
+            if not hasattr(s, "_cg0"):
+                s._cg0 = int(s.cg)
+            if int(float(C["cgm"])) and not hasattr(type(s), "mat_g2p"):           # 재질 판 (fem_mat_rt.MatRT) -- matk 는 부모 생성자 뒤에 정해지므로 클래스로
+                return
+            K = max(int(s.K), 1)
+            s.cg = int(min(int(float(C["cgmax"])), max(s._cg0, round(s._cg0 * K ** float(C["cgk"])))))
+
+        def init_c(s, *a, **kw):
+            oinit_c(s, *a, **kw)
+            _cg_apply(s)
+            print(f"[d192 cgk] K {s.K} PCG 상한 {s._cg0} -> {s.cg} (P {C['cgk']}, 재질 판만 {C['cgm']}, 재질 판 {hasattr(type(s), 'mat_g2p')})", flush=True)
+
+        def set_c(s, K, h):
+            oset(s, K, h)
+            _cg_apply(s)
+        ART.RTSolver.__init__ = init_c
+        ART.set_K_an = set_c
     if float(C["bec"]) != 0:                                                           # --ssf_bec 1: 걸음 끝 갱신 선택자 cjl 을 매 걸음 1 로 -> --ue be --ue_loc <비트> 의 국소 후퇴 오일러 (L-안정) 가 덜 풀린 걸음뿐 아니라 매 걸음 그 노드 집합 (장벽 걸린 표본점 노드 등) 에
         okc = ART.RTSolver.k; BS = dict(k=0)
 
@@ -86,15 +109,19 @@ def _install():
             M = s._fpm; i32, f = np.int32, np.float32
             capQ = s.capQc * 8; N = s.N; IP = s.IP; K = int(s.K)
             Fe = torch.zeros(capQ, 28, device=s.dev, dtype=torch.float32)
-            Uk = s.Ust[K - 1]
-            g = lambda n_, b_=128: (((int(n_) + b_ - 1) // b_,), (b_,))
-            if s.aq:
-                M.get_function("aq_commit")(*g(capQ), (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(Uk), i32(s._mat), P(s.prm), P(s.Sq), f(s.dt)))
-            else:
-                M.get_function("ao_commit")(*g(capQ), (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(Uk), f(s.cdp)))
-            M.get_function("fpi_q")(*g(capQ), (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(Uk), P(Fe)))
-            M.get_function("fpi_p")(*g(N), (i32(N), P(IP), P(s.fx), P(s.pcd), P(s.cidx), P(Fe), i32(0), i32(0), P(s.F),
-                                            P(s.Sq if s.aq else None), P(s.ysp if s.aq else None), P(s.ljp if s.aq else None), P(s.alp if s.aq else None)))
+            Uk = s.Ust[K - 1].contiguous()
+            mod0, fn0 = s.mod, s.fn
+            s.mod, s.fn = M, {}                                                         # 같은 실행기 s.k 경로 (옛 판 mat_g2p 와 같은 발사) 로 이 모듈의 커널을 부름
+            try:
+                if s.aq:
+                    s.k("aq_commit", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(Uk), i32(s._mat), P(s.prm), P(s.Sq), f(s.dt)))
+                else:
+                    s.k("ao_commit", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(Uk), f(s.cdp)))
+                s.k("fpi_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(Uk), P(Fe)))
+                s.k("fpi_p", N, (i32(N), P(IP), P(s.fx), P(s.pcd), P(s.cidx), P(Fe), i32(0), i32(0), P(s.F),
+                                 P(s.Sq if s.aq else None), P(s.ysp if s.aq else None), P(s.ljp if s.aq else None), P(s.alp if s.aq else None)))
+            finally:
+                s.mod, s.fn = mod0, fn0
             torch.cuda.synchronize()
             ST["fpic"] += 1
             print(f"[d192 fpic] 프레임 {ST['frames']} K {K}: 입자 F·상태 = 가우스 점 보간 (재질 판)", flush=True)
@@ -165,7 +192,7 @@ def _install():
 def run_path(path, *a, **kw):
     if not _done[0] and os.path.basename(path) == "fem_an_rt_sim.py":
         _done[0] = True
-        if float(C["tol"]) != 0 or float(C["tolp"]) != 0 or float(C["kex"]) != 0 or float(C["split"]) != 0 or C["dumpfail"] or float(C["bec"]) != 0 or float(C["fpic"]) != 0:
+        if float(C["tol"]) != 0 or float(C["tolp"]) != 0 or float(C["kex"]) != 0 or float(C["split"]) != 0 or C["dumpfail"] or float(C["bec"]) != 0 or float(C["fpic"]) != 0 or float(C["cgk"]) != 0:
             _install()
     return _orig(path, *a, **kw)
 
