@@ -25,3 +25,18 @@ for f in range(L):
             s += f" 앞 프레임에도 밖 {int((prev & out).sum())}"
     prev = out
     print(s, flush=True)
+# 빠른 입자 (프레임 변위 > 정답 같은 입자 변위 + 0.1 m): 수·자리·J·같은 입자의 앞 프레임 변위
+print("빠른 입자 (변위 - 정답 변위 > 0.1 m)")
+for f in range(1, L):
+    sp = (X[f] - X[f - 1]).norm(dim=-1); gs = (gx[f + 1] - gx[f]).norm(dim=-1)
+    fast = (sp - gs) > 0.1
+    n = int(fast.sum())
+    if not n:
+        continue
+    idx = fast.nonzero()[:, 0]
+    J = torch.linalg.det(F[f, idx].double()) if F is not None else torch.zeros(n)
+    Jp = torch.linalg.det(F[f - 1, idx].double()) if F is not None else torch.zeros(n)
+    sv = torch.linalg.svdvals(F[f, idx].double()) if F is not None else None
+    sp0 = (X[f - 1, idx] - X[f - 2, idx]).norm(dim=-1) if f >= 2 else torch.zeros(n)
+    print(f"f{f+1:02d} 빠른 {n:5d} 변위 중앙 {float(sp[idx].median()):.3f} 최대 {float(sp[idx].max()):.3f} | 앞 프레임 변위 중앙 {float(sp0.median()):.3f} | 자리 중앙 {[round(float(q), 2) for q in X[f, idx].median(0).values]} z {float(X[f, idx, 2].min()):.2f}~{float(X[f, idx, 2].max()):.2f}"
+          f" | J 중앙 {float(J.median()):.3g} 최소 {float(J.min()):.3g}, 앞 프레임 J 최소 {float(Jp.min()):.3g}" + (f" σmin {float(sv[:, 2].min()):.3g} σmax {float(sv[:, 0].max()):.3g}" if sv is not None else ""), flush=True)

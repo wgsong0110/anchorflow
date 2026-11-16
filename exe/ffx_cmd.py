@@ -77,6 +77,11 @@ for m in mods:
         c = c.replace(" --wrx_col ", f" --wrx_skc {m[3:]} --wrx_col ", 1)
     elif m in ("alog", "best"):                         # 절 CM193: ssfix 시도별 기록 (결과 불변) / 끝까지 무너진 프레임은 가장 덜 나쁜 시도를 받음
         assert "--ssf_bec " in c; c = c.replace("--ssf_bec ", f"--ssf_{m} 1 --ssf_bec ", 1)
+    elif re.match(r"sdg\d+-\d+$", m):                 # 절 CM193 진단 (결과 불변): exe/ssdiag_wrap.py 반복별 |g|²·F² 기록 (프레임 a..b, 1 부터)
+        a_, b_ = m[3:].split("-"); assert "exe/startpt_wrap.py" in c
+        c = c.replace("exe/startpt_wrap.py", f"exe/ssdiag_wrap.py --sd_f0 {a_} --sd_f1 {b_} exe/startpt_wrap.py", 1)
+    elif re.match(r"xg[0-9.e-]+$", m):                  # 절 CM193: --xit_from 문 문턱 (ssfix --ssf_xgT)
+        assert "--ssf_bec " in c; c = c.replace("--ssf_bec ", f"--ssf_xgT {m[2:]} --ssf_bec ", 1)
     elif m == "dump":
         if " --dump " not in c: c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1)
     else:

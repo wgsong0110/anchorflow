@@ -17,6 +17,7 @@
   --ssf_alog 1    (절 CM193 진단, 결과 불변) 다시 푼 프레임의 시도마다 K·비유한·det F<=0 입자 수·덜 풀린 걸음 ‖g‖²/F² 최대·T 넘은 걸음 수·입자 상자 크기를 찍음
   --ssf_best 1    (절 CM193) 최대 깊이까지 다시 풀어도 무너진 프레임이면 마지막 시도 대신 시도 가운데 가장 덜 나쁜 끝 상태를 받음
                   (나쁨 순서 = 비유한·메모리 초과 > det F<=0 입자 수 > 덜 풀린 걸음 ‖g‖²/F² 최대); 마지막 시도가 무너지지 않았으면 그대로 (결과 불변)
+  --ssf_xgT X     (절 CM193) 실행기 --xit_from 문의 '더 돌지' 판정 문턱 ‖g‖²/F² > 1 을 X 로 (0 = 끔 = 소스 그대로)
   --ssf_tsum 1    (wolffix 11-15) 다시 푼 프레임의 시간 s.last_ms = 버린 시도들 + 마지막 시도 합 (실시간 판정용; 0 = 마지막 시도만, 옛 동작)
 사용: python exe/ssfix_wrap.py --ssf_tol 1 exe/stabhex_wrap.py ... exe/fem_an_rt_sim.py ... (바깥 첫 감싸개로)
 """
@@ -27,7 +28,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 argv = sys.argv[1:]
-C = dict(alog="0", best="0", tol="0", tolp="0", kex="0", split="0", bigT="1.0", wrx="1", dumpfail="", det="1", bec="0", tsum="0", kmax="256", wrxr="0")
+C = dict(xgT="0", alog="0", best="0", tol="0", tolp="0", kex="0", split="0", bigT="1.0", wrx="1", dumpfail="", det="1", bec="0", tsum="0", kmax="256", wrxr="0")
 while argv and argv[0].startswith("--ssf_"):
     C[argv[0][6:]] = argv[1]; del argv[:2]
 _orig = runpy.run_path; _done = [False]; _BEC = {}
@@ -35,6 +36,12 @@ _orig = runpy.run_path; _done = [False]; _BEC = {}
 
 def _install():
     from anchorflow import fem_an_rt as ART
+    if float(C["xgT"]) != 0:                                                           # 절 CM193: --xit_from 문 문턱 (커널 소스 글자 바꿈, 컴파일 전)
+        from anchorflow import fem_common2 as C2
+        old = "big = res && cjg[k] > 1.f;"
+        assert C2.C2_GATE_SRC.count(old) == 1
+        C2.C2_GATE_SRC = C2.C2_GATE_SRC.replace(old, "big = res && cjg[k] > %.9ef;" % float(C["xgT"]))
+        print(f"[substep_fix] --xit_from 문 문턱 ‖g‖²/F² > {float(C['xgT']):g}", flush=True)
     oi = ART.RTSolver.__init__
 
     def init(s, *a, **kw):
@@ -173,7 +180,7 @@ def _install():
 def run_path(path, *a, **kw):
     if not _done[0] and os.path.basename(path) == "fem_an_rt_sim.py":
         _done[0] = True
-        if float(C["tol"]) != 0 or float(C["tolp"]) != 0 or float(C["kex"]) != 0 or float(C["split"]) != 0 or C["dumpfail"] or float(C["bec"]) != 0:
+        if float(C["tol"]) != 0 or float(C["tolp"]) != 0 or float(C["kex"]) != 0 or float(C["split"]) != 0 or C["dumpfail"] or float(C["bec"]) != 0 or float(C["xgT"]) != 0:
             _install()
     return _orig(path, *a, **kw)
 
