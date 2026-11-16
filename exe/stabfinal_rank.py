@@ -6,7 +6,7 @@ import json, os, sys
 import numpy as np
 root = sys.argv[1]; paper = sys.argv[2] if len(sys.argv) > 2 else ""
 SC = ["lego", "pillow2sofa", "ship_plastic_lego", "mic_metal_lego"]
-SN = dict(lego="레고", pillow2sofa="pillow2sofa", ship_plastic_lego="ship", mic_metal_lego="mic")
+SN = dict(lego="Lego", pillow2sofa="pillow2sofa", ship_plastic_lego="ship", mic_metal_lego="mic")
 TAGS = dict(lego="_f5", pillow2sofa="_f5", ship_plastic_lego="_f7", mic_metal_lego="_f7")
 MS = ["pg", "ipg", "omni", "ours"]
 LEGO_OLD = dict(pg=(43, [0.00, 0.61, 0.44, 0.00, 0.73]), ipg=(8, [0.00, 0.63, 0.39, 0.00, 0.52]))   # stabfinal_tab.py 와 같음 (% 값)

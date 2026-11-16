@@ -14,7 +14,7 @@ for f in glob.glob(os.path.expanduser("~/.fonts/NotoSansCJKkr-*.otf")):
 plt.rcParams["font.family"] = "Noto Sans CJK KR"; plt.rcParams["axes.unicode_minus"] = False
 root, hexan, paper = sys.argv[1], sys.argv[2], sys.argv[3]
 SC = ["lego", "pillow2sofa", "ship_plastic_lego", "mic_metal_lego"]
-SN = dict(lego="레고", pillow2sofa="pillow2sofa", ship_plastic_lego="ship (plasticine)", mic_metal_lego="mic (metal)")
+SN = dict(lego="Lego", pillow2sofa="pillow2sofa", ship_plastic_lego="ship (plasticine)", mic_metal_lego="mic (metal)")
 MS = [("pg", "PhysGaussian"), ("ipg", "i-PhysGaussian"), ("omni", "OmniPhysGS"), ("ours", "우리")]          # MPM 베이스라인 셋 + 우리 (GF·MPMAvatar 뺌)
 TAG = "_f5"
 # [절 CM191·CM192] ship·mic 우리 판 = 새 기본 판 (--fpi_el 1) + 큰 N 공통 규칙 --ssf_cgk 0.5 (_f7); 레고·pillow2sofa 는 둘 다 계산 불변이라 _f5 그대로
@@ -70,12 +70,12 @@ out = [r"""% lualatex stab_final_1115.tex
 \setmainfont{Noto Serif CJK KR}
 \usepackage{booktabs,amsmath,amssymb,graphicx}
 \graphicspath{{./}{fig/}}
-\title{서브스텝 안정성 (최종): 레고 $\cdot$ pillow2sofa $\cdot$ ship (plasticine) $\cdot$ mic (metal)}
+\title{서브스텝 안정성 (최종): Lego $\cdot$ pillow2sofa $\cdot$ ship (plasticine) $\cdot$ mic (metal)}
 \date{2026-11-15}
 \begin{document}\maketitle"""]
 out.append(open(f"{root}/settings.tex").read() if os.path.exists(f"{root}/settings.tex") else "")
 # 표 1: N_min
-t = [r"\begin{table}[h]\centering\small\caption{발산하지 않는 최소 서브스텝 수 $N$ (판정: NaN 없이 전 프레임 (레고$\cdot$pillow2sofa 60, ship$\cdot$mic 80), 운동+위치 에너지 변화 최대 $\le 1$, 바닥 관통 $\le 0.5L$; 2 의 거듭제곱으로 잰 뒤 발산한 $N$ 과 안정한 $N$ 사이 정수를 아래부터 올라가 처음 안정한 $N$, 같은 $N$ 세 번 모두 안정이면 확정). $^\dagger$ = 2026-11-12 기존 결과 재사용. $>X$ = 사다리 상한 $X$ 까지 안정 없음 (상한: PhysGaussian 1024, i-PhysGaussian 16, OmniPhysGS 256, 우리 64), -- = 측정 못 함.}",
+t = [r"\begin{table}[h]\centering\small\caption{발산하지 않는 최소 서브스텝 수 $N$ (판정: NaN 없이 전 프레임 (Lego$\cdot$pillow2sofa 60, ship$\cdot$mic 80), 운동+위치 에너지 변화 최대 $\le 1$, 바닥 관통 $\le 0.5L$; 2 의 거듭제곱으로 잰 뒤 발산한 $N$ 과 안정한 $N$ 사이 정수를 아래부터 올라가 처음 안정한 $N$, 같은 $N$ 세 번 모두 안정이면 확정). $^\dagger$ = 2026-11-12 기존 결과 재사용. $>X$ = 사다리 상한 $X$ 까지 안정 없음 (상한: PhysGaussian 1024, i-PhysGaussian 16, OmniPhysGS 256, 우리 64), -- = 측정 못 함.}",
      r"\begin{tabular}{l" + "c" * len(MS) + r"}\toprule", "장면 & " + " & ".join(n for _, n in MS) + r" \\\midrule"]
 for s in SC:
     t.append(SN[s] + " & " + " & ".join(nmin(s, m) for m, _ in MS) + r" \\")
@@ -190,7 +190,7 @@ for ax, s in zip(axs, SC):
     ax.set_xscale("log", base=2); ax.set_yscale("log"); ax.set_title(SN[s]); ax.set_xlabel("프레임당 서브스텝 $N$"); ax.grid(alpha=.3)
 axs[0].set_ylabel("자기 기준 궤적 대비 RMSE/L (%)"); axs[0].legend(fontsize=7)
 plt.tight_layout(); os.makedirs(f"{paper}/fig", exist_ok=True); plt.savefig(f"{paper}/fig/stabfinal_err.png", dpi=150)
-out.append(r"\begin{figure}[h]\centering\includegraphics[width=\linewidth]{fig/stabfinal_err.png}\caption{$N$-오차 곡선 (방법마다 자기 기준 궤적 대비, 전 프레임 평균; 안정 판정에 통과한 $N$ 만, 점이 없는 $N$ 은 발산$\cdot$미측정$\cdot$기준). 레고의 PG$\cdot$i-PG 는 2026-11-12 기존 결과.}\end{figure}")
+out.append(r"\begin{figure}[h]\centering\includegraphics[width=\linewidth]{fig/stabfinal_err.png}\caption{$N$-오차 곡선 (방법마다 자기 기준 궤적 대비, 전 프레임 평균; 안정 판정에 통과한 $N$ 만, 점이 없는 $N$ 은 발산$\cdot$미측정$\cdot$기준). Lego의 PG$\cdot$i-PG 는 2026-11-12 기존 결과.}\end{figure}")
 # 표 5: 프레임 시간
 t = [r"\begin{table}[h]\centering\small\caption{우리 판 프레임당 시간 (ms, RTX A6000 단독: 같은 카드에 다른 계산 프로세스 없음, 시뮬 재생 GPU 시간 평균, 다시 푼 프레임은 버린 시도까지 합산 (\texttt{-{}-ssf\_tsum 1}), 루프 안 렌더 제외; 빈 칸 = 사다리에서 발산 또는 미측정; 굵게 = 확정 최소 $N$).}",
      r"\begin{tabular}{lccccc}\toprule 장면 & $N{=}1$ & $N{=}2$ & $N{=}4$ & $N{=}8$ & $N{=}16$ \\\midrule"]
@@ -243,6 +243,18 @@ for s in SC:
                  + ("-- & -- & --" if ref else (f"{w['psnr']:.2f} & {w['ssim']:.3f} & {w['lpips']:.3f}" if w else "-- & -- & --")) + r" \\"); first = False
     t.append(r"\midrule")
 t[-1] = r"\bottomrule"; t.append(r"\end{tabular}\end{table}"); out.append("\n".join(t))
+# 표 8: 우리 판 N=1 세 번 (exe/stabfinal_n1.py -> <수집>/n1.json)
+N1 = json.load(open(f"{root}/n1.json")) if os.path.exists(f"{root}/n1.json") else {}
+if N1:
+    t = [r"\begin{table}[h]\centering\small\caption{우리 판 $N{=}1$ 세 번 반복 (a$\cdot$b$\cdot$c) 의 안정 판정과 다시 풀기 (\texttt{ssfix}: 프레임 안 걸음이 무너지면 걸음 수를 두 배씩 늘려 다시 풂) 로 걸음 수를 늘린 프레임 수. 에너지 증가 = 운동+위치 에너지 증가 최대 (판정 문턱 1), 관통 = 바닥 관통 깊이$/L$ (문턱 0.5). 같은 명령이 비결정 (원자 합산) 이라 반복마다 다를 수 있음.}",
+         r"\begin{tabular}{llccccc}\toprule 장면 & 반복 & 프레임 & 안정 & 에너지 증가 & 관통$/L$ & 다시 푼 프레임 (2 배$\cdot$4 배$\cdot$8 배) \\\midrule"]
+    for k, v in N1.items():
+        if not v: t.append(k.replace(" ", " & ") + r" & -- & -- & -- & -- & -- \\"); continue
+        h = {int(a): b for a, b in v["depth_hist"].items()}
+        t.append(k.replace(" ", " & ") + f" & {v['frames']} & {'예' if v['stable'] else '아니오'} & {v['e_drift_max']:.4f} & {v['pen_depth']:.4f} & {v['resolved_frames']} ({h.get(1, 0)}$\\cdot${h.get(2, 0)}$\\cdot${h.get(3, 0)})" + r" \\")
+    t.append(r"\bottomrule\end{tabular}\end{table}"); out.append("\n".join(t))
+if os.path.exists(f"{paper}/stab_final_1115_rank.tex"):
+    out.append(r"\input{stab_final_1115_rank.tex}")
 out.append(open(f"{root}/notes.tex").read() if os.path.exists(f"{root}/notes.tex") else "")
 out.append(r"\end{document}")
 assert not os.path.exists(f"{paper}/stab_final_1115.tex") or os.environ.get("SF_OVERWRITE") == "1", "기존 파일 덮어쓰지 않음"

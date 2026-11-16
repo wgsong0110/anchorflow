@@ -11751,3 +11751,18 @@ bloc 2 는 chair 무게중심을 프레임 9 까지 정답에 맞춤 (0.361 대 
 ### d192.4 결론
 - 원인 1 (PCG 상한 고정 -> 큰 N 덜 풀림 -> 다시 풀기도 덜 풀린 채 받아들임 -> _f6 입자 F 가 국소 붕괴를 영구히 보존) 은 `--ssf_cgk 0.5` 로 고쳐짐: mic N16·32·64, ship N16·32 모두 80/80, 오차가 N1 과 같은 수준 (다시 풀기가 없어져 큰 N 이 오히려 빠름).
 - ship N64 는 미해결 (cgk 0/2, cgk+fpg 0.2 1/3). 둘째 기제 (덜 풀림 없이 바닥 접촉에서 생기는 입자·가우스 점 J 붕괴) 를 찾아야 함.
+
+## CM192. 서브스텝 안정성 최종 (Lego·pillow2sofa·ship plasticine·mic metal x PG·i-PG·OmniPhysGS·우리) -- 이어받기 (조정자 11-16 위임) -- **우리 판 최소 N = 1 (네 장면 모두, N=1 세 번 안정 확정); ship·mic 은 새 기본 판 CM191 + 큰 N 공통 규칙 `--ssf_cgk 0.5` (절 d192) 판 _f7 로 다시 잼 (사다리 mic N1~64 전부 안정, ship N1~32 안정, N64 진행 중); i-PG 사다리 상한 64 까지 ship 전부 발산 (>64), mic i-PG 진행 중; 단독 시간 _f7 은 A6000 없어 보류** -- 가지 stabfinal (이 절 커밋 6329c53 ~ 그 뒤), R2 lbours/stabfinal/{res, queue, marks, code, diag192}, 논문 폴더 stab_final_1115.tex (+ _rank.tex, fig/stabfinal_err.png)
+### CM192.1 바꾼 것 (모두 커밋)
+- final_fix 의 `--fpi_el` (fem_an_rt_sim.py)·ssfix kcap 상한·`--ga be` 를 가져옴. 부팅·분석·표가 `--hextag` 를 장면별로 (Lego·pillow2sofa _f5 = 탄성이라 CM191·CM192 플래그가 계산 불변, ship·mic _f7).
+- 추가 지표를 R2 lbours/final_fix/metrics_def.md 정의에 맞춤 (exe/stab_extra.py): e_drift_max·jdev_max·detneg_max, warping error = ffx_vis 와 같은 코드 (뒤 광류, 영상 안 마스크, 0->1 부터, RAFT C_T_SKHT_V2). 다른 인스턴스 항목을 덮어쓰지 않고 합침.
+- 발산·실패 칸 처리 (사용자 지시): i-PG 사다리 상한 16 -> 64 (ship N1~64 전부 프레임 6~16 접촉에서 Newton 잔차 폭주 -> GMRES NaN, 측정 결과 >64); 카드 공유 메모리 부족 (OOM 글에 다른 프로세스) 은 발산이 아니라 단독으로 다시 (exe/stab1115_drv.py solo_wait); 우리 판 큰 N 발산은 절 d192 (서브에이전트) 의 `--ssf_cgk 0.5`.
+- CUDA 그래프 시험 (`--hexgraph`, `--stages gtest`): ship N8 그래프 끔 6.8 % / 켬 6.3 % GPU 사용률 -- 병목이 커널 띄우기가 아님, 쓰지 않음. cgk 판은 PCG 가 늘어 GPU 사용률 87~97 %.
+- 작업 대기열 (사용자 지시): R2 queue/<목록>.txt, exe/sfq_worker.sh (잠금·done·id@선행 의존·단독 표시·올리기 백그라운드·자기 잠금 다시 가져감), 부팅 단계 prep·queue, 같은 인스턴스에 다른 드라이버가 돌면 destroy 안 함. 로컬 감시 exe/stabfinal_watch.sh (tmux sfwatch).
+- 순위 판정 exe/stabfinal_rank.py (표 자리수로 반올림해 비교), N=1 세 번 판정 exe/stabfinal_n1.py.
+### CM192.2 결과 (11-16 07 시 기준)
+- 우리 판 N=1 세 번: Lego 3/3 (다시 푼 프레임 0), pillow2sofa 3/3 (0), ship 3/3 (a 0, b 9 프레임 2 배, c 0), mic 3/3 (0).
+- 최소 N: Lego PG 43 / i-PG 8 / Omni 39 / 우리 1, pillow2sofa 45 / 8 / 41 / 1, ship 16 / >64 / 16 / 1, mic 15 / (진행) / 15 / 1.
+- 순위 (반올림 값): 최소 N·뒤집힘·관통·떨림·에너지·부피·깜빡임 은 측정된 장면 모두 1 위 또는 공동 1 위. 지는 칸 = Lego Chamfer·SSIM·LPIPS (PG 기준 궤적·렌더 대비라 PG 계열이 유리; 우리 Lego 궤적은 정답 대비 6 % 오차, 마지막에 버킷 팔이 접힘 -- 파레토 쪽 CM191 미수정 항목), 무참조 IQA (NIQE·BRISQUE·CLIP-IQA·MUSIQ) Lego·pillow2sofa (차이 작음, 원인 확인 못 함), pillow2sofa SSIM.
+### CM192.3 남은 것 (대기열 ipg.txt, 인스턴스 final_stab_ipgm 60863023 L40S 한 대)
+- ship 우리 _f7 N64 -> ship 계획 -> ship 마무리 (렌더·분석·추가 지표·비교 영상), mic i-PG 사다리 (상한 64, 제한 24 시간) -> mic 마무리. 우리 _f7 A6000 단독 시간 (ship·mic N≥2) 은 A6000 인스턴스가 생기면.

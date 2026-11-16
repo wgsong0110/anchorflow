@@ -7,7 +7,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ap = argparse.ArgumentParser(); ap.add_argument("--root", required=True); ap.add_argument("--scene", required=True)
 ap.add_argument("--font", required=True); ap.add_argument("--out", required=True); ap.add_argument("--tag", default="_f5")
 a = ap.parse_args()
-SN = dict(lego="레고", pillow2sofa="pillow2sofa", ship_plastic_lego="ship (plasticine)", mic_metal_lego="mic (metal)")
+SN = dict(lego="Lego", pillow2sofa="pillow2sofa", ship_plastic_lego="ship (plasticine)", mic_metal_lego="mic (metal)")
 D = f"{a.root}/{a.scene}"
 items = ["pg_N1024=기준 (PG N=1024)"]
 for m, nm in (("pg", "PhysGaussian"), ("ipg", "i-PhysGaussian"), ("omni", "OmniPhysGS"), ("ours", "우리")):
