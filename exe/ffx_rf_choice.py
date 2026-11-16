@@ -16,7 +16,7 @@ from matplotlib import font_manager
 
 C, OUT = sys.argv[1:3]
 LB = os.path.expanduser("~/r2/result/anchorflow/lbours")
-PH = os.environ.get("RF_PHYS", f"{LB}/final_fix/phys")
+PH = os.environ.get("RF_PHYS", "/tmp/cm192/physm")                                  # exe/ffx_phys_merge.py 가 만든 모음 (VR-GS 레고·pillow2sofa = 반복 1, 우리 레고·pillow2sofa = CM192 판)
 SC = [("L000", "레고"), ("pillow2sofa", "pillow2sofa"), ("bread", "bread"), ("wolf", "wolf")]
 # 방법 순서 = 색 칸 순서 (고정, 순위로 바꾸지 않음)
 METH = [("ours", "우리"), ("mpm", "정답 MPM (PG)"), ("ipg", "i-PG"), ("omni", "OmniPhysGS"), ("phystwin", "PhysTwin"), ("vrgs", "VR-GS"), ("springgaus", "Spring-Gaus")]
@@ -48,11 +48,8 @@ def dirs(m, s, N, rep=1):
         c = [f"{PH}/ours_{s}_{v}" + ("" if rep == 1 else f"_r{rep}")]
     elif m == "mpm":
         c = [f"{PH}/mpm_{s}"]
-    elif m == "vrgs" and s in ("L000", "pillow2sofa"):
-        c = [f"{PH}/vrgs_{s}_n{N}it1"]
     else:
-        c = [f"{PH}/{m}_{s}_n{N}", f"{PH}/{m}_{s}_nsg"] + sorted(glob.glob(f"{LB}/final_fix/bl_mpm/{m}_{s}*")) \
-            + sorted(d for d in glob.glob(f"{LB}/final_pa/blx/*/**/{m}_{s}*", recursive=True) if "smoke" not in d)
+        c = [f"{PH}/{m}_{s}_n{N}", f"{PH}/{m}_{s}_nsg"] + sorted(glob.glob(f"{PH}/{m}_{s}*"))
     for d in c:
         if os.path.exists(f"{d}/phys.json") or os.path.exists(f"{d}/vis.json"):
             return d
