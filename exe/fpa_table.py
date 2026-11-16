@@ -11,7 +11,7 @@ MAT = dict(L000="탄성 (jelly), 바닥 충돌", pillow2sofa="탄성 (jelly), �
 FR = dict(L000=80, pillow2sofa=300, bread=300, wolf=50)
 
 
-EXCL = {"bread_k4_r3": "같은 카드에서 영상 렌더가 겹쳐 돌아 시간 무효 -> r4 로 다시 잼"}
+EXCL = {} if os.environ.get("FPA_ND") == "1" else {"bread_k4_r3": "같은 카드에서 영상 렌더가 겹쳐 돌아 시간 무효 -> r4 로 다시 잼"}      # 절 CM191 runs_nd 는 제외 없음
 
 
 def runs(s, v):
@@ -73,8 +73,10 @@ for r in AJ:
         P.append(dict(r, setting=f"서브스텝 {r['N']} (공식)", src="paper_remeasure2/final2/all.json"))
 NA = {}
 BLF = f"{C}/pareto_bl.json" if os.path.exists(f"{C}/pareto_bl.json") else f"{C}/pareto_bl_partial.json"
+BLX = json.load(open(f"{C}/bl_extra.json")) if os.path.exists(f"{C}/bl_extra.json") else []      # 절 CM191: 다시 잰 베이스라인 칸 (Spring-Gaus·VR-GS pillow2sofa) 이 같은 (방법, 장면) 을 대체
 if os.path.exists(BLF):
-    for r in json.load(open(BLF)):
+    BLR = [r for r in json.load(open(BLF)) if (r["method"], r["scene"]) not in {(x["method"], x["scene"]) for x in BLX}] + BLX
+    for r in BLR:
         if r["scene"] in ("wolf", "bread") and r.get("err") is None:             # 해당 없음 (탄성 전용) -- 표에서 따로 적음
             continue
         SN = {("vrgs", "pillow2sofa"): "실패: 3 회 모두 f128 발산 (직접 구현에 물체 충돌$\\cdot$상자 경계 없음)",
@@ -89,6 +91,8 @@ SHORT = dict(ours="K={N}", mpm="서브스텝 {N} (공식)", vrgs="서브스텝 {
 for p in P:
     if p.get("N"):
         p["setting"] = SHORT[p["method"]].format(N=p["N"])
+        if p["method"] == "vrgs" and p.get("iters"):                                # 절 CM191: 논문 6.1 반복 1 판
+            p["setting"] = p["setting"].replace("반복 11", "반복 %d" % p["iters"])
     elif p.get("N") == 0:
         p["setting"] = "--"
 LAB = dict(ours="우리", mpm="정답 MPM (PhysGaussian)", vrgs="VR-GS", phystwin="PhysTwin", springgaus="Spring-Gaus")
@@ -163,8 +167,8 @@ for lin in (False, True):
     fig.savefig(o, dpi=170); print("저장", o)
 
 # ---------------- ablation ----------------
-VN = dict(def_="기본 (2$^3$ 가우스점, HHT $\\rho_\\infty{=}0.8$, F 가우스점 보간)", q1="가우스점 1$^3$", be="후퇴 오일러", mid="중점 (HHT $\\rho_\\infty{=}1$)",
-          nofpi="F 전달: G2P 누적 (가우스점 보간 없음)", q27="가우스점 3$^3$", q64="가우스점 4$^3$", c075="칸 $\\times$0.75", c15="칸 $\\times$1.5", c20="칸 $\\times$2")
+VN = dict(def_=os.environ.get("FPA_DEF_LABEL", "기본 (2$^3$ 가우스점, HHT $\\rho_\\infty{=}0.8$, F 가우스점 보간)"), q1="가우스점 1$^3$", be="후퇴 오일러", mid="중점 (HHT $\\rho_\\infty{=}1$)",
+          nofpi=os.environ.get("FPA_NOFPI_LABEL", "F 전달: G2P 누적 (가우스점 보간 없음)"), q27="가우스점 3$^3$", q64="가우스점 4$^3$", c075="칸 $\\times$0.75", c15="칸 $\\times$1.5", c20="칸 $\\times$2")
 
 
 def vname(v):
