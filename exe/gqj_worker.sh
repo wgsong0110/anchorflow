@@ -33,7 +33,8 @@ while :; do
     left=1
     rclone lsf $RG/runs/$n/LOCK 2>/dev/null | grep -q . && continue
     mkdir $X/$n.claim 2>/dev/null || continue
-    echo "$(hostname) w$WID $(date)" | rclone rcat $RG/runs/$n/LOCK -q
+    me="$(hostname) w$WID $(date +%s%N)"; echo "$me" | rclone rcat $RG/runs/$n/LOCK -q; sleep $((RANDOM % 5 + 3))
+    [ "$(rclone cat $RG/runs/$n/LOCK 2>/dev/null)" = "$me" ] || { rmdir $X/$n.claim; continue; }   # 다른 일꾼이 같은 판을 동시에 잡음 -> 나중 쓴 쪽만
     got=1; D=$X/$n; clean $n; mkdir -p $D $X/$n.claim; scene $s
     $PY exe/gqj_cmd.py $s $v $c $m $D > $D/cmd.txt 2> $D/cmd.err || { say "$n 명령 생성 실패 $(tail -1 $D/cmd.err)"; rclone copy $D $RG/runs/$n -q; break; }
     echo "$H" > $D/commit.txt
