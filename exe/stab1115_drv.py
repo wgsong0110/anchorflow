@@ -21,6 +21,8 @@ ap.add_argument("--hexpre", default="", help="우리 판 바깥 감싸개 (stabh
 ap.add_argument("--extra_runs", default="", help="main 단계에서 사다리 없이 돌릴 판 (예 pg:1024 = 기준 궤적만)")
 ap.add_argument("--tifrac", type=float, default=0.2)
 ap.add_argument("--timeout", type=int, default=10800)
+ap.add_argument("--hexgraph", type=int, default=0, help="[CM192] 1 = 우리 사다리·덤프 판도 프레임 CUDA 그래프 (N >= 512 만 바로 띄움; 0 = 예전처럼 사다리·덤프는 --sh_direct 1). 결과 불변 확인 = --stages gtest")
+ap.add_argument("--gt_ns", default="1,8,32"); ap.add_argument("--gt_fr", type=int, default=12)
 a = ap.parse_args()
 S = a.scene; ST = L.ST; W = os.path.dirname(ST); PY = sys.executable
 PG = f"{W}/i-physgaussian"
@@ -201,7 +203,7 @@ def run1(m, n, rep):
                 return
             solo_wait((m, n, rep))
             try:
-                t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, direct=True)}", f"{d}/log.txt")
+                t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, direct=not a.hexgraph)}", f"{d}/log.txt")
             finally:
                 solo_done((m, n, rep))
         open(f"{d}/FIN", "w").write(f"rc={rc} {time.time() - t0:.0f}s")
@@ -334,7 +336,7 @@ def vis_one(name, m, n):
     with SEM:
         if m == "ours":
             d = f"{V}/hexdump_{name}"; os.makedirs(d, exist_ok=True)
-            sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, dump=True, stats=1, direct=True)}", f"{d}/log.txt")
+            sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, dump=True, stats=1, direct=not a.hexgraph)}", f"{d}/log.txt")
             sh(f"cd {WT} && {PY} -u exe/lb_roll_to_h5.py --dump {d}/pred.pt --traj {T0} --out {dump}", f"{V}/{name}_conv.log")
             shutil.rmtree(d, ignore_errors=True)
         else:
@@ -398,13 +400,51 @@ def stage_speed():
         say("단독 시간", S, n, "rc", rc)
 
 
-if "ours" in a.methods.split(",") or "speed" in a.stages:
+
+# --------------------------------------------------------------------------------------------- 그래프 켬/끔 결과 불변 확인 (CM192)
+def stage_gtest():
+    """같은 우리 판 명령을 --sh_direct 1 (그래프 끔) 두 번 + 0 (그래프 켬) 한 번, 앞 --gt_fr 프레임, 카드 단독으로 차례로.
+    궤적 차 (부분표본, L 대비) 를 끔-끔 (같은 명령 비결정 범위) 과 켬-끔 으로 비교, 실행 중 GPU 사용률 평균 (2 초 간격) -> <장면>/gtest/gtest.json"""
+    import numpy as np
+    G = f"{ST}/{S}/gtest"; os.makedirs(G, exist_ok=True)
+    out = json.load(open(f"{G}/gtest.json")) if os.path.exists(f"{G}/gtest.json") else {}
+    for n in [int(q) for q in a.gt_ns.split(",")]:
+        for v, dr in (("d1", True), ("d2", True), ("g1", False)):
+            d = f"{G}/N{n}_{v}"
+            if os.path.exists(f"{d}/FIN"):
+                continue
+            os.makedirs(d, exist_ok=True)
+            while subprocess.run("nvidia-smi --query-compute-apps=pid --format=csv,noheader", shell=True, capture_output=True, text=True).stdout.strip():
+                time.sleep(20)
+            mon = subprocess.Popen(f"nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits -lms 2000 > {d}/util.csv", shell=True)
+            t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, direct=dr, frames=a.gt_fr)}", f"{d}/log.txt")
+            mon.terminate(); subprocess.run("pkill -f 'nvidia-smi --query-gpu=utilization.gpu,memory.used'", shell=True)
+            open(f"{d}/FIN", "w").write(f"rc={rc} {time.time() - t0:.0f}s")
+            say("gtest", S, n, v, "rc", rc, f"{time.time() - t0:.0f}s")
+        R = {}
+        for v in ("d1", "d2", "g1"):
+            r = L.hex_load(f"{G}/N{n}_{v}", a.gt_fr)
+            u = np.loadtxt(f"{G}/N{n}_{v}/util.csv", delimiter=",", ndmin=2) if os.path.exists(f"{G}/N{n}_{v}/util.csv") else np.zeros((0, 2))
+            R[v] = dict(r=r, util=float(u[:, 0].mean()) if len(u) else None, mem_max=float(u[:, 1].max()) if len(u) else None,
+                        sec=float(open(f"{G}/N{n}_{v}/FIN").read().split()[1].rstrip("s")))
+        o = dict(util={v: R[v]["util"] for v in R}, mem_max_mib={v: R[v]["mem_max"] for v in R}, sec={v: R[v]["sec"] for v in R},
+                 frames={v: (None if R[v]["r"] is None else len(R[v]["r"]["X"]) - 1) for v in R})
+        if all(R[v]["r"] is not None for v in R):
+            X = {v: R[v]["r"]["X"] for v in R}; T = min(len(x) for x in X.values())
+            Lb = float(np.linalg.norm(X["d1"][0].max(0) - X["d1"][0].min(0)))
+            dd = lambda p, q: [float(np.sqrt(((X[p][t] - X[q][t]) ** 2).sum(-1).mean()) / Lb) for t in range(T)]
+            o.update(rmse_d1_d2=dd("d1", "d2"), rmse_d1_g1=dd("d1", "g1"), rmse_d2_g1=dd("d2", "g1"),
+                     max_d1_d2=max(dd("d1", "d2")), max_d1_g1=max(dd("d1", "g1")))
+        out[str(n)] = o; json.dump(out, open(f"{G}/gtest.json", "w"), indent=1)
+        say("gtest", S, n, {k: v for k, v in o.items() if not k.startswith("rmse")})
+
+if "ours" in a.methods.split(",") or "speed" in a.stages or "gtest" in a.stages:
     os.makedirs(f"{ST}/{S}/rr", exist_ok=True)
     json.dump({"h5": f"{ST}/{S}/init/sim_0000000000.h5", "R": [[1, 0, 0], [0, 1, 0], [0, 0, 1]]}, open(f"{ST}/{S}/rr/meta.json", "w"))
     if not os.path.exists(f"{ST}/{S}/hex_in.pt"):
         assert not NS, "새 형상 장면의 hex_in.pt 는 부팅이 pg_h5_to_pt 로 만듦"
         subprocess.run([PY, f"{HERE}/stabhex_data.py", f"{ST}/{S}", f"{ST}/{S}/hex_in.pt", str(FR)], check=True)
 for st in a.stages.split(","):
-    {"main": stage_main, "vis": stage_vis, "speed": stage_speed}[st]()
+    {"main": stage_main, "vis": stage_vis, "speed": stage_speed, "gtest": stage_gtest}[st]()
 open(f"{ST}/{S}/DRV_DONE_{a.stages.replace(',', '_')}{a.hextag}", "w").write(time.strftime("%F %T"))
 say("끝", S, a.stages)
