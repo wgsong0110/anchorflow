@@ -5,6 +5,7 @@
 #   표식·로그 = R2 lbours/final_pa/marks/<FPA_TAG>.* ; 결과 = R2 lbours/final_pa/runs/<장면>_<판>_r<반복>/
 set -u
 H=${FPA_COMMIT:?}; T=${FPA_TAG:?}; export FFX_TAG=$T
+[ "${FFX_QDIR:-0}" = 1 ] && export FFX_QR=r2:storage/result/anchorflow/lbours/final_fix/queue/$T.txt   # 절 CM193: 대기열 = R2 final_fix/queue/<라벨>.txt, 다 끝나면 R2 확인 뒤 스스로 destroy
 R=r2:storage/result/anchorflow; RX=$R/lbours/paper_remeasure2; RA=$R/lbours/final_fix; MK=$RA/marks
 mkdir -p /workspace/shm /workspace/tmpd /root/pr /root/ffx
 LOG=/root/pr/vast.log
@@ -62,7 +63,7 @@ mkdir -p $W/gtnew; for k in pillow2sofa; do [ -d $W/newsc/${k}_h5 ] && [ ! -e $W
 say "[자료] L000 $(stat -c %s $SD/L000.pt 2>&1) bread $(stat -c %s $AG/bread.pt 2>&1) wolf $(stat -c %s $AG/wolf.pt 2>&1) newsc $(ls $W/newsc 2>&1 | tr '\n' ' ') lbdata $(ls $W/lbdata 2>&1 | tr '\n' ' ')"
 python -c "import torch;print(torch.cuda.is_available())" | grep -q True || { say "[CUDA 없음]"; exit 1; }
 echo "[ok] $(date)" | rclone rcat $MK/$T.setup.done
-[ -s /root/ffx/queue.txt ] || { rclone cat $MK/$T.queue 2>/dev/null | grep . > /root/ffx/queue.txt; [ -s /root/ffx/queue.txt ] || echo "${FPA_JOBS:-}" | tr ',' '\n' | grep . > /root/ffx/queue.txt; }
+[ -s /root/ffx/queue.txt ] || { rclone cat ${FFX_QR:-$MK/$T.queue} 2>/dev/null | grep . > /root/ffx/queue.txt; [ -s /root/ffx/queue.txt ] || echo "${FPA_JOBS:-}" | tr ',' '\n' | grep . > /root/ffx/queue.txt; }
 say "[대기열] $(wc -l < /root/ffx/queue.txt) 개"
 WP=""; for i in $(nvidia-smi --query-gpu=index --format=csv,noheader); do FPA_GPU=$i bash exe/ffx_worker.sh "$H" >> $LOG 2>&1 & WP="$WP $!"; sleep 2; done
 ( while sleep 300; do rclone copyto $LOG $MK/$T.log -q; done ) & SY=$!
@@ -70,3 +71,10 @@ wait $WP
 kill $SY 2>/dev/null
 say "[일꾼 끝]"
 echo "$(date)" | rclone rcat $MK/$T.END
+if [ "${FFX_QDIR:-0}" = 1 ]; then                                                   # 절 CM193: 시작한 판마다 R2 에 metrics.json·DONE 이 있으면 스스로 destroy
+  miss=0; for j in $(cat /root/ffx/started.txt); do IFS=: read s v r <<< "$j"; n=${s}_${v}_r$r
+    rclone lsf $RA/${FFX_RUNS:-runs}/$n/ 2>/dev/null | grep -qx DONE || { miss=$((miss+1)); say "[R2 없음] $n"; }; done
+  if [ $miss = 0 ]; then say "[R2 확인 차이 0] -> destroy"; command -v vastai >/dev/null || pip install -q vastai >/dev/null 2>&1
+    vastai destroy instance ${CONTAINER_ID:-0} -y --api-key ${CONTAINER_API_KEY:-x} 2>&1 | tee -a $LOG
+  else say "[R2 확인 차이 $miss] destroy 안 함"; fi
+fi
