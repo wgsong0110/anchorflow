@@ -32,6 +32,17 @@ for d in sorted(glob.glob(f"{R}/*.bs2_r*/")):
         seen.add((s, v))
     o = f"{C}/runs/{s}_{v}_r{r}"; os.makedirs(o, exist_ok=True); shutil.copy(f"{d}/metrics.json", o)
 print("CM193 판", len(seen))
+# 절 CM194: E (ssN) 는 --be_sub_mf 100 --be_sub_nk 1 판 (runs_wolfN/<장면>_ssN[.dump].bs2.bsm100.nk_r1) 이 있으면 그것으로 (N=1 은 규칙이 안 걸려 그대로)
+n194 = 0
+for d in sorted(glob.glob(f"{R}/*_ss*.bs2.bsm100.nk_r1/")):
+    m = re.match(r"(wolf|bread)_(ss\d+(?:\.dump)?)\.bs2\.bsm100\.nk_r1$", os.path.basename(d.rstrip("/")))
+    if not m or not os.path.exists(f"{d}/metrics.json"):
+        continue
+    o = f"{C}/runs/{m.group(1)}_{m.group(2)}_r1"
+    if os.path.isdir(o):
+        shutil.rmtree(o)
+    os.makedirs(o); shutil.copy(f"{d}/metrics.json", o); n194 += 1
+print("CM194 E 판", n194)
 P
 for d in $LB/final_fix/runs/{L000,pillow2sofa}_*.wel_r[123]/; do n=$(basename $d); case $n in *lean*|*dump*) [[ $n == *_ss*.dump.wel_r1 ]] || continue;; esac
   m=${n/.wel_r/_r}; mkdir -p $C/runs/$m; cp $d/metrics.json $C/runs/$m/; done
