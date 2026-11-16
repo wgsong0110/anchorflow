@@ -133,7 +133,7 @@ def plot(key, ylab, fn, low=True, logy=False):
     fig, ax = plt.subplots(figsize=(6.4, 4.6))
     for a in A:
         lab = MN[a["m"]] + ("" if a["n"] == 4 else f" ({a['n']} 장면: {', '.join(dict(SC)[s] for s in a['sc'])})")
-        ax.scatter([a["ms"]], [a["v"]], s=110 if a["m"] == "mpm" else 70, marker=MK[a["m"]], c=COL[a["m"]], edgecolors="#fcfcfb", linewidths=1.5, label=lab, zorder=3)
+        ax.scatter([a["ms"]], [a["v"]], s=220 if a["m"] == "mpm" else 80, marker=MK[a["m"]], c=COL[a["m"]], edgecolors="#fcfcfb", linewidths=1.5, label=lab, zorder=3)
     ax.set_xscale("log"); ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     if logy:
         ax.set_yscale("log")
