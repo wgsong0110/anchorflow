@@ -10,6 +10,7 @@
 import glob, json, math, os, statistics as S, sys
 
 import matplotlib
+import matplotlib.ticker
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
@@ -114,7 +115,7 @@ for k, src, name, low in MET:
             if mm == "ours":
                 for p, v in G:
                     ax.annotate(f"K={p['N']}", (p["ms"], v), textcoords="offset points", xytext=(5, 4), fontsize=7, color="#52514e")
-        ax.set_xscale("log"); ax.set_title(sn, fontsize=11, color="#0b0b0b"); ax.set_xlabel("A6000 단독 ms/프레임 (로그)", fontsize=8, color="#52514e")
+        ax.set_xscale("log"); ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter()); ax.set_title(sn, fontsize=11, color="#0b0b0b"); ax.set_xlabel("A6000 단독 ms/프레임 (로그)", fontsize=8, color="#52514e")
         ax.axvline(16.7, color="#c3c2b7", lw=1, ls=":", zorder=1)
         ax.grid(True, color="#ecebe8", lw=0.6, zorder=0); [sp.set_visible(False) for sp in (ax.spines["top"], ax.spines["right"])]
         ax.tick_params(labelsize=8, colors="#52514e")

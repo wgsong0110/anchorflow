@@ -80,7 +80,7 @@ if os.path.exists(BLF):
         if r["scene"] in ("wolf", "bread") and r.get("err") is None:             # 해당 없음 (탄성 전용) -- 표에서 따로 적음
             continue
         SN = {("vrgs", "pillow2sofa"): "실패: 3 회 모두 f128 발산 (직접 구현에 물체 충돌$\\cdot$상자 경계 없음)",
-              ("springgaus", "pillow2sofa"): "미완: 공식 동역학 학습 14/300 반복 (반복당 114 s, 예상 13.7 h) 에서 예산으로 중단"}
+              ("springgaus", "pillow2sofa"): os.environ.get("FPA_SG_P2S_NOTE", "미완: 공식 동역학 학습 14/300 반복 (반복당 114 s, 예상 13.7 h) 에서 예산으로 중단")}
         if r.get("err") is None and (r["method"], r["scene"]) in SN:
             r = dict(r, note=SN[(r["method"], r["scene"])], N=r.get("N") or 0)
         if r.get("err") is None or not r.get("ms"):
@@ -106,7 +106,7 @@ for s, nm in SC:
         q = [p for p in P if p["scene"] == s and p["method"] == m]
         if not q:
             if m in ("vrgs", "phystwin", "springgaus") and s in ("bread", "wolf"):
-                L.append(f"{nm} & {LAB[m]} & \\multicolumn{{5}}{{l}}{{해당 없음 (탄성 전용, 아래 근거)}}\\\\")
+                L.append(f"{nm} & {LAB[m]} & \\multicolumn{{5}}{{l}}{{{os.environ.get('FPA_SG_MAT_NOTE', '해당 없음 (탄성 전용, 아래 근거)') if m == 'springgaus' else '해당 없음 (탄성 전용, 아래 근거)'}}}\\\\")
             continue
         for p in sorted(q, key=lambda p: p["N"]):
             if p.get("err") is None:

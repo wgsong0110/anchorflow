@@ -40,6 +40,16 @@ for d in sorted(glob.glob(f"{LB}/final_fix/bl_mpm/*/")):
     if os.path.exists(f"{d}/phys.json") or os.path.exists(f"{d}/vis.json"):
         L[os.path.basename(d.rstrip("/"))] = d
 for k, d in L.items():
-    os.symlink(d.rstrip("/"), f"{OUT}/{k}")
+    d = d.rstrip("/")
+    if os.path.exists(f"{d}/vis_ffx.json"):                                          # 재질 확장 (final_blx) 폴더: vis.json = 정답 대비 (stab_vis), ffx_vis 결과는 vis_ffx.json -> 파일 단위 링크
+        os.makedirs(f"{OUT}/{k}", exist_ok=True)
+        for a_, b_ in (("phys.json", "phys.json"), ("vis_ffx.json", "vis.json")):
+            t = f"{OUT}/{k}/{b_}"
+            if os.path.lexists(t):
+                os.unlink(t)
+            if os.path.exists(f"{d}/{a_}"):
+                os.symlink(f"{d}/{a_}", t)
+        continue
+    os.symlink(d, f"{OUT}/{k}")
 json.dump(L, open(f"{OUT}.map.json", "w"), ensure_ascii=False, indent=1)
 print(len(L), "개 링크 ->", OUT)

@@ -124,7 +124,9 @@ def MN(m):
 
 def Nlab(r):
     n = r.get("N")
-    return "--" if n is None else str(n)
+    if r.get("method") == "ours" and r.get("variant") in ("def", "k2", "k4"):              # 절 CM192: 새 판 지표 폴더의 N 은 원본 판 이름 -> 걸음 수 K
+        return {"def": "1", "k2": "2", "k4": "4"}[r["variant"]]
+    return "--" if n is None else str(n).replace("_", "\\_")
 
 
 # 물리 표
