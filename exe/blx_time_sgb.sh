@@ -6,6 +6,8 @@
 #   사용: bash blx_time_sgb.sh <커밋> (환경: stab_bl_setup 이 끝난 인스턴스 -- /root/pr/bl_env.sh 또는 ST_SG_REPO·ST_SG_PYPATH)
 set -u
 H=${1:?커밋}; R=r2:storage/result/anchorflow; OX=$R/lbours/final_pa/blx
+if [ -z "$(rclone lsf $OX/SGB/p/springgaus_bread_prep/res.json 2>/dev/null)" ]; then echo "[blx] 준비 판 아직 없음 (SGB 학습 중) -- 할 일 없이 끝 (rc 3)"; exit 3; fi
+rclone lsf $OX/marks_TB/TIME_DONE >/dev/null 2>&1 && [ -n "$(rclone lsf $OX/marks_TB/TIME_DONE 2>/dev/null)" ] && { echo "[blx] 이미 끝"; exit 0; }
 PY=/home/dkta/.conda/envs/af/bin/python; [ -x $PY ] || PY=python
 [ -f /root/pr/bl_env.sh ] && source /root/pr/bl_env.sh
 D=/workspace/blx_code_$H; mkdir -p $D; rclone cat $OX/code/blx_$H.tar | tar -x -C $D
