@@ -14,11 +14,11 @@ python -u exe/pareto_mpmbl.py --method ipg --nsub $N --gt $W/topo/pg_wolf_sand/s
 grep -q "^\[결과\]" <(tail -1 $O/$T.log) || { echo "[결과 없음 -- 다시 부르면 이어 돌림]"; kill $SY; exit 1; }
 kill $SY; rclone copy $O/$T $RB/$T -q; rclone copyto $O/$T.log $RB/$T.log -q
 echo "[판 $REP] $(tail -1 $O/$T.log | cut -c1-200)"
-case $REP in a|fa) ;; *) exit 0;; esac
+case $REP in a|fa|fr) ;; *) exit 0;; esac
 GTD=$AG/gt_wolf; P=$O/post_$T; mkdir -p $P
 python -u exe/lb_roll_to_h5.py --dump $O/$T/pred.pt --traj $GTD --out $P/h5 > $P/roll_h5.log 2>&1
 python -u exe/lb_render.py --sim $P/h5 --config $GTD/config.json --shape wolf --out $P/ipg_wolf.mp4 --png $P/png --frames 50 < /dev/null > $P/render.log 2>&1; rm -rf $P/h5
-python -u exe/ffx_phys.py --method ipg --scene wolf --N $N --data $AG/wolf.pt --pred $O/$T/pred.pt --floor vel --frames 50 --out $P/phys.json --note "대표 설정 덤프 판 (ipg N $N k=20, AF_FD_EPS $EPS)" > $P/phys.log 2>&1
+python -u exe/ffx_phys.py --method ipg --scene wolf --N $N --data $AG/wolf.pt --pred $O/$T/pred.pt --floor vel --frames 50 --out $P/phys.json --note "대표 설정 덤프 판 (ipg N $N, AF_FD_EPS $EPS, AF_IPG_FAST ${AF_IPG_FAST:-0}, AF_LS_REJECT ${AF_LS_REJECT:-0})" > $P/phys.log 2>&1
 python -u exe/ffx_vis.py --png $P/png --ref /root/mb/ref/wolf --out $P/vis.json > $P/vis.log 2>&1
 rclone copy $P $RB/post_$T -q --transfers 8
 [ -s $P/phys.json ] && [ -s $P/vis.json ] && touch $P/DONE && rclone copyto $P/DONE $RB/post_$T/DONE -q
