@@ -18,7 +18,10 @@ CONDS = ["base", "e10", "e100", "c15", "c20", "v2", "k2"]
 CN = {"base": "기본", "e10": "$E{\\times}10$", "e100": "$E{\\times}100$", "c15": "칸 ${\\times}1.5$", "c20": "칸 ${\\times}2$", "v2": "충격 ${\\times}2$", "k2": "$K{=}2$"}
 R = {}
 for f in glob.glob(f"{C}/runs/*/gq.json"):
-    o = json.load(open(f))
+    try:
+        o = json.load(open(f))
+    except Exception:
+        continue
     R[(o["scene"], o["var"], o["cond"], o["mode"], o["rep"])] = o
 
 
@@ -59,16 +62,22 @@ def cell(s, v):
                 ndiv=ndiv, nrun=len(allr))
 
 
+def EZ(ez):
+    return "--" if ez is None else (("$\\ge$" if ez[1] else "") + str(ez[0]))
+
+
 def fmt(x, p):
     return "--" if x is None else f"{x:.{p}f}"
 
 
 EIG = {}
+RIG = {"L000": 6, "bread": 6, "wolf": 6, "pillow2sofa": 30}                        # 강체 모드 (연결 성분마다 6; ablation 표 abl_eig 와 같은 빼기)
 for f in glob.glob(f"{C}/eig/*_q*_hg*.json"):
     b = os.path.basename(f)[:-5]
     s, q, h = b.rsplit("_", 2)
     try:
-        EIG[(s, int(q[1:]), float(h[2:]))] = json.load(open(f))["cases"][0]["n_zero"]
+        c0 = json.load(open(f))["cases"][0]
+        EIG[(s, int(q[1:]), float(h[2:]))] = (max(c0["n_zero"] - RIG[s], 0), bool(c0.get("all_kb_small")) and c0["n_zero"] > 1000)   # 고유값 창이 모두 영에 가까우면 하한
     except Exception:
         pass
 VQ = {"q1": (1, 0.0), "q1g001": (1, 0.01), "q1g01": (1, 0.1), "q1g1": (1, 1.0), "def": (8, 0.0), "q27": (27, 0.0)}
@@ -80,7 +89,7 @@ for s in SC:
         x = cell(s, v); ALL[v].append(x)
         ez = EIG.get((s, *VQ[v]))
         L.append(f"{SCN[s] if i == 0 else ''} & {VN[v]} & {fmt(x['err'], 2)} & {fmt(x['ms'], 1)} & {fmt(x['hg'], 3)} & {fmt(x['an99'], 1)} & {fmt(x['anmax'], 0)} & {fmt(x['detmin'], 3)} & "
-                 f"{x['ndiv']}/{x['nrun']} & {fmt(x['lpips'], 4)} & {fmt(x['warp'], 3)} & {ez if ez is not None else '--'}\\\\")
+                 f"{x['ndiv']}/{x['nrun']} & {fmt(x['lpips'], 4)} & {fmt(x['warp'], 3)} & {EZ(ez)}\\\\")
     L.append("\\midrule")
 for i, v in enumerate(V):
     xs = ALL[v]
