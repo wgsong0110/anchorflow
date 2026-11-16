@@ -6,7 +6,7 @@ all.json (R2 lbours/paper_remeasure2/final2/all.json: 정답 MPM wolf·bread·pi
 import json, os, statistics as S, sys
 
 C, OUT = sys.argv[1:3]
-SC = [("L000", "레고"), ("pillow2sofa", "pillow2sofa"), ("bread", "bread"), ("wolf", "wolf")]
+SC = [("L000", "Lego"), ("pillow2sofa", "pillow2sofa"), ("bread", "bread"), ("wolf", "wolf")]
 MAT = dict(L000="탄성 (jelly), 바닥 충돌", pillow2sofa="탄성 (jelly), 물체 간 충돌·고정 구속", bread="소성 (plasticine, 손상 연화) 찢어짐, 양쪽 당김", wolf="모래 (Drucker--Prager), 순차 방출")
 FR = dict(L000=80, pillow2sofa=300, bread=300, wolf=50)
 
@@ -131,7 +131,7 @@ except Exception:
     pass
 ST = dict(ours=("우리", "#2a78d6", "o"), mpm=("정답 MPM (PhysGaussian, 공식 서브스텝)", "#eb6834", "*"), ipg=("i-PG", "#1baf7a", "s"), omni=("OmniPhysGS", "#eda100", "D"),
           phystwin=("PhysTwin", "#e87ba4", "^"), vrgs=("VR-GS", "#008300", "v"), springgaus=("Spring-Gaus", "#6250d6", "P"))     # 절 CM192: ffx_rf_choice 와 같은 고정 색 순서 (검사 통과 팔레트)
-TT = dict(L000="레고 (탄성)", pillow2sofa="pillow2sofa (탄성, 충돌)", bread="bread (소성, 찢어짐)", wolf="wolf (모래)")
+TT = dict(L000="Lego (탄성)", pillow2sofa="pillow2sofa (탄성, 충돌)", bread="bread (소성, 찢어짐)", wolf="wolf (모래)")
 for lin in (False, True):
     fig, ax = plt.subplots(2, 2, figsize=(11, 8.4), squeeze=False)
     for k, (s, _) in enumerate(SC):

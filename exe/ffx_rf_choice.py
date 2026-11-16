@@ -18,7 +18,7 @@ from matplotlib import font_manager
 C, OUT = sys.argv[1:3]
 LB = os.path.expanduser("~/r2/result/anchorflow/lbours")
 PH = os.environ.get("RF_PHYS", "/tmp/cm192/physm")                                  # exe/ffx_phys_merge.py 가 만든 모음 (VR-GS 레고·pillow2sofa = 반복 1, 우리 레고·pillow2sofa = CM192 판)
-SC = [("L000", "레고"), ("pillow2sofa", "pillow2sofa"), ("bread", "bread"), ("wolf", "wolf")]
+SC = [("L000", "Lego"), ("pillow2sofa", "pillow2sofa"), ("bread", "bread"), ("wolf", "wolf")]
 # 방법 순서 = 색 칸 순서 (고정, 순위로 바꾸지 않음)
 METH = [("ours", "우리"), ("mpm", "정답 MPM (PG)"), ("ipg", "i-PG"), ("omni", "OmniPhysGS"), ("phystwin", "PhysTwin"), ("vrgs", "VR-GS"), ("springgaus", "Spring-Gaus")]
 COL = dict(ours="#2a78d6", mpm="#eb6834", ipg="#1baf7a", omni="#eda100", phystwin="#e87ba4", vrgs="#008300", springgaus="#6250d6")
