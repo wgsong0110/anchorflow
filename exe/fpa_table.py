@@ -6,7 +6,7 @@ all.json (R2 lbours/paper_remeasure2/final2/all.json: 정답 MPM wolf·bread·pi
 import json, os, statistics as S, sys
 
 C, OUT = sys.argv[1:3]
-SC = [("L000", "레고"), ("pillow2sofa", "pillow2sofa"), ("bread", "bread"), ("wolf", "wolf")]
+SC = [("L000", "Lego"), ("pillow2sofa", "pillow2sofa"), ("bread", "bread"), ("wolf", "wolf")]
 MAT = dict(L000="탄성 (jelly), 바닥 충돌", pillow2sofa="탄성 (jelly), 물체 간 충돌·고정 구속", bread="소성 (plasticine, 손상 연화) 찢어짐, 양쪽 당김", wolf="모래 (Drucker--Prager), 순차 방출")
 FR = dict(L000=80, pillow2sofa=300, bread=300, wolf=50)
 
@@ -80,30 +80,33 @@ if os.path.exists(BLF):
         if r["scene"] in ("wolf", "bread") and r.get("err") is None:             # 해당 없음 (탄성 전용) -- 표에서 따로 적음
             continue
         SN = {("vrgs", "pillow2sofa"): "실패: 3 회 모두 f128 발산 (직접 구현에 물체 충돌$\\cdot$상자 경계 없음)",
-              ("springgaus", "pillow2sofa"): "미완: 공식 동역학 학습 14/300 반복 (반복당 114 s, 예상 13.7 h) 에서 예산으로 중단"}
+              ("springgaus", "pillow2sofa"): os.environ.get("FPA_SG_P2S_NOTE", "미완: 공식 동역학 학습 14/300 반복 (반복당 114 s, 예상 13.7 h) 에서 예산으로 중단")}
         if r.get("err") is None and (r["method"], r["scene"]) in SN:
             r = dict(r, note=SN[(r["method"], r["scene"])], N=r.get("N") or 0)
         if r.get("err") is None or not r.get("ms"):
             NA[(r["method"], r["scene"])] = r.get("note") or "실패"
         P.append(dict(r, src="final_pa/bl/pareto_bl.json"))
 json.dump(dict(pareto=P, na={f"{k[0]}:{k[1]}": v for k, v in NA.items()}), open(f"{C}/fpa_summary.json", "w"), ensure_ascii=False, indent=1)
-SHORT = dict(ours="K={N}", mpm="서브스텝 {N} (공식)", vrgs="서브스텝 {N} $\\times$ 반복 11", phystwin="서브스텝 $N_0$={N}", springgaus="학습 n\\_step {N}")
+SHORT = dict(ours="K={N}", mpm="서브스텝 {N} (공식)", vrgs="서브스텝 {N} $\\times$ 반복 11", phystwin="서브스텝 $N_0$={N}", springgaus="학습 n\\_step {N}",
+             ipg="서브스텝 {N} (공식)", omni="서브스텝 {N} (공식)")
 for p in P:
     if p.get("N"):
         p["setting"] = SHORT[p["method"]].format(N=p["N"])
+        if p.get("ext") == "material":                                              # 절 CM193 재질 확장 (원 논문 탄성 전용)
+            p["setting"] += "$^\\dagger$"
         if p["method"] == "vrgs" and p.get("iters"):                                # 절 CM191: 논문 6.1 반복 1 판
             p["setting"] = p["setting"].replace("반복 11", "반복 %d" % p["iters"])
     elif p.get("N") == 0:
         p["setting"] = "--"
-LAB = dict(ours="우리", mpm="정답 MPM (PhysGaussian)", vrgs="VR-GS", phystwin="PhysTwin", springgaus="Spring-Gaus")
+LAB = dict(ours="우리", mpm="정답 MPM (PhysGaussian)", ipg="i-PG", omni="OmniPhysGS", vrgs="VR-GS", phystwin="PhysTwin", springgaus="Spring-Gaus")
 L = ["% 자동 생성 (exe/fpa_table.py)", r"\begin{center}\scriptsize\begin{tabular}{llllrrr}\toprule",
      r"장면 & 방법 & 설정 & 완주/회 & 오차 \% (3 회) & ms (3 회 중앙값) & ms 3 회 \\\midrule"]
 for s, nm in SC:
-    for m in ("ours", "mpm", "vrgs", "phystwin", "springgaus"):
+    for m in ("ours", "mpm", "ipg", "omni", "vrgs", "phystwin", "springgaus"):
         q = [p for p in P if p["scene"] == s and p["method"] == m]
         if not q:
             if m in ("vrgs", "phystwin", "springgaus") and s in ("bread", "wolf"):
-                L.append(f"{nm} & {LAB[m]} & \\multicolumn{{5}}{{l}}{{해당 없음 (탄성 전용, 아래 근거)}}\\\\")
+                L.append(f"{nm} & {LAB[m]} & \\multicolumn{{5}}{{l}}{{{os.environ.get('FPA_SG_MAT_NOTE', '해당 없음 (탄성 전용, 아래 근거)') if m == 'springgaus' else '해당 없음 (탄성 전용, 아래 근거)'}}}\\\\")
             continue
         for p in sorted(q, key=lambda p: p["N"]):
             if p.get("err") is None:
@@ -126,9 +129,9 @@ try:
     fm.fontManager.addfont(f); plt.rcParams["font.family"] = fm.FontProperties(fname=f).get_name()
 except Exception:
     pass
-ST = dict(ours=("우리", "#d62728", "o"), mpm=("정답 MPM (PhysGaussian, 공식 서브스텝)", "#1f77b4", "s"), vrgs=("VR-GS", "#2ca02c", "^"),
-          phystwin=("PhysTwin", "#ff7f0e", "D"), springgaus=("Spring-Gaus", "#17becf", "X"))
-TT = dict(L000="레고 (탄성)", pillow2sofa="pillow2sofa (탄성, 충돌)", bread="bread (소성, 찢어짐)", wolf="wolf (모래)")
+ST = dict(ours=("우리", "#2a78d6", "o"), mpm=("정답 MPM (PhysGaussian, 공식 서브스텝)", "#eb6834", "*"), ipg=("i-PG", "#1baf7a", "s"), omni=("OmniPhysGS", "#eda100", "D"),
+          phystwin=("PhysTwin", "#e87ba4", "^"), vrgs=("VR-GS", "#008300", "v"), springgaus=("Spring-Gaus", "#6250d6", "P"))     # 절 CM192: ffx_rf_choice 와 같은 고정 색 순서 (검사 통과 팔레트)
+TT = dict(L000="Lego (탄성)", pillow2sofa="pillow2sofa (탄성, 충돌)", bread="bread (소성, 찢어짐)", wolf="wolf (모래)")
 for lin in (False, True):
     fig, ax = plt.subplots(2, 2, figsize=(11, 8.4), squeeze=False)
     for k, (s, _) in enumerate(SC):
@@ -179,7 +182,7 @@ def table(title, vs, extra=True):
     T = [f"\\subsection*{{{title}}}", r"\begin{center}\scriptsize\begin{tabular}{l" + "rr" * len(SC) + "}\\toprule",
          "판 & " + " & ".join(f"\\multicolumn{{2}}{{c}}{{{nm}}}" for _, nm in SC) + r"\\", " & " + " & ".join("오차 \\% & ms" for _ in SC) + r"\\\midrule"]
     for v in vs:
-        T.append(vname(v) + " & " + " & ".join(cell(agg(s, v)) + " & " + cell(agg(s, v), "ms", "%.1f") for s, _ in SC) + r"\\")
+        T.append(vname(v) + " & " + " & ".join(cell(agg(s, v)) + " & " + ("--" if (v == "q1" and os.environ.get("FPA_Q1_MS", "0") != "1") else cell(agg(s, v), "ms", "%.1f")) for s, _ in SC) + r"\\")   # 절 CM192 사용자 결정: 1^3 판 ms 는 최적화 안 된 별도 구현 (q27_wrap --q1pt 1) 이라 같은 경로로 다시 잴 때까지 --
     T.append(r"\bottomrule\end{tabular}\end{center}")
     if extra:
         T += [r"\begin{center}\scriptsize\begin{tabular}{llrrrr}\toprule", r"장면 & 판 & 완주/회 & 입자 $\det F\le0$ 최대 & 에너지 최대 증가 (규모 대비) & 영 에너지 모드 수\\\midrule"]

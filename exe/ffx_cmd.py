@@ -65,6 +65,11 @@ for m in mods:
         if " --fpi_el " not in c: c = c.replace(" --K ", " --fpi_el 1 --K ", 1)
     elif re.match(r"wrx\d$", m):
         assert re.search(r" --wrx \d+ ", c); c = re.sub(r" --wrx \d+ ", f" --wrx {m[3:]} ", c)
+    elif m == "lean":                                   # 절 CM192: 결과 불변 진단만 뺌 (호스트 기록: 걸음 시작점·뉴턴 반복 기록·q27/wolfh12/finterp 진단·e1/g1 환경) -- 그래프·풀이 그대로
+        c = re.sub(r" AF_SP_FR=\S+ ", " ", c); c = re.sub(r" AF_E1_DG=1 ", " ", c); c = re.sub(r" AF_G1_DG=1 ", " ", c)
+        c = re.sub(r"^ AF_SP_FR=\S+ ", " ", c)
+        c = c.replace(" exe/startpt_wrap.py --sp 1 ", " ").replace(" exe/nlwhy_wrap.py ", " ")
+        c = c.replace(" --q27dg 1 ", " --q27dg 0 ").replace(" --w12dg 1 ", " --w12dg 0 ").replace(" --fidg 1 ", " --fidg 0 ")
     elif m == "wel":                                    # 절 CM192: 탄성 재질은 X3 를 무너진 프레임에서만 (--wrx_el 1)
         if " --wrx_el " not in c: c = c.replace(" --wrx_col ", " --wrx_el 1 --wrx_col ", 1)
     elif m in ("sstol", "sstolp"):                     # 절 CM192: 뉴턴 (·PCG) 허용치 x 1/K (exe/ssfix_wrap.py --ssf_tol 1 [--ssf_tolp 1]; K=1 이면 그대로)

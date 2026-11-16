@@ -8,8 +8,8 @@ import os
 import sys
 
 src, out, paper = sys.argv[1:4]
-SC = [("L000", "레고"), ("pillow2sofa", "pillow2sofa"), ("bread", "bread"), ("wolf", "wolf")]
-MS = [("mpm", "정답 MPM (PG)"), ("ours", "우리"), ("vrgs", "VR-GS"), ("phystwin", "PhysTwin"), ("springgaus", "Spring-Gaus")]
+SC = [("L000", "Lego"), ("pillow2sofa", "pillow2sofa"), ("bread", "bread"), ("wolf", "wolf")]
+MS = [("mpm", "정답 MPM (PG)"), ("ours", "우리"), ("ipg", "i-PG"), ("omni", "OmniPhysGS"), ("vrgs", "VR-GS"), ("phystwin", "PhysTwin"), ("springgaus", "Spring-Gaus")]   # 절 CM192: i-PG·OmniPhysGS 추가
 ELONLY = ("vrgs", "phystwin", "springgaus")
 SKIP = ("dV_series", "E_series")
 P, V = [], []
@@ -80,8 +80,8 @@ PAR = ("def", "k2", "k4")
 for r in P + V:
     if r["method"] == "ours":
         r["variant"] = var_of(r)
-AP = [r for r in P if r["method"] == "ours"]
-AV = [r for r in V if r["method"] == "ours"]
+AP = [r for r in P if r["method"] == "ours" and not str(r.get("variant")).rsplit("_", 1)[-1] in ("r2", "r3")]   # 절 CM192: 노이즈용 반복 폴더 (ours_<장면>_def_r2·r3) 는 표에서 뺌
+AV = [r for r in V if r["method"] == "ours" and not str(r.get("variant")).rsplit("_", 1)[-1] in ("r2", "r3")]
 P = [r for r in P if r["method"] != "ours" or r.get("variant") in PAR]
 V = [r for r in V if r["method"] != "ours" or r.get("variant") in PAR]
 P, V = missing(P), missing(V)
@@ -124,7 +124,9 @@ def MN(m):
 
 def Nlab(r):
     n = r.get("N")
-    return "--" if n is None else str(n)
+    if r.get("method") == "ours" and r.get("variant") in ("def", "k2", "k4"):              # 절 CM192: 새 판 지표 폴더의 N 은 원본 판 이름 -> 걸음 수 K
+        return {"def": "1", "k2": "2", "k4": "4"}[r["variant"]]
+    return "--" if n is None else str(n).replace("_", "\\_")
 
 
 # 물리 표
@@ -148,7 +150,7 @@ L += [r"\end{tabular}", "",
       r"det$\le$0 = det$F\le0$ 입자 비율의 프레임 최대; det 최소 = 전 프레임$\cdot$전 입자; $|J{-}1|$ = 프레임 평균 $|\det F-1|$ 의 최대; $\Delta V$ = 마지막 프레임 $\sum_i V_i(J_i-1)/\sum_i V_i$; "
       r"관통 = 부분표본 (32768 점) 바닥 아래 최대 깊이$/L$ ($L$ = 0 프레임 대각선) 와 바닥 아래 비율 최대; $\Delta E_{\max}/|E_0|$ = 운동+중력 위치 에너지 $\max_t(E_t-E_0)/|E_0|$ (위치 기준 = 바닥, 바닥 없으면 0 프레임 최저점), $E_T/E_0$ = 마지막/처음; "
       r"자유낙하 = 접촉 전 프레임에서 운동량 크기 $\sqrt{2MK_t}$ 와 $M|g|t$ 의 상대 오차 최대; 떨림 = 부분표본 $\|x_{t+1}-2x_t+x_{t-1}\|/L$ 전 구간 평균. "
-      r"-- = 해당 없음: 바닥 없는 장면 (pillow2sofa$\cdot$bread, 실행이 바닥 없음) 의 관통$\cdot$자유낙하, bread 의 에너지 비 (중력 0$\cdot$처음 정지라 $E_0=0$), 레고의 자유낙하 (0 프레임부터 최저점이 바닥 $+1.5dx$ 안이라 접촉 전 프레임 없음), wolf 의 자유낙하 (PG config 의 층별 순차 풀림 구속이 일을 해 자유낙하가 아님), 변형 기울기가 없는 스프링-질량 표현 (PhysTwin$\cdot$Spring-Gaus) 의 det$\cdot$부피. "
+      r"-- = 해당 없음: 바닥 없는 장면 (pillow2sofa$\cdot$bread, 실행이 바닥 없음) 의 관통$\cdot$자유낙하, bread 의 에너지 비 (중력 0$\cdot$처음 정지라 $E_0=0$), Lego 의 자유낙하 (0 프레임부터 최저점이 바닥 $+1.5dx$ 안이라 접촉 전 프레임 없음), wolf 의 자유낙하 (PG config 의 층별 순차 풀림 구속이 일을 해 자유낙하가 아님), 변형 기울기가 없는 스프링-질량 표현 (PhysTwin$\cdot$Spring-Gaus) 의 det$\cdot$부피. "
       r"final\_blx = 탄성 전용 베이스라인의 bread$\cdot$wolf 는 재질 확장 실험에서 같은 정의로 잼. bread 는 손잡이 구속이 일을 하고 pillow2sofa 는 구간 고정이 풀리므로 에너지 증가가 곧 오류는 아님. "
       r"우리 $N$ = 프레임당 걸음 수 $K$ (K1 = 기본 판, 적응 쪼개기), 정답 MPM $N$ = PG 공식 config 서브스텝, 베이스라인 $N$ = 대표 설정 서브스텝.",
       r"\end{minipage}", r"\end{center}"]
