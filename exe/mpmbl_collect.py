@@ -50,7 +50,9 @@ for (m, s), (d, N, Noff, setting, note, commit) in CELLS.items():
         if q is not None:
             L.append(dict(dict(method=m, scene=s, N=N), **{k: v for k, v in q.items() if k not in ("method", "scene", "N")}))
 # i-PG wolf: 오차 칸 없음 -- 근거와 3 프레임 단독 시간
-t3 = load(f"{RB}/ipg_wolf/N1000_t3/err.json")
+import glob
+T3 = [json.load(open(q)) for q in sorted(glob.glob(f"{RB}/ipg_wolf/N1000_t3*/err.json"))]   # 판 a = 이 가지, _b·_c = 조정자 반복 (있으면)
+t3 = T3[0] if T3 else None
 T3 = [r for r in (load(f"{RB}/ipg_wolf/N1000_t3{x}/err.json") for x in ("", "_b", "_c")) if r is not None and r.get("ms_mean")]
 rows.append(dict(method="ipg", scene="wolf", N=1000, setting="i-PG newton\\_gmres k=20·10·5 (N 100·200·400) 발산 -> k=2 (N 1000)", reps=len(T3), ok=0,
                  err=None, err_all=[], ms=statistics.median([r["ms_mean"] for r in T3]) if T3 else None, ms_all=[r["ms_mean"] for r in T3],
