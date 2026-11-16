@@ -3,6 +3,7 @@
 #   목록 R2 lbours/stabfinal/queue/<목록>.txt, 한 줄 = "<id>|<장면>|<단독 0/1>|<stab1115_drv.py 인자 (따옴표 가능)>"  (# 로 시작하면 무시)
 #   표식: queue/lock/<id> (잠금 = 일꾼 이름, 쓰고 5 초 뒤 다시 읽어 내 이름이면 내 것), queue/done/<id> (끝, rc), queue/fail/<id>
 #   작업: R2 결과 받기 (그 장면, --update) -> 드라이버 -> 장면 결과 올리기 (PNG 포함) -> done 표시. 단독 작업은 /tmp/sfq_solo 를 세우고 다른 일꾼 작업이 끝날 때까지 기다린 뒤 돔
+#   id 뒤 @선행1,선행2 = 선행 작업이 모두 done 일 때만 꺼냄.
 #   인자가 ! 로 시작하면 셸 명령 그대로 (예 "!python -u exe/stab_extra.py --scene mic_metal_lego --hextag _f6").
 #   목록에 남은 (잠기지 않은) 작업이 없으면 끝.
 #   bash exe/sfq_worker.sh <목록> <일꾼 이름>
@@ -16,8 +17,10 @@ while true; do
   DONE=$(rclone lsf $QD/done/ 2>/dev/null); LOCK=$(rclone lsf $QD/lock/ 2>/dev/null)
   pick=""
   while IFS= read -r line; do
-    id=${line%%|*}
+    id=${line%%|*}; deps=""
+    [[ "$id" == *@* ]] && { deps=${id#*@}; id=${id%%@*}; }                # id@선행1,선행2 = 선행 작업이 done 일 때만
     echo "$DONE" | grep -qx "$id" && continue
+    ok=1; for dp in ${deps//,/ }; do echo "$DONE" | grep -qx "$dp" || ok=0; done; [ $ok = 1 ] || continue
     echo "$LOCK" | grep -qx "$id" && continue
     echo "$ME $(date +%s)" | rclone rcat $QD/lock/$id 2>/dev/null; sleep 5
     [ "$(rclone cat $QD/lock/$id 2>/dev/null | cut -d' ' -f1)" = "$ME" ] && { pick=$line; break; }
@@ -27,7 +30,7 @@ while true; do
     sleep 300; continue
   fi
   IDLE=0
-  IFS='|' read -r id s solo args <<< "$pick"
+  IFS='|' read -r id s solo args <<< "$pick"; id=${id%%@*}
   while [ -e /tmp/sfq_solo ]; do sleep 30; done                     # 다른 일꾼의 단독 작업 중이면 기다림
   if [ "$solo" = 1 ]; then
     touch /tmp/sfq_solo
