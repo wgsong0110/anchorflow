@@ -63,6 +63,8 @@ for m in mods:
         if " --fpi_el " not in c: c = c.replace(" --K ", " --fpi_el 1 --K ", 1)
     elif re.match(r"wrx\d$", m):
         assert re.search(r" --wrx \d+ ", c); c = re.sub(r" --wrx \d+ ", f" --wrx {m[3:]} ", c)
+    elif m == "bec2":                                   # 절 CM192: 국소 후퇴 오일러 강제는 다시 풀기에서만
+        assert "--ssf_bec 1 " in c; c = c.replace("--ssf_bec 1 ", "--ssf_bec 2 ", 1)
     elif m == "ssr":                                    # 절 CM192: ssfix 다시 풀기 뒤 X3 상태 되돌림
         assert "--ssf_bec 1 " in c; c = c.replace("--ssf_bec 1 ", "--ssf_bec 1 --ssf_wrxr 1 ", 1)
     elif re.match(r"skc[0-9.e-]+$", m):                 # 절 CM192: X1 고착 상한 문턱 --wrx_skc

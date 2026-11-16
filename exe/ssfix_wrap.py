@@ -12,6 +12,7 @@
   --ssf_bec 1     매 걸음 끝 갱신을 국소 후퇴 오일러 (--ue be --ue_loc 비트 와 같이; HHT 는 자유 노드만) -- 접촉 노드의 HHT 가속도 외삽이 큰 N 발산의 원인 (절 CM186)
   --ssf_kmax 256  다시 풀 때 걸음 수 상한 (기본 256; 그래프 캡처 메모리)
   --ssf_tolp 1    PCG 허용치 tolP 에도 1/N 곱함 (선택)
+  --ssf_bec 2     (절 CM192) 국소 후퇴 오일러 강제를 다시 푸는 시도에서만 (처음 시도는 실행기 판정 그대로; --ssf_split 위)
   --ssf_wrxr 1    (절 CM192) 다시 푼 뒤 X3 켬 상태를 다시 풀기 전 값으로 되돌림 (0 = 옛 동작: 항상 끔 -> --wrx_col 0 판은 첫 다시 풀기 뒤 X3 가 영영 꺼짐)
   --ssf_tsum 1    (wolffix 11-15) 다시 푼 프레임의 시간 s.last_ms = 버린 시도들 + 마지막 시도 합 (실시간 판정용; 0 = 마지막 시도만, 옛 동작)
 사용: python exe/ssfix_wrap.py --ssf_tol 1 exe/stabhex_wrap.py ... exe/fem_an_rt_sim.py ... (바깥 첫 감싸개로)
@@ -26,7 +27,7 @@ argv = sys.argv[1:]
 C = dict(tol="0", tolp="0", kex="0", split="0", bigT="1.0", wrx="1", dumpfail="", det="1", bec="0", tsum="0", kmax="256", wrxr="0")
 while argv and argv[0].startswith("--ssf_"):
     C[argv[0][6:]] = argv[1]; del argv[:2]
-_orig = runpy.run_path; _done = [False]
+_orig = runpy.run_path; _done = [False]; _BEC = {}
 
 
 def _install():
@@ -45,17 +46,19 @@ def _install():
         print(f"[substep_fix] KEX {getattr(s, 'floor', None) and s.floor['KEX']} tolN {s.tolN:.4g} tolP {s.tolP:.4g} (K {K}, ssf_tol {C['tol']}, ssf_tolp {C['tolp']})", flush=True)
     ART.RTSolver.__init__ = init
     if float(C["bec"]) != 0:                                                           # --ssf_bec 1: 걸음 끝 갱신 선택자 cjl 을 매 걸음 1 로 -> --ue be --ue_loc <비트> 의 국소 후퇴 오일러 (L-안정) 가 덜 풀린 걸음뿐 아니라 매 걸음 그 노드 집합 (장벽 걸린 표본점 노드 등) 에
-        okc = ART.RTSolver.k; BS = dict(k=0)
+        okc = ART.RTSolver.k; BS = dict(k=0, on=float(C["bec"]) != 2)               # bec 2: 다시 풀기 안에서만 켬 (아래 step 이 on 을 바꿈)
 
         def kc(s, name, n, args, b=128):
             r = okc(s, name, n, args, b)
             if name == "rt_reset":
                 BS["k"] = 0
             if name == "cj_end":
-                s.cjl[BS["k"]: BS["k"] + 1].fill_(1)
+                if BS["on"]:
+                    s.cjl[BS["k"]: BS["k"] + 1].fill_(1)
                 BS["k"] += 1
             return r
         ART.RTSolver.k = kc
+        _BEC["bs"] = BS
     D = int(float(C["split"]))
     if D > 0 or C["dumpfail"]:                                                                          # --ssf_split D: 프레임 단위 걸음 수 두 배 다시 풀기 (최대 2^D 배), 기준 K = 실행기 --K
         import torch
@@ -89,6 +92,8 @@ def _install():
             except torch.OutOfMemoryError:                                               # 발산한 입자가 노드 상자를 키워 용량 다시 할당이 메모리 초과 -> 무너진 프레임으로 취급
                 oom = True; redo = False
             dp = 0; tw = 0.0
+            if float(C["bec"]) == 2 and _BEC.get("bs"):
+                _BEC["bs"]["on"] = False
             first = ST["frames"] == 1                                                  # 프레임 0 (정지에서 시작하는 첫 풀이) 은 비유한·메모리 초과가 아니면 다시 풀지 않음
             while dp < D and (K0 << (dp + 1)) <= int(float(C["kmax"])) and (oom or (collapsed(s, int(s.K)) and not first) or (first and not bool(torch.isfinite(s.x).all()))):
                 tw += float(getattr(s, "last_ms", 0.0) or 0.0) if not oom else 0.0
@@ -103,6 +108,8 @@ def _install():
                     from anchorflow import fem_wmrx as WRX
                     WRX.on(s, 1)
                 ART.set_K_an(s, K0 << dp, h)
+                if float(C["bec"]) == 2 and _BEC.get("bs"):
+                    _BEC["bs"]["on"] = True
                 try:
                     redo = ostep(s, t) or redo
                 except (torch.OutOfMemoryError, RuntimeError) as ex_:                    # 그래프 캡처 메모리 부족 (CUDA error: out of memory) 도 같이
