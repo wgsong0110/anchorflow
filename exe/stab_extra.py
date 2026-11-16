@@ -56,6 +56,8 @@ def phys(r):
         o["e_ratio_last"] = float(E[-1] / E[0])
     if rows is not None and "jdev" in rows and np.isfinite(rows["jdev"]).any():     # metrics_def jdev_max: 프레임마다 mean |J-1| (J = det F), 그 최대
         o["jdev_max"] = float(np.nanmax(rows["jdev"]))
+    if rows is not None and "out" in rows:                                          # [stabfinal] 영역 상자 밖으로 나간 입자 비율 최대 (부피 변화 평균에서 판 빼기 규칙용)
+        o["out_max"] = float(np.nanmax(rows["out"]))
     if rows is not None and "detneg" in rows and np.isfinite(rows["detneg"]).any():
         o["detneg_max"] = float(np.nanmax(rows["detneg"]))
     if X is not None and len(X) > 1:
@@ -80,6 +82,14 @@ for name, m, n in items():
             runs.append(phys(r))
     if runs:
         PH[name] = {k: float(np.mean([q[k] for q in runs if k in q])) for k in sorted({k for q in runs for k in q})} | {"runs": len(runs)}
+        # [stabfinal 11-16] 부피 변화 (jdev_max) 는 영역 상자 밖으로 나간 입자가 있는 판을 빼고 평균 (깨끗한 판이 하나라도 있을 때):
+        #   상자 밖 입자는 격자 갱신을 못 받아 F 가 쓰레기 (pillow2sofa PG N45 판 a: 689,830 중 1 개가 프레임 3 에 상자 밖, det F = -1961, |J-1| ~ 1e14
+        #   -> 평균 |J-1| 이 1.5e8 로 표 값 5.16e9 %). 그 판의 F 는 저장돼 있지 않아 그 입자만 빼고 다시 잴 수 없으므로 판째 뺌. 빼기 전 값은 jdev_max_all.
+        clean = [q for q in runs if q.get("out_max", 0.0) == 0.0 and "jdev_max" in q]
+        if clean and len(clean) < len(runs) and "jdev_max" in PH[name]:
+            PH[name]["jdev_max_all"] = PH[name]["jdev_max"]
+            PH[name]["jdev_max"] = float(np.mean([q["jdev_max"] for q in clean]))
+        PH[name]["jdev_runs"] = len(clean) if clean else len(runs)
     print("[물리]", name, PH.get(name), flush=True)
 res.setdefault("phys", {}).update(PH)        # [CM192] 다른 인스턴스가 낸 항목은 남김
 json.dump(res, open(OUT, "w"), indent=1)

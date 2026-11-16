@@ -220,14 +220,15 @@ def ex_rows(s):
     return rows
 
 
-t = [r"\begin{table}[h]\centering\small\caption{확정 최소 $N$ 에서 정답 없는 물리 지표 (그 $N$ 의 세 판 평균; 기준 PG 는 한 판). 정의는 파레토 표와 같음 (R2 \texttt{lbours/final\_fix/metrics\_def.md}). 에너지 증가 = $\max_t (E_t - E_0)/|E_0|$ (\texttt{e\_drift\_max}, 음수 = 줄기만 함), $E$ = 운동 + 중력 위치 에너지 (탄성 에너지 뺌, 안정 판정과 같은 $E$). 부피 변화 = 프레임마다 $\mathrm{mean}_i |J_i - 1|$ ($J = \det F$) 의 최대 (\texttt{jdev\_max}). 값은 \%. 뒤집힘$\cdot$관통$\cdot$떨림$\cdot$자유낙하$\cdot$Chamfer 는 위 정합성 표.}",
+t = [r"\begin{table}[h]\centering\small\caption{확정 최소 $N$ 에서 정답 없는 물리 지표 (그 $N$ 의 세 판 평균; 기준 PG 는 한 판). 정의는 파레토 표와 같음 (R2 \texttt{lbours/final\_fix/metrics\_def.md}). 에너지 증가 = $\max_t (E_t - E_0)/|E_0|$ (\texttt{e\_drift\_max}, 음수 = 줄기만 함), $E$ = 운동 + 중력 위치 에너지 (탄성 에너지 뺌, 안정 판정과 같은 $E$). 부피 변화 = 프레임마다 $\mathrm{mean}_i |J_i - 1|$ ($J = \det F$) 의 최대 (\texttt{jdev\_max}). 값은 \%. $^\ddagger$ = 영역 상자 $[0,2]^3$ 밖으로 나간 입자가 있는 판을 뺀 평균: 상자 밖 입자는 격자 갱신을 받지 못해 $F$ 가 의미 없는 값이 됨 (pillow2sofa PhysGaussian $N{=}45$ 판 a 에서 입자 689{,}830 개 중 1 개가 프레임 3 에 상자 밖으로 튀어 $\min\det F = -1961$, 그 한 입자 때문에 평균 $|J-1|$ 이 $1.5\times10^{8}$, 세 판 평균 $5.2\times10^{9}$\,\%; 판 a 의 입자별 $F$ 는 저장되지 않아 그 입자만 빼고 다시 잴 수 없으므로 판 b$\cdot$c 평균. PG$\cdot$i-PG$\cdot$OmniPhysGS 의 다른 확정 $N$ 판 (Lego PG$\cdot$i-PG 기존 결과 제외) 은 기록상 상자 밖 입자 0). 뒤집힘$\cdot$관통$\cdot$떨림$\cdot$자유낙하$\cdot$Chamfer 는 위 정합성 표.}",
      r"\begin{tabular}{llccc}\toprule 장면 & 방법 & $N$ & 에너지 증가 $\downarrow$ & 부피 변화 $\downarrow$ \\\midrule"]
 for s in SC:
     first = True
     for nm, n, key in ex_rows(s):
         v = EX[s].get("phys", {}).get(key)
         if not v: continue
-        t.append(f"{SN[s] if first else ''} & {nm} & {n} & {f2(100 * v['e_drift_max']) if 'e_drift_max' in v else '--'} & {f2(100 * v['jdev_max']) if 'jdev_max' in v else '--'} \\\\"); first = False
+        jx = r"$^\ddagger$" if v.get("jdev_runs", v.get("runs", 0)) < v.get("runs", 0) else ""      # [11-16] 상자 밖 입자 있는 판을 뺀 평균 (stab_extra.py 규칙)
+        t.append(f"{SN[s] if first else ''} & {nm} & {n} & {f2(100 * v['e_drift_max']) if 'e_drift_max' in v else '--'} & {(f2(100 * v['jdev_max']) + jx) if 'jdev_max' in v else '--'} \\\\"); first = False
     t.append(r"\midrule")
 t[-1] = r"\bottomrule"; t.append(r"\end{tabular}\end{table}"); out.append("\n".join(t))
 t = [r"\begin{table}[h]\centering\scriptsize\caption{확정 최소 $N$ 에서 시각 품질 (같은 렌더러$\cdot$카메라, 프레임 1..T 평균). 무참조 품질 (\texttt{pyiqa} 기본 가중치): NIQE$\downarrow$, BRISQUE$\downarrow$, CLIP-IQA$\uparrow$, MUSIQ$\uparrow$ -- 흰 배경 렌더라 절대값보다 방법 사이 차이를 볼 것. 깜빡임 = warping error$\downarrow$ ($\times 10^{3}$, Lai et al.\ 2018; 파레토 표와 같은 코드): 프레임 $t$ 를 RAFT (torchvision \texttt{raft\_large} C\_T\_SKHT\_V2) 뒤 광류로 $t{+}1$ 에 맞춘 뒤 가려지지 않은 영상 안 픽셀 (앞-뒤 광류 일관성) 의 RGB 채널 합 제곱 차 평균, 프레임 $0\to1 .. T{-}1\to T$. PSNR$\cdot$SSIM$\cdot$LPIPS = 기준 PG $N{=}1024$ 렌더 대비 (시각 지표 표와 같음).}",
