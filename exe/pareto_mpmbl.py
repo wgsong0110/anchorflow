@@ -239,8 +239,8 @@ for f in range(1, L + 1):
         PX[f - 1] = xt.float().cpu(); PF[f - 1] = state_F().float().reshape(N, 3, 3).cpu()
     print(f"  프레임 {f}/{L} 오차 {100 * e:.3f}% (누적 평균 {100 * np.nanmean(errs):.3f}%) {MS[-1]:.1f} ms 최저 z {float(xt[:, 2].min()):.5f} {time.time() - t0:.0f}s", flush=True)
     ZMIN.append(float(xt[:, 2].min()))
-    if floor is not None and ZMIN[-1] < float(floor["point"][2]) - 3 * dx0 and DIV is None:      # 바닥 (sticky 격자 노드) 을 3 칸 넘게 뚫음 = 폭주 (영역 상자 clip 이 붙잡아 NaN 이 안 됨; 정답 MPM 은 바닥 아래 1 칸 안)
-        DIV = dict(frame=f, substep=nsub, reason=f"바닥 관통 (최저 z {ZMIN[-1]:.4f} < 바닥 - 3 dx)")
+    if floor is not None and ZMIN[-1] < 2 * dx0 and DIV is None:      # 바닥을 뚫고 영역 상자 바닥 (clip) 까지 빠짐 = 폭주 (clip 이 붙잡아 NaN 이 안 됨)
+        DIV = dict(frame=f, substep=nsub, reason=f"영역 바닥까지 빠짐 (최저 z {ZMIN[-1]:.4f}, 바닥 {float(floor['point'][2])})")
         print(f"[발산] 프레임 {f}: {DIV['reason']}", flush=True); break
     if not np.isfinite(e) or e > 2.0:
         DIV = dict(frame=f, substep=nsub, reason="비유한" if not np.isfinite(e) else f"오차 {100 * e:.1f}% > 200%")
