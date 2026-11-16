@@ -97,6 +97,24 @@ for m in mods:
         assert " --fpi_el 1 " in c; c = c.replace(" --fpi_el 1 ", " ", 1)
     elif m == "rmpos":                                  # 절 CM193: 모래 반환 사상 특이값 부호를 PhysGaussian 공식대로 (env AF_AO_RMPOS=1, 절 CM187 R)
         c = " AF_AO_RMPOS=1" + c
+    elif re.match(r"nd\d+-\d+$", m):                  # 절 CM193 진단 (결과 불변): exe/wfn_nd_wrap.py 프레임 a..b 노드 기록
+        a_, b_ = m[2:].split("-"); assert "exe/startpt_wrap.py" in c
+        c = (f" WND_F0={a_} WND_F1={b_}" + c).replace("exe/startpt_wrap.py", "exe/wfn_nd_wrap.py exe/startpt_wrap.py", 1)
+    elif re.match(r"mlw[0-9e-]+$", m):                  # 절 CM193 진단: --mlow 값 (거의 빈 노드 문턱 = 값 x 첫 프레임 노드 질량 중앙값)
+        assert re.search(r" --mlow \S+ ", c); c = re.sub(r" --mlow \S+ ", f" --mlow {m[3:]} ", c)
+    elif m == "nobec":                                  # 절 CM193 진단: ssfix 매 걸음 국소 후퇴 오일러 강제 끔 (--ssf_bec 0)
+        assert "--ssf_bec 1 " in c; c = c.replace("--ssf_bec 1 ", "--ssf_bec 0 ", 1)
+    elif re.match(r"bst\d$", m):                        # 절 CM193 진단: 띠 고착 판 --fl_bst N
+        assert re.search(r" --fl_bst \d ", c); c = re.sub(r" --fl_bst \d ", f" --fl_bst {m[3:]} ", c)
+    elif re.match(r"st\d+-\d+$", m):                  # 절 CM193 진단 (결과 불변): exe/wfn_st_wrap.py 걸음별 노드 최대 속도 기록 (프레임 a..b)
+        a_, b_ = m[2:].split("-"); assert "exe/startpt_wrap.py" in c
+        c = (f" WST_F0={a_} WST_F1={b_}" + c).replace("exe/startpt_wrap.py", "exe/wfn_st_wrap.py exe/startpt_wrap.py", 1)
+    elif re.match(r"mf[0-9e-]+$", m):                  # 절 CM193 진단: 관성 질량 하한 --mfloor c (m' = max(m, c τ² tr(B)/3))
+        assert " --mfloor " not in c; c = c.replace(" --K ", f" --mfloor {m[2:]} --K ", 1)
+    elif re.match(r"bsm[0-9e-]+$", m):                 # 절 CM193: --be_sub_mf c (K > 1 걸음 관성 질량 하한, --be_sub 위)
+        assert " --be_sub " in c; c = c.replace(" --be_sub ", f" --be_sub_mf {m[3:]} --be_sub ", 1)
+    elif re.match(r"lv[0-9e-]+$", m):                  # 절 CM193: --be_sub_lv c (K > 1 걸음 가장자리 노드 속도 = 이웃 질량 가중 평균, --be_sub 위)
+        assert " --be_sub " in c; c = c.replace(" --be_sub ", f" --be_sub_lv {m[2:]} --be_sub ", 1)
     elif m == "dump":
         if " --dump " not in c: c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1)
     else:

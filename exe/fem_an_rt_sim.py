@@ -142,6 +142,8 @@ ap.add_argument("--wrx", type=int, default=0, help="절 CM38 재설계 후보 �
 ap.add_argument("--wrx_skc", type=float, default=1e-2, help="절 CM38 후보 1 문턱")
 ap.add_argument("--wrx_col", type=int, default=0, help="절 CM38: 0 모든 걸음, 1 무너진 프레임만 (--ksplit --ks_big 위)")
 ap.add_argument("--be_sub", type=int, default=0, help="절 CM193 (기본 0 = 그대로): 프레임보다 짧은 걸음 (K > 1: ssN·kN·다시 풀기·쪼개기) 은 HHT 대신 후퇴 오일러 (α_m = α_f = 0, γ = β = 1, 매 걸음 U1 = y·v1 = (y − U)/h·a 0 = 판 be 와 같은 갱신, --ue_loc 노드 집합 없이 모든 노드). 1 = 모든 재질, 2 = 반환 사상 재질 (sand·foam·plasticine·watermelon·metal) 만. K = 1 걸음은 그대로")
+ap.add_argument("--be_sub_mf", type=float, default=0.0, help="절 CM193 (--be_sub 위, 기본 0 = 그대로): K > 1 걸음에서 관성 질량 하한 m' = max(m, c τ² tr(B)/3) (--mfloor 와 같은 식, c = 이 값) -- 거의 빈 노드의 강성/질량 비 (ωτ) 를 묶음. K = 1 걸음은 그대로")
+ap.add_argument("--be_sub_lv", type=float, default=0.0, help="절 CM193 (--be_sub 위, 기본 0 = 그대로): K > 1 걸음 끝마다 가장자리 노드 (질량 < c x 27 이웃 최대 질량) 의 속도를 27 이웃 질량 가중 평균으로 (lib/anchorflow/fem_lightv.py). K = 1 걸음은 그대로")
 ap.add_argument("--wrx_el", type=int, default=0, help="절 CM192 (기본 0 = 소스 그대로): 1 이면 반환 사상 없는 탄성 재질은 --wrx_col 1 (X3 를 무너진 프레임 다시 풀기에서만), 반환 사상 재질 (sand·foam·plasticine·watermelon·metal) 은 주어진 --wrx_col 그대로")
 a = ap.parse_args()
 if a.wrx:                                                                             # 절 CM38: 소스 바꾸기는 모듈 만들기 전에
@@ -373,14 +375,27 @@ if a.be_sub and (a.be_sub == 1 or MATNAME in ("sand", "foam", "plasticine", "wat
         Kx = K_ or S.K
         if Kx <= 1:
             return type(S).record(S, t_, K_)
-        sv = (getattr(S, "uel", 0), S.cue)
+        sv = (getattr(S, "uel", 0), S.cue, S.mfloor)
         S.uel = 0; S.cue = 3
+        if a.be_sub_mf > 0:                                                            # 절 CM193 --be_sub_mf: K > 1 그래프에만 관성 질량 하한
+            S.mfloor = max(S.mfloor, a.be_sub_mf)
+        S._lv_dt = S.h / Kx if a.be_sub_lv > 0 else None                              # 절 CM193 --be_sub_lv: K > 1 그래프에만 걸음 끝 가장자리 노드 속도
         try:
             return type(S).record(S, t_, K_)
         finally:
-            S.uel, S.cue = sv
+            S.uel, S.cue, S.mfloor = sv; S._lv_dt = None
     S.stages = _st_be; S.record = _rec_be
-    print(f"[절 CM193 --be_sub {a.be_sub}] 재질 {MATNAME}: K > 1 걸음은 후퇴 오일러", flush=True)
+    if a.be_sub_lv > 0:
+        from anchorflow import fem_lightv as _LV
+        S._lv_dt = None
+
+        def _k_lv(name, n_, args, b=128):
+            r_ = type(S).k(S, name, n_, args, b)
+            if S._lv_dt is not None and name.startswith("rt_ga_end"):
+                _LV.apply(S, a.be_sub_lv, S._lv_dt)
+            return r_
+        S.k = _k_lv
+    print(f"[절 CM193 --be_sub {a.be_sub}] 재질 {MATNAME}: K > 1 걸음은 후퇴 오일러" + (f", 관성 질량 하한 c {a.be_sub_mf:g}" if a.be_sub_mf > 0 else "") + (f", 가장자리 노드 속도 c {a.be_sub_lv:g}" if a.be_sub_lv > 0 else ""), flush=True)
 if a.wrx:                                                                             # 절 CM38 후보 장치 전역 (col 이면 처음 0)
     WRX.setup(S, a.wrx, a.wrx_skc); WRX.on(S, 0 if a.wrx_col else 1)
 _split = (lambda t_: WRX.split_col(S, t_, h, None, a.ksplit, fn=lambda d_: ART.split_step(S, t_, h, d_))) if (a.wrx and a.wrx_col) else (lambda t_: ART.split_step(S, t_, h, a.ksplit))
