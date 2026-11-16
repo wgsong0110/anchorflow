@@ -95,6 +95,8 @@ for m in mods:
     elif re.match(r"nd\d+-\d+$", m):                  # 절 CM193 진단 (결과 불변): exe/wfn_nd_wrap.py 프레임 a..b 노드 기록
         a_, b_ = m[2:].split("-"); assert "exe/startpt_wrap.py" in c
         c = (f" WND_F0={a_} WND_F1={b_}" + c).replace("exe/startpt_wrap.py", "exe/wfn_nd_wrap.py exe/startpt_wrap.py", 1)
+    elif re.match(r"mlw[0-9e-]+$", m):                  # 절 CM193 진단: --mlow 값 (거의 빈 노드 문턱 = 값 x 첫 프레임 노드 질량 중앙값)
+        assert re.search(r" --mlow \S+ ", c); c = re.sub(r" --mlow \S+ ", f" --mlow {m[3:]} ", c)
     elif m == "dump":
         if " --dump " not in c: c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1)
     else:
