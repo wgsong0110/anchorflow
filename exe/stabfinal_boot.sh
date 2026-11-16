@@ -86,9 +86,10 @@ say "[이어 받기 끝] $(for s in $SCS; do echo -n "$s:$(find $OUT/$s -name '*
   rclone copy /root/sf $MK/logs -q --include "*.log" 2>/dev/null; done ) & SY=$!
 EXTRA=$(rclone cat $RX/code/extra_$TAG.txt 2>/dev/null | head -1)        # 드라이버 추가 인자 (따옴표 포함 가능)
 say "[인자] $EXTRA"
+HT=$(echo "$EXTRA" | grep -oP -- '--hextag \K\S+' || true); HT=${HT:-_f5}        # [stabfinal CM191] 우리 판 접미 (ship·mic 새 기본 판 = _f6, --fpi_el 1)
 extra_metrics() {   # [stabfinal] 정답 없는 물리 (에너지 증가·부피 변화) + 무참조 시각 품질 (NIQE·BRISQUE·CLIP-IQA·MUSIQ) + warping error -> <장면>/extra.json
   python -c "import pyiqa" 2>/dev/null || pip install -q pyiqa "torch==2.5.1" "torchvision==0.20.1" "numpy<2" 2>&1 | tail -2 | tee -a $LOG
-  python -u exe/stab_extra.py --scene $1 --hextag _f5 > /root/sf/extra_$1.log 2>&1
+  python -u exe/stab_extra.py --scene $1 --hextag $HT > /root/sf/extra_$1.log 2>&1
   say "[추가 지표] $1 $(tail -n 3 /root/sf/extra_$1.log | tr '\n' ' ' | cut -c1-400)"
 }
 for job in $(echo "$JOBS" | tr ';' ' '); do
@@ -96,7 +97,7 @@ for job in $(echo "$JOBS" | tr ';' ' '); do
   say "[작업] $s $stg"
   if [ "$stg" = fin ]; then
     # 다른 인스턴스의 계획 (plan_<방법>.json) 이 R2 에 다 올라올 때까지 기다림 (5 분 간격), 그 뒤 장면 결과 전부 받기
-    NEED="plan_pg.json plan_ipg.json plan_omni.json plan_ours_f5.json"
+    NEED="plan_pg.json plan_ipg.json plan_omni.json plan_ours$HT.json"
     for w in $(seq 1 400); do
       miss=""; for p in $NEED; do rclone cat $RX/res/$s/$p 2>/dev/null | python -c "import sys,json; d=json.load(sys.stdin); sys.exit(1 if d.get('stale') else 0)" 2>/dev/null || miss="$miss $p"; done   # [stabfinal] stale 표시 계획 (옛 실행 환경 오류 판정) 은 없는 것으로
       [ -z "$miss" ] && break; [ $((w % 6)) = 1 ] && say "[기다림] $s 없음:$miss"; sleep 300
@@ -104,10 +105,10 @@ for job in $(echo "$JOBS" | tr ';' ' '); do
     rclone copy $OUT $RX/res -q --update --transfers 8 "${EXC[@]}"
     rclone copy $RX/res/$s $OUT/$s -q --transfers 16 --exclude "drv*.log" --exclude "DRV_DONE_*" --exclude "config.json" --exclude "init/**" --exclude "gt/**"
     EXF=$(echo "$EXTRA" | sed -E "s/--methods [^ ]+//"); eval python -u exe/stab1115_drv.py --scene $s --par $PAR --stages vis $EXF --methods pg,ipg,omni,ours >> /root/sf/drv_$s.log 2>&1
-    python -u exe/stab1115_an.py --scene $s --out $OUT/$s/an.json --hextag _f5 > /root/sf/an_$s.log 2>&1
+    python -u exe/stab1115_an.py --scene $s --out $OUT/$s/an.json --hextag $HT > /root/sf/an_$s.log 2>&1
     say "[분석] $s $(tail -n 6 /root/sf/an_$s.log | tr '\n' ' ' | cut -c1-400)"
     extra_metrics $s
-    python -u exe/stabfinal_vid.py --root $OUT --scene $s --font $W/font.otf --out $OUT/$s/vis/${s}_stab_cmp.mp4 > /root/sf/vid_$s.log 2>&1
+    python -u exe/stabfinal_vid.py --root $OUT --scene $s --font $W/font.otf --tag $HT --out $OUT/$s/vis/${s}_stab_cmp.mp4 > /root/sf/vid_$s.log 2>&1
     say "[영상] $s $(tail -n 2 /root/sf/vid_$s.log | tr '\n' ' ' | cut -c1-300)"
   elif [ "$stg" = fin2 ]; then
     # [stabfinal] 이미 fin 을 마친 장면 (PNG 는 R2 에 안 올림) 의 추가 지표: 확정 N 렌더 다시 (vis) -> stab_extra
@@ -116,10 +117,10 @@ for job in $(echo "$JOBS" | tr ';' ' '); do
     extra_metrics $s
   elif [ "$stg" = speed ]; then
     # 단독 시간 (A6000 인스턴스에서만): 우리 판 계획 (확정 N·사다리 발산) 이 R2 에 올라올 때까지 기다린 뒤, 이 카드에 다른 계산 프로세스가 없을 때 하나씩
-    for w in $(seq 1 400); do [ -n "$(rclone lsf $RX/res/$s/plan_ours_f5.json 2>/dev/null)" ] && break; [ $((w % 6)) = 1 ] && say "[기다림] $s plan_ours_f5.json"; sleep 300; done
+    for w in $(seq 1 400); do [ -n "$(rclone lsf $RX/res/$s/plan_ours$HT.json 2>/dev/null)" ] && break; [ $((w % 6)) = 1 ] && say "[기다림] $s plan_ours$HT.json"; sleep 300; done
     rclone copy $RX/res/$s $OUT/$s -q --include "plan_*.json" --include "speed/**"
     EXF=$(echo "$EXTRA" | sed -E "s/--methods [^ ]+//"); eval python -u exe/stab1115_drv.py --scene $s --par 1 --stages speed $EXF --methods ours >> /root/sf/drv_$s.log 2>&1
-    say "[단독 시간] $s $(grep -h '프레임당' $OUT/$s/speed/t_N*_f5/log.txt 2>/dev/null | grep -o '프레임당 [0-9.]* ms' | tr '\n' ' ')"
+    say "[단독 시간] $s $(grep -h '프레임당' $OUT/$s/speed/t_N*$HT/log.txt 2>/dev/null | grep -o '프레임당 [0-9.]* ms' | tr '\n' ' ')"
   else
     eval python -u exe/stab1115_drv.py --scene $s --par $PAR --stages $stg $EXTRA >> /root/sf/drv_$s.log 2>&1
   fi

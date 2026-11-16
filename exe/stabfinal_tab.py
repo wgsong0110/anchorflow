@@ -17,6 +17,8 @@ SC = ["lego", "pillow2sofa", "ship_plastic_lego", "mic_metal_lego"]
 SN = dict(lego="레고", pillow2sofa="pillow2sofa", ship_plastic_lego="ship (plasticine)", mic_metal_lego="mic (metal)")
 MS = [("pg", "PhysGaussian"), ("ipg", "i-PhysGaussian"), ("omni", "OmniPhysGS"), ("ours", "우리")]          # MPM 베이스라인 셋 + 우리 (GF·MPMAvatar 뺌)
 TAG = "_f5"
+# [절 CM191] 새 기본 판 (--fpi_el 1): 소성 재질 장면 (ship plasticine·mic metal) 우리 판은 _f6 으로 다시 잼; 레고·pillow2sofa 는 계산 불변이라 _f5 그대로
+TAGS = dict(lego="_f5", pillow2sofa="_f5", ship_plastic_lego="_f6", mic_metal_lego="_f6")
 AN = {s: json.load(open(f"{root}/{s}/an.json")) for s in SC if os.path.exists(f"{root}/{s}/an.json")}
 VIS = {s: (json.load(open(f"{root}/{s}/vis/vis.json")) if os.path.exists(f"{root}/{s}/vis/vis.json") else {}) for s in SC}
 OLD = json.load(open(hexan))["shapes"]["lego"]["methods"]
@@ -55,7 +57,7 @@ def f2(v, d=2):
 
 def resolves(s, n, rep="a"):
     """우리 판 그 N 의 다시 푼 프레임 수 (ssfix --ssf_split; 로그 끝 '프레임 60 다시 풂 X 깊이별 {...}')"""
-    p = f"{root}/{s}/hex/{s}_N{n}_{rep}{TAG}/log.txt"
+    p = f"{root}/{s}/hex/{s}_N{n}_{rep}{TAGS[s]}/log.txt"
     if not os.path.exists(p): return None
     mm = re.findall(r"프레임 \d+ 다시 풂 (\d+) 깊이별 (\{[^}]*\})", open(p, errors="ignore").read())
     return mm[-1] if mm else None
@@ -126,7 +128,7 @@ for s in SC:
     for m, nm in MS:
         n = nmin_val(s, m)
         if not n: continue
-        v = VIS[s].get(f"{m}{TAG if m == 'ours' else ''}_N{n}")
+        v = VIS[s].get(f"{m}{TAGS[s] if m == 'ours' else ''}_N{n}")
         if not v: continue
         t.append(f"{'' if not first else SN[s]} & {nm} & {n} & {v['psnr']:.2f} ({v['psnr_last']:.1f}) & {v['ssim']:.3f} & {v['lpips']:.3f} \\\\"); first = False
     t.append(r"\midrule")
@@ -196,7 +198,7 @@ for s in SC:
     cells = []
     nmo = nmin_val(s, "ours")
     for n in (1, 2, 4, 8, 16):
-        p = f"{root}/{s}/speed/t_N{n}{TAG}/log.txt"
+        p = f"{root}/{s}/speed/t_N{n}{TAGS[s]}/log.txt"
         v = ""
         if os.path.exists(p):
             ro = re.findall(r"\[롤아웃\][^\n]*", open(p, errors="ignore").read())
@@ -214,7 +216,7 @@ def ex_rows(s):
     rows = [("기준 PG", 1024, "pg_N1024")]
     for m, nm in MS:
         n = nmin_val(s, m)
-        if n: rows.append((nm, n, f"{m}{TAG if m == 'ours' else ''}_N{n}"))
+        if n: rows.append((nm, n, f"{m}{TAGS[s] if m == 'ours' else ''}_N{n}"))
     return rows
 
 

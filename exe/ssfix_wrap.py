@@ -63,7 +63,7 @@ def _install():
 
         def init2(s, *a, **kw):
             oinit2(s, *a, **kw)
-            s.kcap = max(int(getattr(s, "kcap", 0) or 0), int(s.K) << D)               # 진단·상태 버퍼는 걸음 수 상한으로 (실행기 --ksplit 의 S.kcap 과 같은 자리)
+            s.kcap = max(int(getattr(s, "kcap", 0) or 0), min(int(s.K) << D, max(int(s.K), int(float(C["kmax"])))))   # 진단·상태 버퍼는 걸음 수 상한으로 (실행기 --ksplit 의 S.kcap 과 같은 자리); 절 CM190: 다시 풀기는 kmax 를 안 넘으므로 버퍼도 kmax 까지 (K 128 x 8 = 1024 칸 버퍼가 재질 장면 f1 잘못된 메모리 접근)
             s.alloc(None)
         ART.RTSolver.__init__ = init2
         T = float(C["bigT"]); ST = dict(retry=0, frames=0, hist={})

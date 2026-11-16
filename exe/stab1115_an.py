@@ -80,7 +80,7 @@ for m in ("pg", "ipg", "gf", "omni", "ours"):
             st[n] = [bool(rec["stable"]) for _, _, rec in lst]
     M["stable_by_N"] = {n: [int(sum(v)), len(v)] for n, v in sorted(st.items())}
     good = [n for n, v in sorted(st.items()) if all(v) and len(v) >= (3 if m != "x" else 1)]
-    pl = f"{ST}/{S}/plan_{m}{a.hextag}.json"
+    pl = f"{ST}/{S}/plan_{m}{a.hextag if m == 'ours' else ''}.json"
     if os.path.exists(pl):
         M["N_min"] = json.load(open(pl)).get("N_min")
     if M["N_min"] is None and good:

@@ -2579,6 +2579,9 @@ class RTSolver(MG2.MG2Mixin):
             r = float(rho)
             am, af = ((0.0, (1.0 - r) / (1.0 + r)) if ga == "hht" else ((2 * r - 1) / (r + 1), r / (r + 1)))
             s.ga_c = dict(am=am, af=af, gm=0.5 - am + af, be=0.25 * (1 - am + af) ** 2)
+            if ga == "be":                                                     # 절 CM190 ablation: 후퇴 오일러 = 같은 증분 포텐셜 경로에서 α_m = α_f = 0, γ = 1, β = 1 + 매 걸음 가속도 기억 0 (--ue beall) -> ŷ = U + h v, U1 = y, v1 = (y − U)/h
+                assert s.cue == 3, "--ga be 는 --ue beall 과 같이 (매 걸음 가속도 기억 0 이어야 정확한 후퇴 오일러)"
+                s.ga_c = dict(am=0.0, af=0.0, gm=1.0, be=1.0)
             s.areset = bool(areset)
             s.ga_first = True                                                  # 가장 거친 층 한 블록 커널 (결과 불변이나 이 층 크기에서 더 느림 -- 기본 끔)                                                  # 정의 변경: 거친 층 ω 를 첫 프레임 (또는 다시 할당 뒤 첫) 값으로 재사용 (거친 층 거듭제곱법 생략)                                                  # 정의 변경: 한 프레임 안 단계 τ 가 같으면 층 0 ω 를 다시 재지 않음                                                            # 걸음 끝 |g| 를 한 번 더 잼 (진단; 시간 측정 판에서는 끔)                                                       # 관성 질량 하한 계수 c (0 = 없음)
         s.Kc = int(K_contact) if K_contact else None                                   # 접촉 적응: 앞 프레임에 고착 노드가 있으면 이 걸음 수
@@ -3086,7 +3089,7 @@ class RTSolver(MG2.MG2Mixin):
                 s.dcopy(s.U0, s.U); s.dcopy(s.v0, s.vk)
             if sg["kind"] == "ga":
                 if kstep == 0:
-                    if s.ga_first and not s.matk:                                      # 첫 프레임 (그래프 밖에서만): a0 = g − ∇Ψ(0)/m', m' = max(m, 1e-3 x 질량 중앙값)
+                    if s.ga_first and not s.matk and s.ga != "be":                     # 첫 프레임 (후퇴 오일러 판은 a0 = 0 그대로) (그래프 밖에서만): a0 = g − ∇Ψ(0)/m', m' = max(m, 1e-3 x 질량 중앙값)
                         s.zf(s.f, 9, 3); s.zf(s.y, 9, 3)
                         s.k("rt_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), i32(1), P(s.SC[10:]), P(s.f), P(s.H), i32(capQ), P(s.B)))
                         mm = s.mn[:int(s.IP[9])]; mlow = 1e-3 * float(mm[mm > 0].median())
