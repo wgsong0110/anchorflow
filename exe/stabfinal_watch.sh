@@ -23,7 +23,7 @@ while true; do
     read IP PT STT MSG < <(host 60863023)
     if [ -n "${IP:-}" ]; then
       ssh -n -i $K -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=20 -p $PT root@$IP \
-        'tmux kill-session -t sf; sleep 2; pkill -f stab1115_drv; sleep 2; rclone copy /home/dkta/work/stab/mic_metal_lego r2:storage/result/anchorflow/lbours/stabfinal/res/mic_metal_lego -q --update --transfers 8 --exclude "**/vis/**" --exclude "hex_in.pt" --exclude "**/pred.pt" --exclude "**/*_tmp*" --exclude "**/*.ckpt.pt*" --exclude "gt/**" --exclude "traj0/**" --exclude "an.json" --exclude "extra.json" && rclone copy /root/sf r2:storage/result/anchorflow/lbours/stabfinal/marks/mc_e/logs -q --include "*.log" && echo SYNCOK' > /tmp/sfwatch_mce.out 2>&1
+        'tmux kill-session -t sf; sleep 2; pkill -f "stab1115_drv.py --scene mic_metal_lego"; sleep 2; rclone copy /home/dkta/work/stab/mic_metal_lego r2:storage/result/anchorflow/lbours/stabfinal/res/mic_metal_lego -q --update --transfers 8 --exclude "**/vis/**" --exclude "hex_in.pt" --exclude "**/pred.pt" --exclude "**/*_tmp*" --exclude "**/*.ckpt.pt*" --exclude "gt/**" --exclude "traj0/**" --exclude "an.json" --exclude "extra.json" && rclone copy /root/sf r2:storage/result/anchorflow/lbours/stabfinal/marks/mc_e/logs -q --include "*.log" && echo SYNCOK' > /tmp/sfwatch_mce.out 2>&1
       if grep -q SYNCOK /tmp/sfwatch_mce.out; then
         bash $(dirname $0)/stabfinal_launch.sh ssh 60863023 ipgm 'mic_metal_lego:main+mic_metal_lego:fin' $(cat /tmp/sfwatch_commit) 4 >> $LOG 2>&1
         SEEN[mce]=1; ev "mc_e: mic i-PG main 끝 -> ipgm 으로 다시 부팅 (i-PG cap 64 + mic fin _f6)"
