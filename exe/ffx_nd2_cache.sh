@@ -43,6 +43,17 @@ for d in (sorted(glob.glob(f"{R}/*_ss*.bs2.bsm100.nk_r1/")) if os.environ.get("F
         shutil.rmtree(o)
     os.makedirs(o); shutil.copy(f"{d}/metrics.json", o); n194 += 1
 print("CM194 E 판", n194)
+# 절 CM196 (채택): wolf E (ssN, N > 1) 는 규칙 gran 판 (runs_wolfN/wolf_ssN[.dump].bs2.gran_r1) 으로 (N = 1 은 명령 불변이라 그대로; FFX_CM196=0 이면 끔)
+n196 = 0
+for d in (sorted(glob.glob(f"{R}/wolf_ss*.bs2.gran_r1/")) if os.environ.get("FFX_CM196", "1") == "1" else []):
+    m = re.match(r"wolf_(ss\d+(?:\.dump)?)\.bs2\.gran_r1$", os.path.basename(d.rstrip("/")))
+    if not m or not os.path.exists(f"{d}/metrics.json"):
+        continue
+    o = f"{C}/runs/wolf_{m.group(1)}_r1"
+    if os.path.isdir(o):
+        shutil.rmtree(o)
+    os.makedirs(o); shutil.copy(f"{d}/metrics.json", o); n196 += 1
+print("CM196 E 판", n196)
 P
 for d in $LB/final_fix/runs/{L000,pillow2sofa}_*.wel_r[123]/; do n=$(basename $d); case $n in *lean*|*dump*) [[ $n == *_ss*.dump.wel_r1 ]] || continue;; esac
   m=${n/.wel_r/_r}; mkdir -p $C/runs/$m; cp $d/metrics.json $C/runs/$m/; done

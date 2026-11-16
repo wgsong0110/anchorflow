@@ -225,5 +225,8 @@ A += ["\\subsection*{E. 서브스텝 수 $N$ 강인성 (프레임당 걸음 $N$,
 for n in (1, 2, 4, 8, 16, 32, 64, 128):
     A.append(f"{n} & " + " & ".join(cell(agg(s, f'ss{n}')) + " & " + cell(agg(s, f'ss{n}'), "ms", "%.0f") for s, _ in SC) + r"\\")
 A.append(r"\bottomrule\end{tabular}\end{center}")
+E_NOTE = os.environ.get("FPA_E_NOTE", r"모래 재질 (wolf) 의 $N>1$ 실행에는 준정적 입상 흐름에 쓰는 질량 스케일링 (관성 질량 하한 $10\times$ 첫 프레임 노드 질량 중앙값) 을 적용하고 프레임 다시 풀기를 하지 않음 (절 CM196); $N=1$ 과 다른 재질 (Lego$\cdot$pillow2sofa$\cdot$bread) 은 영향 없음. wolf 큰 $N$ 의 오차가 옛 값 (예: $N{=}32$ 2.68\%) 보다 낮은 것은 이 질량 스케일링이 동역학을 바꾸기 때문임.")
+if E_NOTE:
+    A.append(r"\begin{minipage}{0.97\linewidth}\scriptsize " + E_NOTE + r"\end{minipage}")
 open(f"{OUT}/ablation_final_1115_tables.tex", "w").write("\n".join(A) + "\n")
 print("표 저장", OUT)
