@@ -26,13 +26,13 @@ while :; do
   left=0; got=0
   while read -r K T SRC J; do
     [ -z "${J:-}" ] && continue
-    rclone lsf $RP/$J/DONE >/dev/null 2>&1 && continue
+    rclone lsf $RP/$J/DONE 2>/dev/null | grep -q . && continue
     left=1
     [ -d $X/$J ] && continue                                                         # 이 인스턴스의 다른 일꾼이 잡음
-    rclone lsf $RP/$J/LOCK >/dev/null 2>&1 && continue                               # 다른 인스턴스가 잡음
+    rclone lsf $RP/$J/LOCK 2>/dev/null | grep -q . && continue                               # 다른 인스턴스가 잡음
     case $K in
-      ours) rclone lsf $FX/$SRC/pred.pt >/dev/null 2>&1 || continue;;
-      sg) rclone lsf $OX/P2/p/$SRC/sg_train.json >/dev/null 2>&1 && [ -f /root/pr/bl.done ] || continue;;
+      ours) rclone lsf $FX/$SRC/pred.pt 2>/dev/null | grep -q . || continue;;
+      sg) rclone lsf $OX/P2/p/$SRC/sg_train.json 2>/dev/null | grep -q . && [ -f /root/pr/bl.done ] || continue;;
     esac
     mkdir $X/$J 2>/dev/null || continue
     echo "$(hostname) w$WID $(date)" | rclone rcat $RP/$J/LOCK -q

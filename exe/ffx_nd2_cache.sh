@@ -6,6 +6,33 @@ set -e
 C=$1; LB=~/r2/result/anchorflow/lbours; mkdir -p $C/runs
 cp $LB/paper_remeasure2/final2/all.json $LB/final_pa/bl/pareto_bl.json $C/
 for d in $LB/final_fix/runs_nd/*/; do n=$(basename $d); case $n in bread_*|wolf_*) mkdir -p $C/runs/$n; cp $d/metrics.json $C/runs/$n/ 2>/dev/null || true;; esac; done
+# 절 CM193 (--be_sub 2) 판이 있으면 bread·wolf 를 그것으로 덮음 (R2 runs_wolfN/<장면>_<판>.bs2_r<반복>); 두 인스턴스가 같이 돌려 섞인 bread k2 r2·r3, k4 r1·r2 는 빼고 r4·r5 를 r2·r3 자리로
+python3 - "$C" <<'P'
+import glob, json, os, re, shutil, sys
+C = sys.argv[1]; LB = os.path.expanduser("~/r2/result/anchorflow/lbours"); R = f"{LB}/final_fix/runs_wolfN"
+REMAP = {("bread", "k2"): {1: 1, 4: 2, 5: 3}, ("bread", "k4"): {3: 1, 4: 2, 5: 3}}
+seen = set()
+for d in sorted(glob.glob(f"{R}/*.bs2_r*/")):
+    m = re.match(r"(wolf|bread)_(.+)\.bs2_r(\d+)$", os.path.basename(d.rstrip("/")))
+    if not m or not os.path.exists(f"{d}/metrics.json"):
+        continue
+    s, v, r = m.group(1), m.group(2), int(m.group(3))
+    if v.endswith(".dump") and not v.startswith("ss"):
+        continue
+    rm = REMAP.get((s, v))
+    if rm is not None:
+        if r not in rm:
+            continue
+        r = rm[r]
+    if r > 3:
+        continue
+    if (s, v) not in seen:                                                             # 이 판은 CM193 판으로 전부 바꿈 (옛 반복 지움 -- 캐시 안에서만)
+        for o in glob.glob(f"{C}/runs/{s}_{v}_r*"):
+            shutil.rmtree(o)
+        seen.add((s, v))
+    o = f"{C}/runs/{s}_{v}_r{r}"; os.makedirs(o, exist_ok=True); shutil.copy(f"{d}/metrics.json", o)
+print("CM193 판", len(seen))
+P
 for d in $LB/final_fix/runs/{L000,pillow2sofa}_*.wel_r[123]/; do n=$(basename $d); case $n in *lean*|*dump*) [[ $n == *_ss*.dump.wel_r1 ]] || continue;; esac
   m=${n/.wel_r/_r}; mkdir -p $C/runs/$m; cp $d/metrics.json $C/runs/$m/; done
 python3 - "$C" <<'P'

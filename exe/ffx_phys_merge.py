@@ -26,12 +26,16 @@ for d in sorted(glob.glob(f"{PH}/*/")):
             L[j.replace("_nd2_r", "_r")] = d
         continue
     if j.startswith(("ours_bread_", "ours_wolf_")) and "_nd2_r" in j:
-        L[j.replace("_nd2_r", "_r")] = d; continue
+        L.setdefault(j.replace("_nd2_r", "_r"), d); continue
+    if j.startswith(("ours_bread_", "ours_wolf_")) and ("_bs2" in j):              # 절 CM193 --be_sub 2 판이 옛 판을 덮음
+        L["_BS2_" + j.replace("_bs2", "")] = d; continue
     if j.startswith("vrgs_") and j.split("_")[1] in ("L000", "pillow2sofa"):
         if j.endswith("it1"):
             L[j[:-3]] = d
         continue
     L[j] = d
+for k in [k for k in L if k.startswith("_BS2_")]:
+    L[k[5:]] = L.pop(k)
 for d in sorted(glob.glob(f"{LB}/final_pa/blx/*/g/*_dump/")):
     if "smoke" in d or not os.path.exists(f"{d}/phys.json"):
         continue
