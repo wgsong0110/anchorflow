@@ -153,6 +153,7 @@ ap.add_argument("--be_sub_skc", type=int, default=0, help="절 CM196 (--be_sub·
 ap.add_argument("--be_sub_mmc", type=float, default=0.0, help="절 CM196 (--be_sub_mmed 위, 기본 0 = 하한 그대로): 하한을 min(a x 중앙값, c τ² tr(B)/3) 로 -- 걸음 τ 로 못 푸는 진동수 (ωτ > 1/√c) 노드에만 질량을 더함 (풀리는 동역학은 그대로)")
 ap.add_argument("--be_sub_mmh", type=int, default=0, help="절 CM196 (--be_sub_mmc 위, 기본 0): 1 이면 c τ² 대신 c h² (프레임 걸음, K 무관) -- 프레임 걸음으로 못 푸는 진동수 (ωh > 1/√c) 노드에만 질량 하한")
 ap.add_argument("--be_sub_dom", type=int, default=0, help="절 CM196 (--be_sub 위, 기본 0): 1 이면 명목 K > 1 실행에서 프레임 끝마다 장면 bounding_box 경계 조건 (정답 MPM 과 같은 영역 [3 dx, grid_lim − 3 dx], dx = 정답 격자) 밖으로 나간 입자를 경계로 되돌리고 그 성분 속도·가속도 0 (입자는 프레임 끝에서만, 서브스텝 안 아님)")
+ap.add_argument("--be_sub_mmsd", type=int, default=0, help="절 CM196 (--be_sub_mmed 위, 기본 0): 1 이면 질량 하한을 모래 (Drucker-Prager) 재질에만 (다른 재질은 --be_sub_mmed 를 0 으로)")
 ap.add_argument("--wrx_el", type=int, default=0, help="절 CM192 (기본 0 = 소스 그대로): 1 이면 반환 사상 없는 탄성 재질은 --wrx_col 1 (X3 를 무너진 프레임 다시 풀기에서만), 반환 사상 재질 (sand·foam·plasticine·watermelon·metal) 은 주어진 --wrx_col 그대로")
 a = ap.parse_args()
 if a.be_sub_mfl > 0:                                                                  # 절 CM194: 질량 하한을 거의 빈 노드에만 (rt_meff 한 줄, 장치 전역 AF_MFLTHR; 0 이면 하한 그대로)
@@ -378,6 +379,9 @@ S = SOLVER(X0, d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float
 if a.bar_nostep:
     assert getattr(S, "bar", False) and not S.ls, "--bar_nostep 은 선탐색 없는 장벽 판 (재질) 만"
     S.nobk = True
+if a.be_sub_mmsd and a.be_sub_mmed > 0 and MATNAME != "sand":                        # 절 CM196 --be_sub_mmsd: 질량 하한은 모래 재질에만
+    print(f"[절 CM196 --be_sub_mmsd] 재질 {MATNAME}: 질량 하한 끔", flush=True)
+    a.be_sub_mmed = 0.0
 if a.be_sub and (a.be_sub == 1 or MATNAME in ("sand", "foam", "plasticine", "watermelon", "metal")):   # 절 CM193: K > 1 걸음은 후퇴 오일러 (그래프는 K 마다 캡처되므로 K 별로 고정)
     assert S.ga and S.cue, "--be_sub 는 HHT·GA 판 + --ue (갱신 바꿈 커널 컴파일) 위"
     _BEC = dict(am=0.0, af=0.0, gm=1.0, be=1.0)

@@ -137,6 +137,10 @@ for m in mods:
         assert " --be_sub " in c; c = c.replace(" --be_sub ", " --be_sub_mmh 1 --be_sub ", 1)
     elif m == "dom":                                    # 절 CM196: --be_sub_dom 1 (명목 K > 1: 프레임 끝 입자를 장면 bounding_box 안으로)
         assert " --be_sub " in c; c = c.replace(" --be_sub ", " --be_sub_dom 1 --be_sub ", 1)
+    elif m == "gran":                                   # 절 CM196 규칙: 명목 K > 1 실행 = 모래 재질 관성 질량 하한 10 x 중앙값 + ssfix 다시 풀기 없음 (K = 1 실행은 그대로)
+        assert " --be_sub " in c and "--ssf_split 3 " in c
+        if not re.search(r" --K 1 ", c):
+            c = c.replace(" --be_sub ", " --be_sub_mmsd 1 --be_sub_mmed 10 --be_sub_nk 1 --be_sub ", 1).replace("--ssf_split 3 ", "--ssf_split 0 ", 1)
     elif m == "dump":
         if " --dump " not in c: c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1)
     else:
