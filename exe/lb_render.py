@@ -78,6 +78,12 @@ for _dg, _ax in zip(cfg.get("rotation_degree") or [], cfg.get("rotation_axis") o
     _R = {0: [[1, 0, 0], [0, _c, -_s], [0, _s, _c]], 1: [[_c, 0, _s], [0, 1, 0], [-_s, 0, _c]], 2: [[_c, -_s, 0], [_s, _c, 0], [0, 0, 1]]}[int(_ax)]
     _RT = torch.tensor(_R, device=dev, dtype=torch.float32) @ _RT
 ROT = bool((_RT - torch.eye(3, device=dev)).abs().max() > 0)
+if a.shape == "pillow2sofa" and cfg.get("sim_area") is not None:              # 절 CM194: PG 전처리 sim_area 자르기 (정답·시뮬 입자 = 영역 안 가우시안; 렌더 대응 맞춤)
+    _XR0 = gs.get_xyz[KIDX] @ _RT.T if ROT else gs.get_xyz[KIDX]
+    _m = torch.ones(_XR0.shape[0], dtype=torch.bool, device=_XR0.device)
+    for _i in range(3):
+        _m = _m & (_XR0[:, _i] > cfg["sim_area"][2 * _i]) & (_XR0[:, _i] < cfg["sim_area"][2 * _i + 1])
+    KIDX = KIDX[_m]
 TP, SO, MEAN = transform2origin(gs.get_xyz[KIDX] @ _RT.T if ROT else gs.get_xyz[KIDX], float(cfg.get("scale", 1.0)))
 TP = shift2center111(TP)
 NG = KIDX.numel()
