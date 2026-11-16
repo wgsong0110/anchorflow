@@ -34,6 +34,7 @@ ap.add_argument("--pg_cfg", action="store_true")
 ap.add_argument("--mat_extra", default="", help="점검용: PG 재질 키 추가 (쉼표, 예 yield_stress,friction_angle) -- 정답 경로 (pareto_mpm) 는 안 넘김")
 ap.add_argument("--omni_yield", type=float, default=None, help="omni plasticine 항복 응력 (원 단위; 기본 = 정답 경로 실제 값)")
 ap.add_argument("--omni_fric", type=float, default=None, help="omni sand 마찰각 (도; 기본 = 정답 경로 실제 값)")
+ap.add_argument("--omni_elas", default="", help="omni 탄성 구성모델 강제 (corotated|stvk; 기본 = 재질 대응표: metal·sand StVK, 나머지 Corotated)")
 ap.add_argument("--time", action="store_true")
 ap.add_argument("--dump", action="store_true")
 a = ap.parse_args()
@@ -180,7 +181,8 @@ else:
     if not a.pg_cfg:                                                 # 레고: 정답 경로와 같이 바닥만 (재질 jelly)
         bcs = [q for q in bcs if q["type"] == "surface_collider"]
     omni_bc(model, bcs)
-    elas = (StVKElasticity() if MAT in ("metal", "sand") else CorotatedElasticity()).cuda()
+    _st = (a.omni_elas == "stvk") if a.omni_elas else (MAT in ("metal", "sand"))
+    elas = (StVKElasticity() if _st else CorotatedElasticity()).cuda()
     elas.log_E = torch.tensor([E * S * S], device="cuda").log(); elas.nu = torch.tensor([nu], device="cuda")
     plas = None
     if MAT in ("metal", "plasticine"):

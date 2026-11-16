@@ -6,7 +6,7 @@ cd /root/mb/code; export PATH=/home/dkta/.conda/envs/af/bin:/home/dkta/bin:$PATH
 unset AF_IPG_FUSED AF_IPG_GPU
 R=r2:storage/result/anchorflow; RB=$R/lbours/final_fix/bl_mpm; X=/workspace/mb; W=/home/dkta/work; AG=/dev/shm/dkta/ag_data
 LOG=/root/mb/wo.log; say() { echo "[wo $(date '+%F %T')] $*" | tee -a $LOG; rclone copyto $LOG $RB/marks/wolfomni.log -q; }
-SIM="--gt $W/topo/pg_wolf_sand/simulation_ply --config $W/PhysGaussian/config/wolf_config.json --pt $AG/wolf.pt --frames 50 --pg_cfg --omni_fric 30.0"
+SIM="--gt $W/topo/pg_wolf_sand/simulation_ply --config $W/PhysGaussian/config/wolf_config.json --pt $AG/wolf.pt --frames 50 --pg_cfg --omni_fric 30.0 ${WO_EX:-}"
 J=${WO_J:-omni_wolf_cfl}; O=$X/$J; mkdir -p $O; N=""; TR=""
 for n in ${WO_NS:-134 268 536 1072 1999}; do
   [ -s $O/N${n}_a/err.json ] || python -u exe/pareto_mpmbl.py --method omni --nsub $n $SIM --time --dump --out $O/N${n}_a > $O/N${n}_a.log 2>&1
