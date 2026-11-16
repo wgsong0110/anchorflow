@@ -25,8 +25,8 @@ while true; do
       ssh -n -i $K -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=20 -p $PT root@$IP \
         'tmux kill-session -t sf; sleep 2; pkill -f "stab1115_drv.py --scene mic_metal_lego"; sleep 2; rclone copy /home/dkta/work/stab/mic_metal_lego r2:storage/result/anchorflow/lbours/stabfinal/res/mic_metal_lego -q --update --transfers 8 --exclude "**/vis/**" --exclude "hex_in.pt" --exclude "**/pred.pt" --exclude "**/*_tmp*" --exclude "**/*.ckpt.pt*" --exclude "gt/**" --exclude "traj0/**" --exclude "an.json" --exclude "extra.json" && rclone copy /root/sf r2:storage/result/anchorflow/lbours/stabfinal/marks/mc_e/logs -q --include "*.log" && echo SYNCOK' > /tmp/sfwatch_mce.out 2>&1
       if grep -q SYNCOK /tmp/sfwatch_mce.out; then
-        bash $(dirname $0)/stabfinal_launch.sh ssh 60863023 ipgm 'mic_metal_lego:main+mic_metal_lego:fin' $(cat /tmp/sfwatch_commit) 4 >> $LOG 2>&1
-        SEEN[mce]=1; ev "mc_e: mic i-PG main 끝 -> ipgm 으로 다시 부팅 (i-PG cap 64 + mic fin _f6)"
+        bash $(dirname $0)/stabfinal_launch.sh ssh 60863023 ipgm 'mic_metal_lego:prep+ipg:queue' $(cat /tmp/sfwatch_commit) 4 >> $LOG 2>&1
+        SEEN[mce]=1; ev "mc_e: mic i-PG main 끝 -> ipgm 대기열 (ipg.txt) 로 다시 부팅"
       else say "mc_e 동기화 실패 $(tail -2 /tmp/sfwatch_mce.out | tr '\n' ' ')"; fi
     fi
   fi
@@ -38,7 +38,7 @@ while true; do
     fi
   done
   # 2) 표식
-  for t in f6s f6m pw_b mc_e ipgs ipgm gt; do
+  for t in f6s f6m pw_b mc_e ipgs ipgm gt qa qb; do
     for m in ALL_DONE ALL_DONE_CHECK_FAIL POWERCAP setup_fail; do
       if [ -z "${SEEN[$t$m]:-}" ] && rclone lsf $RX/marks/$t/$m 2>/dev/null | grep -q .; then
         T=$(rclone lsl $RX/marks/$t/$m | awk '{print $2" "$3}' | cut -c1-19)
