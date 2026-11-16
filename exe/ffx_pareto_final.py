@@ -23,7 +23,7 @@ METH = [("ours", "우리"), ("mpm", "정답 MPM (PG)"), ("ipg", "i-PG"), ("omni"
 MN = dict(METH)
 COL = dict(ours="#2a78d6", mpm="#eb6834", ipg="#1baf7a", omni="#eda100", phystwin="#e87ba4", vrgs="#008300", springgaus="#6250d6")
 MK = dict(ours="o", mpm="*", ipg="s", omni="D", phystwin="^", vrgs="v", springgaus="P")
-PHYS = [("detneg_max", "뒤집힘 (\\%)", 100, 3, True), ("pen_depth_max", "관통 (\\%$L$)", 100, 2, True), ("e_drift_max", "에너지 증가", 1, 3, True),
+PHYS = [("detneg_max", "뒤집힘 (\\%)", 100, 3, True), ("pen_depth_max", "관통 (\\%$L$)", 100, 2, True), ("e_drift_max", "에너지 증가", 1, -1, True),
 ("jitter_d2", "떨림 ($10^{-3}L$)", 1e3, 2, True), ("dV_absmax", "부피 변화 (\\%)", 100, 2, True)]
 VIS = [("niqe", "NIQE$\\downarrow$", 1, 2, True), ("brisque", "BRISQUE$\\downarrow$", 1, 1, True), ("musiq", "MUSIQ$\\uparrow$", 1, 1, False), ("clipiqa", "CLIP-IQA$\\uparrow$", 1, 3, False),
        ("warp_err", "깜빡임 ($10^{-3}$)$\\downarrow$", 1e3, 2, True), ("psnr", "PSNR$\\uparrow$", 1, 2, False), ("ssim", "SSIM$\\uparrow$", 1, 3, False), ("lpips", "LPIPS$\\downarrow$", 1, 3, True)]
@@ -80,7 +80,11 @@ for p in P:
 
 
 def f(v, sc, d):
-    return "--" if v is None else f"{v * sc:.{d}f}"
+    if v is None:
+        return "--"
+    if d < 0:                                                                          # 지수 표기 (작은 값)
+        return ("%.1e" % (v * sc)).replace("e-0", "e-").replace("e+0", "e")
+    return f"{v * sc:.{d}f}"
 
 
 def table(cols, first):
@@ -102,7 +106,7 @@ def table(cols, first):
             return (S.mean(v), len(v)) if v else (None, 0)
         def cell(k, sc, d):
             a, n = avg(k)
-            return "--" if a is None else (f"{a * sc:.{d}f}" + ("" if n == 4 else f"$^{{({n})}}$"))
+            return "--" if a is None else (f(a, sc, d) + ("" if n == 4 else f"$^{{({n})}}$"))
         cells = ([cell("err", 1, 2), cell("ms", 1, 1)] if first else []) + [cell(c[0], c[2], c[3]) for c in cols]
         L.append(f"{'평균' if i == 0 else ''} & {mn} & " + " & ".join(cells) + r"\\")
     L.append(r"\bottomrule\end{tabular}\end{center}")
