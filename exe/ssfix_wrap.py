@@ -16,6 +16,7 @@
                   M 2 = 다시 푼 프레임이면 그 프레임만 입자 F·재질 상태를 프레임 끝 가우스 점 보간 (옛 판 --fp_interp 와 같은 커널) 으로 교체. 탄성 재질은 아무 일 없음.
   --ssf_fpg J0    [d192] (기본 0 = 끔) 재질 판 + --fpi_el 1 에서 받아들인 프레임마다 입자 det F 가 (J0, 1/J0) 밖인 입자만 F·재질 상태를 프레임 끝 가우스 점 보간으로 교체
                   (범위 안 입자는 그대로 = 그런 입자가 없는 판은 코드 경로·결과 그대로)
+  --ssf_detj J0   [d192] (기본 0 = 그대로) 무너짐 판정의 입자 det F 문턱 (det F <= J0 이면 무너짐 -> K 두 배 다시 풂)
   --ssf_fpik K    (기본 0) --ssf_fpic 를 받아들인 프레임의 걸음 수 K 가 이 값 이상일 때만
   --ssf_cgk P     [d192 11-16] (기본 0 = 소스 그대로) PCG 반복 상한 cg 를 실행기 서브스텝 수 N (--K) 에 맞춰: cg_N = min(--ssf_cgmax, max(cg, round(cg · N^P))).
                   N = 1 이면 cg 그대로 (다시 풀기로 K 가 커져도 그대로) = 코드 경로 같음. --ssf_cgm 1 (기본) 이면 재질 판 (소성 재질 실행기) 에만, 0 이면 모든 판
@@ -29,7 +30,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 argv = sys.argv[1:]
-C = dict(tol="0", tolp="0", kex="0", split="0", bigT="1.0", wrx="1", dumpfail="", det="1", bec="0", tsum="0", kmax="256", fpic="0", fpik="0", cgk="0", cgmax="64", cgm="1", fpg="0")
+C = dict(tol="0", tolp="0", kex="0", split="0", bigT="1.0", wrx="1", dumpfail="", det="1", bec="0", tsum="0", kmax="256", fpic="0", fpik="0", cgk="0", cgmax="64", cgm="1", fpg="0", detj="0")
 while argv and argv[0].startswith("--ssf_"):
     C[argv[0][6:]] = argv[1]; del argv[:2]
 _orig = runpy.run_path; _done = [False]
@@ -143,7 +144,7 @@ def _install():
         def collapsed(s, K):
             if not bool(torch.isfinite(s.x).all()):
                 return True
-            if float(C["det"]) != 0 and float(torch.linalg.det(s.F.reshape(-1, 3, 3)).min()) <= 0.0:   # 입자 변형 기울기 뒤집힘 (det F <= 0): 물질이 뒤집힌 것은 불가능한 상태
+            if float(C["det"]) != 0 and float(torch.linalg.det(s.F.reshape(-1, 3, 3)).min()) <= float(C["detj"]):   # [d192] --ssf_detj J0 (기본 0 = 그대로)   # 입자 변형 기울기 뒤집힘 (det F <= 0): 물질이 뒤집힌 것은 불가능한 상태
                 return True
             fl = s.cjl[:K] > 0
             big = ~(s.cjg[:K] <= T)
