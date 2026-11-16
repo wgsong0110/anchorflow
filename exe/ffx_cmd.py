@@ -29,6 +29,14 @@ if scene in NSH:
     if base == "def":
         assert "--mlow 1e-3" in c and c.count("python -u exe/") == 1
         c = c.replace("python -u exe/", "python -u " + SSW + "exe/", 1).replace("--ue_loc 50 ", "--ue_loc 51 ").replace("--wrx_col 1 ", "--wrx_col 0 ")
+elif os.environ.get("FFX_ND", "0") == "1":              # 절 CM191 새 기본 판 = CM190 기본 판 + --fpi_el 1 (--fp_interp 탄성 재질에만); 판 nofpi = F 전달 반대 (탄성 장면은 G2P 누적, 소성 장면은 가우스점 보간 강제)
+    ELAS = scene in ("L000", "pillow2sofa")
+    c = subprocess.check_output([sys.executable, f"{HERE}/fpa_cmd.py", scene, "def" if base == "nofpi" else base, rep, out], text=True).strip()
+    if base == "nofpi":
+        if ELAS:
+            assert c.count(" --fp_interp ") == 1; c = c.replace(" --fp_interp ", " ")
+    elif " --fp_interp " in c:
+        c = c.replace(" --K ", " --fpi_el 1 --K ", 1)
 else:
     c = subprocess.check_output([sys.executable, f"{HERE}/fpa_cmd.py", scene, base, rep, out], text=True).strip()
 c = " " + c + " "

@@ -14,14 +14,14 @@ pop() { ( flock 9; touch /root/ffx/started.txt; j=$(head -1 $Q); if [ -z "$j" ] 
 post() { local D=$1 n=$2 s=$3 v=$4 r=$5 rc=$6 G=$7
   CUDA_VISIBLE_DEVICES=$G ABL_EIG_VARS=def,q1,q27 timeout 1800 $PY exe/abl_an.py $D $s $v $r > $D/an.log 2>&1; say "$n 분석 rc=$? $(tail -1 $D/an.log | cut -c1-200)"
   [ -f $D/metrics.json ] || echo "{\"rc\": $rc, \"no_summary\": true}" > $D/metrics.json
-  rclone copy $D $RA/runs/$n -q --transfers 8 --exclude "q27src/**" --exclude "pred.pt"
-  [ -f $D/pred.pt ] && rclone copyto $D/pred.pt $RA/runs/$n/pred.pt -q --s3-chunk-size 64M --s3-upload-concurrency 16
+  rclone copy $D $RA/${FFX_RUNS:-runs}/$n -q --transfers 8 --exclude "q27src/**" --exclude "pred.pt"
+  [ -f $D/pred.pt ] && rclone copyto $D/pred.pt $RA/${FFX_RUNS:-runs}/$n/pred.pt -q --s3-chunk-size 64M --s3-upload-concurrency 16
   rm -rf $D; }
 idle=0
 while :; do
   j=$(pop); if [ -z "$j" ]; then [ $idle -ge ${FFX_IDLE:-1200} ] && break; sleep 60; idle=$((idle + 60)); continue; fi; idle=0
   IFS=: read s v r <<< "$j"; n=${s}_${v}_r$r; D=$O/$n
-  if rclone cat $RA/runs/$n/metrics.json 2>/dev/null | grep -aq '"frames_done": [0-9]'; then say "$n 이미 있음"; continue; fi
+  if rclone cat $RA/${FFX_RUNS:-runs}/$n/metrics.json 2>/dev/null | grep -aq '"frames_done": [0-9]'; then say "$n 이미 있음"; continue; fi
   rm -rf $D; mkdir -p $D
   $PY exe/ffx_cmd.py $s $v $r $D > $D/cmd.txt || { say "$n 명령 생성 실패"; continue; }
   echo "$H" > $D/commit.txt
