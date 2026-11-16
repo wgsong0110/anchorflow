@@ -66,7 +66,7 @@ rclone copyto $R/vastpkg/pytorch3d-0.7.8-cp311-cp311-linux_x86_64.whl /root/pr/p
 export ST_P3D_WHL=/root/pr/pytorch3d-0.7.8-cp311-cp311-linux_x86_64.whl ST_NO_BUILD=1 ST_SIMP_PY=/home/dkta/.conda/envs/af/bin/python
 bash exe/stab_bl_setup.sh /root/pr/bl_env.sh > /root/pr/bl_setup.log 2>&1; say "[bl_setup] $(tail -1 /root/pr/bl_setup.log)"; rclone copyto /root/pr/bl_setup.log $MK/bl_setup.log -q
 [ -f /root/pr/bl_env.sh ] && source /root/pr/bl_env.sh
-[ -s $AG/gt_bread/config.json ] || CUDA_VISIBLE_DEVICES=0 python -u exe/pg_h5_to_pt.py --h5_dir $W/topo/pg_bread_plastic --config $W/topo/bread_plastic_config.json --out_pt /root/pr/gtbread_unused.pt --out_dir $AG/gt_bread --out_dir_n 1 > /root/pr/gt_bread.log 2>&1
+[ -s $AG/gt_bread/sim_0000000300.h5 ] || CUDA_VISIBLE_DEVICES=0 python -u exe/pg_h5_to_pt.py --h5_dir $W/topo/pg_bread_plastic --config $W/topo/bread_plastic_config.json --out_pt /root/pr/gtbread_unused.pt --out_dir $AG/gt_bread > /root/pr/gt_bread.log 2>&1
 [ -s $AG/gt_wolf/config.json ] || CUDA_VISIBLE_DEVICES=0 python -u exe/pg_h5_to_pt.py --h5_dir $W/topo/pg_wolf_sand --config $W/PhysGaussian/config/wolf_config.json --out_pt /root/pr/gtwolf_unused.pt --out_dir $AG/gt_wolf > /root/pr/gt_wolf.log 2>&1
 rm -f /root/pr/gtbread_unused.pt /root/pr/gtwolf_unused.pt
 say "[자료] wolf $(stat -c %s $AG/wolf.pt 2>&1) bread $(stat -c %s $AG/bread.pt 2>&1) gt_wolf $(ls $AG/gt_wolf 2>/dev/null | wc -l) gt_bread $(ls $AG/gt_bread 2>/dev/null | wc -l) 준비 판 $(ls $O/p | tr '\n' ' ') pip $(ls /root/pr/pip.done 2>&1)"

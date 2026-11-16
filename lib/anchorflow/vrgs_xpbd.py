@@ -42,44 +42,44 @@ __device__ __forceinline__ void qmat(const float* q, float* R) {   // q = (x,y,z
 
 // [blx] 3x3 SVD (야코비: A = Fᵀ F 고유분해 -> V, σ; U = F V / σ, Gram-Schmidt; U·V 회전, 뒤집힘이면 σ3 < 0 -- warp svd3 와 같은 부호 규약)
 __device__ void svd3x3(const float* F, float* U, float* S, float* V) {
-  double A[9];
-  for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) { double a = 0; for (int k = 0; k < 3; k++) a += (double)F[3*k+i]*F[3*k+j]; A[3*i+j] = a; }
-  double Q[9] = {1,0,0, 0,1,0, 0,0,1};
+  float A[9];
+  for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) { float a = 0; for (int k = 0; k < 3; k++) a += F[3*k+i]*F[3*k+j]; A[3*i+j] = a; }
+  float Q[9] = {1.f,0.f,0.f, 0.f,1.f,0.f, 0.f,0.f,1.f};
   for (int sw = 0; sw < 12; sw++) {
-    double off = A[1]*A[1] + A[2]*A[2] + A[5]*A[5];
-    if (off < 1e-30 * (A[0]*A[0] + A[4]*A[4] + A[8]*A[8]) + 1e-300) break;
+    float off = A[1]*A[1] + A[2]*A[2] + A[5]*A[5];
+    if (off < 1e-12f * (A[0]*A[0] + A[4]*A[4] + A[8]*A[8]) + 1e-35f) break;
     for (int pq = 0; pq < 3; pq++) {
       int p = pq == 2 ? 1 : 0, q = pq == 0 ? 1 : 2;
-      double apq = A[3*p+q]; if (fabs(apq) < 1e-300) continue;
-      double th = (A[3*q+q] - A[3*p+p]) / (2.0*apq);
-      double t = (th >= 0 ? 1.0 : -1.0) / (fabs(th) + sqrt(th*th + 1.0));
-      double c = 1.0 / sqrt(t*t + 1.0), sn = t*c;
-      for (int k = 0; k < 3; k++) { double akp = A[3*k+p], akq = A[3*k+q]; A[3*k+p] = c*akp - sn*akq; A[3*k+q] = sn*akp + c*akq; }
-      for (int k = 0; k < 3; k++) { double apk = A[3*p+k], aqk = A[3*q+k]; A[3*p+k] = c*apk - sn*aqk; A[3*q+k] = sn*apk + c*aqk; }
-      for (int k = 0; k < 3; k++) { double qkp = Q[3*k+p], qkq = Q[3*k+q]; Q[3*k+p] = c*qkp - sn*qkq; Q[3*k+q] = sn*qkp + c*qkq; }
+      float apq = A[3*p+q]; if (fabsf(apq) < 1e-35f) continue;
+      float th = (A[3*q+q] - A[3*p+p]) / (2.0f*apq);
+      float t = (th >= 0 ? 1.0f : -1.0f) / (fabsf(th) + sqrtf(th*th + 1.0f));
+      float c = 1.0f / sqrtf(t*t + 1.0f), sn = t*c;
+      for (int k = 0; k < 3; k++) { float akp = A[3*k+p], akq = A[3*k+q]; A[3*k+p] = c*akp - sn*akq; A[3*k+q] = sn*akp + c*akq; }
+      for (int k = 0; k < 3; k++) { float apk = A[3*p+k], aqk = A[3*q+k]; A[3*p+k] = c*apk - sn*aqk; A[3*q+k] = sn*apk + c*aqk; }
+      for (int k = 0; k < 3; k++) { float qkp = Q[3*k+p], qkq = Q[3*k+q]; Q[3*k+p] = c*qkp - sn*qkq; Q[3*k+q] = sn*qkp + c*qkq; }
     }
   }
-  double ev[3] = {A[0], A[4], A[8]}; int o[3] = {0, 1, 2};
+  float ev[3] = {A[0], A[4], A[8]}; int o[3] = {0, 1, 2};
   for (int i = 0; i < 2; i++) for (int j = 0; j < 2 - i; j++) if (ev[o[j]] < ev[o[j+1]]) { int tt = o[j]; o[j] = o[j+1]; o[j+1] = tt; }
-  double v[3][3];
+  float v[3][3];
   for (int c = 0; c < 3; c++) for (int r = 0; r < 3; r++) v[c][r] = Q[3*r+o[c]];
   // det V = +1
-  double dv = v[0][0]*(v[1][1]*v[2][2]-v[1][2]*v[2][1]) - v[0][1]*(v[1][0]*v[2][2]-v[1][2]*v[2][0]) + v[0][2]*(v[1][0]*v[2][1]-v[1][1]*v[2][0]);
+  float dv = v[0][0]*(v[1][1]*v[2][2]-v[1][2]*v[2][1]) - v[0][1]*(v[1][0]*v[2][2]-v[1][2]*v[2][0]) + v[0][2]*(v[1][0]*v[2][1]-v[1][1]*v[2][0]);
   if (dv < 0) for (int r = 0; r < 3; r++) v[2][r] = -v[2][r];
-  double fv[3][3];
+  float fv[3][3];
   for (int c = 0; c < 3; c++) for (int r = 0; r < 3; r++) fv[c][r] = F[3*r]*v[c][0] + F[3*r+1]*v[c][1] + F[3*r+2]*v[c][2];
-  double u[3][3];
-  double n0 = sqrt(fv[0][0]*fv[0][0] + fv[0][1]*fv[0][1] + fv[0][2]*fv[0][2]);
-  if (n0 > 1e-30) { for (int r = 0; r < 3; r++) u[0][r] = fv[0][r] / n0; } else { u[0][0] = 1; u[0][1] = 0; u[0][2] = 0; }
-  double d1 = u[0][0]*fv[1][0] + u[0][1]*fv[1][1] + u[0][2]*fv[1][2];
-  double w1[3] = {fv[1][0] - d1*u[0][0], fv[1][1] - d1*u[0][1], fv[1][2] - d1*u[0][2]};
-  double n1 = sqrt(w1[0]*w1[0] + w1[1]*w1[1] + w1[2]*w1[2]);
-  if (n1 > 1e-30) { for (int r = 0; r < 3; r++) u[1][r] = w1[r] / n1; }
-  else { double e[3] = {0, 0, 0}; e[fabs(u[0][0]) < 0.9 ? 0 : 1] = 1; double dd = e[0]*u[0][0] + e[1]*u[0][1] + e[2]*u[0][2];
-         double w[3] = {e[0]-dd*u[0][0], e[1]-dd*u[0][1], e[2]-dd*u[0][2]}; double nn = sqrt(w[0]*w[0]+w[1]*w[1]+w[2]*w[2]); for (int r = 0; r < 3; r++) u[1][r] = w[r]/nn; }
+  float u[3][3];
+  float n0 = sqrtf(fv[0][0]*fv[0][0] + fv[0][1]*fv[0][1] + fv[0][2]*fv[0][2]);
+  if (n0 > 1e-30f) { for (int r = 0; r < 3; r++) u[0][r] = fv[0][r] / n0; } else { u[0][0] = 1; u[0][1] = 0; u[0][2] = 0; }
+  float d1 = u[0][0]*fv[1][0] + u[0][1]*fv[1][1] + u[0][2]*fv[1][2];
+  float w1[3] = {fv[1][0] - d1*u[0][0], fv[1][1] - d1*u[0][1], fv[1][2] - d1*u[0][2]};
+  float n1 = sqrtf(w1[0]*w1[0] + w1[1]*w1[1] + w1[2]*w1[2]);
+  if (n1 > 1e-30f) { for (int r = 0; r < 3; r++) u[1][r] = w1[r] / n1; }
+  else { float e[3] = {0, 0, 0}; e[fabsf(u[0][0]) < 0.9f ? 0 : 1] = 1; float dd = e[0]*u[0][0] + e[1]*u[0][1] + e[2]*u[0][2];
+         float w[3] = {e[0]-dd*u[0][0], e[1]-dd*u[0][1], e[2]-dd*u[0][2]}; float nn = sqrtf(w[0]*w[0]+w[1]*w[1]+w[2]*w[2]); for (int r = 0; r < 3; r++) u[1][r] = w[r]/nn; }
   u[2][0] = u[0][1]*u[1][2] - u[0][2]*u[1][1]; u[2][1] = u[0][2]*u[1][0] - u[0][0]*u[1][2]; u[2][2] = u[0][0]*u[1][1] - u[0][1]*u[1][0];
-  S[0] = (float)n0; S[1] = (float)(u[1][0]*fv[1][0] + u[1][1]*fv[1][1] + u[1][2]*fv[1][2]); S[2] = (float)(u[2][0]*fv[2][0] + u[2][1]*fv[2][1] + u[2][2]*fv[2][2]);
-  for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) { U[3*r+c] = (float)u[c][r]; V[3*r+c] = (float)v[c][r]; }
+  S[0] = n0; S[1] = (u[1][0]*fv[1][0] + u[1][1]*fv[1][1] + u[1][2]*fv[1][2]); S[2] = (u[2][0]*fv[2][0] + u[2][1]*fv[2][1] + u[2][2]*fv[2][2]);
+  for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) { U[3*r+c] = u[c][r]; V[3*r+c] = v[c][r]; }
 }
 
 __global__ void vg_predict(int n, float* x, float* xp, float* v, const float* w, float gx, float gy, float gz, float dt, float damp) {
