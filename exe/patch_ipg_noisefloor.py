@@ -17,6 +17,12 @@ ap.add_argument("--ipg", required=True)
 a = ap.parse_args()
 p = os.path.join(a.ipg, "implicit_mpm_solver.py")
 s = open(p).read()
+# (3) AF_FD_EPS=e : 전방차분 섭동의 최대 성분 (변위 단위, 원 코드 1e-4 고정). 원 값은 dt 와 무관해 N100 에서 속도 섭동 0.5 m/s, 변형 1e-2
+#     -> 모래 인장 절단 꺾임 (F=I) 을 가로지르는 할선이 되어 GMRES 방향이 하강 방향이 아님. 기본 = 1e-4 (원 동작).
+old3 = """                eps_fd = 1e-4 / norm_inf"""
+new3 = """                eps_fd = float(_os.environ.get("AF_FD_EPS", "1e-4")) / norm_inf   # [anchorflow noisefloor]"""
+if old3 in s:
+    s = s.replace(old3, new3); open(p, "w").write(s); print("[적용] AF_FD_EPS")
 if "AF_NEWTON_ATOL_FEXT" in s:
     print("[이미 적용] patch_ipg_noisefloor")
     raise SystemExit(0)

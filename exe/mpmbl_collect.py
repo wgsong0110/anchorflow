@@ -51,14 +51,18 @@ for (m, s), (d, N, Noff, setting, note, commit) in CELLS.items():
             L.append(dict(dict(method=m, scene=s, N=N), **{k: v for k, v in q.items() if k not in ("method", "scene", "N")}))
 # i-PG wolf: 오차 칸 없음 -- 근거와 3 프레임 단독 시간
 t3 = load(f"{RB}/ipg_wolf/N1000_t3/err.json")
-rows.append(dict(method="ipg", scene="wolf", N=1000, setting="i-PG newton\\_gmres k=20·10·5 (N 100·200·400) 발산 -> k=2 (N 1000)", reps=1 if t3 else 0, ok=0,
-                 err=None, err_all=[], ms=(t3 or {}).get("ms_mean"), ms_all=[x for x in ((t3 or {}).get("ms") or [])],
+T3 = [r for r in (load(f"{RB}/ipg_wolf/N1000_t3{x}/err.json") for x in ("", "_b", "_c")) if r is not None and r.get("ms_mean")]
+rows.append(dict(method="ipg", scene="wolf", N=1000, setting="i-PG newton\\_gmres k=20·10·5 (N 100·200·400) 발산 -> k=2 (N 1000)", reps=len(T3), ok=0,
+                 err=None, err_all=[], ms=statistics.median([r["ms_mean"] for r in T3]) if T3 else None, ms_all=[r["ms_mean"] for r in T3],
                  div=[{"N": 100, "frame": 1, "reason": "Newton 발산 (서브스텝 0 잔차 0.24 -> 302, 수렴 못 함) 뒤 GMRES 최소제곱 NaN (LinAlgError)"},
                       {"N": 200, "frame": 1, "reason": "같음"}, {"N": 400, "frame": 1, "reason": "같음"}],
                  note="k>=5 는 첫 서브스텝부터 Newton 이 발산 (CPU 경로 AF_IPG_GPU 끔도 같은 잔차 경로 -> 이식 버그 아님; 통합 커널은 소성이라 처음부터 안 씀). "
-                      "k=2 (N 1000) 는 진행하나 서브스텝 ~5.1 s -> 프레임 ~5070 s, 50 프레임 ~70 h 라 오차 칸 없음; ms = 같은 판 3 프레임 단독 실행의 3 프레임째 (첫 2 프레임 뺀 평균 규약), "
+                      "원인 (exe/diag_ipg_wolf.py, ipg_wolf/diag): F_trial=I 정확히여도 warp svd3 float32 반올림으로 모든 입자 DP 응력 11.3 Pa (E 5e7) -> 첫 잔차 |R0|=|f_int|=0.24 "
+                      "(|m g| 4.46 의 5 %) 가 전부 잡음이라 상대 기준 1e-4 에 닿을 수 없고, 전방차분 GMRES 방향이 하강 방향이 아님 (줄 탐색 10 번 모두 실패 -> 원 코드는 alpha 1/512 로 갱신해 폭주; "
+                      "갱신을 버리는 시험 AF_LS_REJECT=1 은 Newton 이 한 번도 못 움직여 예측자만 남음 -> 채택 안 함). "
+                      "k=2 (N 1000) 는 진행하나 (매 걸음 수렴 못 하고 정체 판정까지) 서브스텝 ~5.1 s -> 프레임 ~5070 s, 50 프레임 ~70 h 라 오차 칸 없음; ms = 3 프레임 단독 실행 3 회 (t3·t3_b·t3_c) 의 3 프레임째 중앙값 (첫 2 프레임 뺀 평균 규약), "
                       "오차는 3 프레임까지만: " + (", ".join(f"{100 * e:.3f}%" for e in t3["err"]) if t3 else "-"),
-                 commit="afcd058 (브랜치 final_fix_mpmbl)", gpu=GPU.replace(", 3 회", ", 1 회 3 프레임"), N_official=100, frames_total=50, frames_done=(t3 or {}).get("frames_done"),
+                 commit="afcd058 (브랜치 final_fix_mpmbl)", gpu=GPU.replace(", 3 회", ", 3 회 x 3 프레임"), N_official=100, frames_total=50, frames_done=(t3 or {}).get("frames_done"),
                  src="lbours/final_fix/bl_mpm/ipg_wolf/"))
 for fn, L in (("pareto_mpmbl.json", rows), ("phys_mpmbl.json", phys), ("vis_mpmbl.json", vis)):
     json.dump(L, open(f"/tmp/{fn}", "w"), ensure_ascii=False, indent=1)
