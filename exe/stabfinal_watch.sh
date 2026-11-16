@@ -38,7 +38,7 @@ while true; do
     fi
   done
   # 2) 표식
-  for t in f6s f6m pw_b mc_e ipgs ipgm; do
+  for t in f6s f6m pw_b mc_e ipgs ipgm gt; do
     for m in ALL_DONE ALL_DONE_CHECK_FAIL POWERCAP setup_fail; do
       if [ -z "${SEEN[$t$m]:-}" ] && rclone lsf $RX/marks/$t/$m 2>/dev/null | grep -q .; then
         T=$(rclone lsl $RX/marks/$t/$m | awk '{print $2" "$3}' | cut -c1-19)
