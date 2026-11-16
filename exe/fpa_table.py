@@ -188,6 +188,15 @@ def eig_cell(s, v, a):
             c = json.load(open(f))["cases"][0]
             if "n_zero_nonrigid" in c:
                 return str(c["n_zero_nonrigid"])
+        fb = os.environ.get("FPA_EIG_FALLBACK")                                       # 옛 분석 (runs_nd r1 eig.json, 성분 수 없음): 같은 장면 다른 판이 모두 1 성분일 때만 6 을 빼고 별표
+        if fb and os.path.exists(f"{fb}/{s}_{v}_r1/eig.json"):
+            ncs = set()
+            for g in os.listdir(EIGD):
+                if g.startswith(s + "_") and os.path.exists(f"{EIGD}/{g}/eig.json"):
+                    ncs.add(json.load(open(f"{EIGD}/{g}/eig.json"))["cases"][0].get("ncomp"))
+            if ncs == {1}:
+                c = json.load(open(f"{fb}/{s}_{v}_r1/eig.json"))["cases"][0]
+                return "%d$^{\\ast}$" % (c["n_zero"] - 6)
         return "--"
     return a['eig'] if (a['eig'] is not None and v in ('def', 'q1', 'q27')) else '--'
 
