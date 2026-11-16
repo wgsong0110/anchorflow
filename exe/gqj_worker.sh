@@ -30,6 +30,7 @@ while :; do
     [ "$m" = time ] && [ "${GQ_TIME:-0}" != 1 ] && continue                             # 시간 판은 A6000 단독 일꾼만
     [ "$m" != time ] && [ "${GQ_TONLY:-0}" = 1 ] && continue
     n=${s}_${v}_${c}_${m}_r$r
+    if [ "$m" = dump ] && [ "$(df --output=avail -BG /workspace | tail -1 | tr -dc 0-9)" -lt ${GQ_MINDISK:-40} ]; then left=1; continue; fi   # 덤프·렌더 디스크 여유
     rclone lsf $RG/runs/$n/DONE 2>/dev/null | grep -q . && continue
     left=1
     rclone lsf $RG/runs/$n/LOCK 2>/dev/null | grep -q . && continue
