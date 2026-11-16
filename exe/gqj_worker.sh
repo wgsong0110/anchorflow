@@ -16,7 +16,8 @@ scene() { case $1 in
   bread) DATA=$AG/bread.pt; GTD=$AG/gt_bread_full; CF=$AG/gt_bread_full/config.json; SHAPE=bread; FR=300; FLOOR=none;;
   wolf) DATA=$AG/wolf.pt; GTD=$AG/gt_wolf; CF=$AG/gt_wolf/config.json; SHAPE=wolf; FR=50; FLOOR=vel;; esac; }
 others() { nvidia-smi -i $GPU --query-compute-apps=pid --format=csv,noheader | grep -c .; }
-foreign() { local n=0; for p in $(nvidia-smi -i $GPU --query-compute-apps=pid --format=csv,noheader); do tr '\0' ' ' < /proc/$p/cmdline 2>/dev/null | grep -q "/workspace/gq/" || n=$((n+1)); done; echo $n; }   # 다른 에이전트 계산 (겹치지 않게)
+mine() { local n=0; for p in $(pgrep -f "python.*/workspace/gq/"); do n=$((n+1)); done; echo $n; }
+foreign() { local a=$(others) b=$(mine); [ $a -gt $b ] && echo $((a-b)) || echo 0; }   # 다른 에이전트 계산 (겹치지 않게): 카드 계산 프로세스 수 − 내 python (컨테이너 PID 와 nvidia-smi PID 가 달라 수로 비교)
 clean() { rm -rf "${X:?}/${1:?}" "${X:?}/${1:?}.claim"; }
 idle=0
 while :; do
