@@ -14,6 +14,8 @@
   --ssf_tolp 1    PCG 허용치 tolP 에도 1/N 곱함 (선택)
   --ssf_fpic M    [d192 11-16] (기본 0 = 소스 그대로) 재질 판 + --fpi_el 1 (소성 재질은 --fp_interp 꺼짐) 에서, M 1 = 받아들인 프레임이 끝 판정 무너짐 (최대 깊이에서도 덜 풀림) 이면,
                   M 2 = 다시 푼 프레임이면 그 프레임만 입자 F·재질 상태를 프레임 끝 가우스 점 보간 (옛 판 --fp_interp 와 같은 커널) 으로 교체. 탄성 재질은 아무 일 없음.
+  --ssf_fpg J0    [d192] (기본 0 = 끔) 재질 판 + --fpi_el 1 에서 받아들인 프레임마다 입자 det F 가 (J0, 1/J0) 밖인 입자만 F·재질 상태를 프레임 끝 가우스 점 보간으로 교체
+                  (범위 안 입자는 그대로 = 그런 입자가 없는 판은 코드 경로·결과 그대로)
   --ssf_fpik K    (기본 0) --ssf_fpic 를 받아들인 프레임의 걸음 수 K 가 이 값 이상일 때만
   --ssf_cgk P     [d192 11-16] (기본 0 = 소스 그대로) PCG 반복 상한 cg 를 실행기 서브스텝 수 N (--K) 에 맞춰: cg_N = min(--ssf_cgmax, max(cg, round(cg · N^P))).
                   N = 1 이면 cg 그대로 (다시 풀기로 K 가 커져도 그대로) = 코드 경로 같음. --ssf_cgm 1 (기본) 이면 재질 판 (소성 재질 실행기) 에만, 0 이면 모든 판
@@ -27,7 +29,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 argv = sys.argv[1:]
-C = dict(tol="0", tolp="0", kex="0", split="0", bigT="1.0", wrx="1", dumpfail="", det="1", bec="0", tsum="0", kmax="256", fpic="0", fpik="0", cgk="0", cgmax="64", cgm="1")
+C = dict(tol="0", tolp="0", kex="0", split="0", bigT="1.0", wrx="1", dumpfail="", det="1", bec="0", tsum="0", kmax="256", fpic="0", fpik="0", cgk="0", cgmax="64", cgm="1", fpg="0")
 while argv and argv[0].startswith("--ssf_"):
     C[argv[0][6:]] = argv[1]; del argv[:2]
 _orig = runpy.run_path; _done = [False]
@@ -72,7 +74,7 @@ def _install():
             return r
         ART.RTSolver.k = kc
     D = int(float(C["split"]))
-    if D > 0 or C["dumpfail"] or float(C["fpic"]) != 0:                                                                          # --ssf_split D: 프레임 단위 걸음 수 두 배 다시 풀기 (최대 2^D 배), 기준 K = 실행기 --K
+    if D > 0 or C["dumpfail"] or float(C["fpic"]) != 0 or float(C["fpg"]) != 0:                                                                          # --ssf_split D: 프레임 단위 걸음 수 두 배 다시 풀기 (최대 2^D 배), 기준 K = 실행기 --K
         import torch
         ostep = ART.RTSolver.step
         oinit2 = ART.RTSolver.__init__
@@ -84,7 +86,7 @@ def _install():
         ART.RTSolver.__init__ = init2
         T = float(C["bigT"]); ST = dict(retry=0, frames=0, hist={}, fpic=0)
 
-        def _fpi_rescue(s):
+        def _fpi_rescue(s, J0=None):
             """[d192] --ssf_fpic: 재질 판에서 --fp_interp 가 꺼진 경우 (--fpi_el 1 의 소성 재질) 만, 받아들인 프레임의 입자 F·재질 상태를
             그 프레임 끝 가우스 점 값 (마지막 걸음 커밋 RM 뒤) 의 칸 안 삼선형 보간으로 교체 (= 그 프레임만 옛 판 --fp_interp 의 G2P 뒤 단계와 같은 커널·같은 인자).
             탄성 재질·--fp_interp 켠 판은 아무것도 안 함."""
@@ -111,13 +113,30 @@ def _install():
                 else:
                     s.k("ao_commit", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(Uk), f(s.cdp)))
                 s.k("fpi_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(Uk), P(Fe)))
-                s.k("fpi_p", N, (i32(N), P(IP), P(s.fx), P(s.pcd), P(s.cidx), P(Fe), i32(0), i32(0), P(s.F),
-                                 P(s.Sq if s.aq else None), P(s.ysp if s.aq else None), P(s.ljp if s.aq else None), P(s.alp if s.aq else None)))
+                if J0 is None:                                                          # 입자 전부 교체
+                    tF, tys, tlj, tal = s.F, getattr(s, "ysp", None), getattr(s, "ljp", None), getattr(s, "alp", None)
+                else:                                                                   # --ssf_fpg: 사본에 보간을 받아 J 가 범위 밖인 입자만 교체
+                    tF = s.F.clone()
+                    tys, tlj, tal = ((s.ysp.clone(), s.ljp.clone(), s.alp.clone()) if s.aq else (None, None, None))
+                s.k("fpi_p", N, (i32(N), P(IP), P(s.fx), P(s.pcd), P(s.cidx), P(Fe), i32(0), i32(0), P(tF),
+                                 P(s.Sq if s.aq else None), P(tys if s.aq else None), P(tlj if s.aq else None), P(tal if s.aq else None)))
             finally:
                 s.mod, s.fn = mod0, fn0
                 for nm, v_ in _sv.items():
                     setattr(s, nm, v_)
             torch.cuda.synchronize()
+            if J0 is not None:
+                J = torch.linalg.det(s.F[:N].reshape(-1, 3, 3).double())
+                m = ~((J > J0) & (J < 1.0 / J0))
+                nm = int(m.sum())
+                if nm:
+                    s.F[:N].view(-1, 9)[m] = tF[:N].view(-1, 9)[m]
+                    if s.aq:
+                        for d_, t_ in ((s.ysp, tys), (s.ljp, tlj), (s.alp, tal)):
+                            d_[:N][m] = t_[:N][m]
+                    ST["fpgn"] = ST.get("fpgn", 0) + nm; ST["fpgf"] = ST.get("fpgf", 0) + 1
+                    print(f"[d192 fpg] 프레임 {ST['frames']} K {K}: J 범위 밖 입자 {nm} -> 가우스 점 보간 (J 최소 {float(J.min()):.3g} 최대 {float(J.max()):.3g})", flush=True)
+                return
             ST["fpic"] += 1
             print(f"[d192 fpic] 프레임 {ST['frames']} K {K}: 입자 F·상태 = 가우스 점 보간 (재질 판)", flush=True)
 
@@ -168,6 +187,10 @@ def _install():
             fpm = int(float(C["fpic"]))
             if fpm and (oom is False) and (dp > 0 if fpm == 2 else collapsed(s, int(s.K))) and int(s.K) >= int(float(C["fpik"])):
                 _fpi_rescue(s)
+            if float(C["fpg"]) > 0 and oom is False and bool(torch.isfinite(s.x).all()):   # --ssf_fpg J0: 받아들인 프레임마다 J 범위 밖 입자만
+                J_ = torch.linalg.det(s.F[:s.N].reshape(-1, 3, 3).double())
+                if not bool(((J_ > float(C["fpg"])) & (J_ < 1.0 / float(C["fpg"]))).all()):
+                    _fpi_rescue(s, float(C["fpg"]))
             if dp and float(C["tsum"]) != 0:
                 s.last_ms = float(s.last_ms) + tw
             if dp:
@@ -181,13 +204,13 @@ def _install():
             return redo
         ART.RTSolver.step = step
         import atexit
-        atexit.register(lambda: print(f"[substep_fix] 프레임 {ST['frames']} 다시 풂 {ST['retry']} 깊이별 {ST['hist']}" + (f" fpic {ST['fpic']}" if int(float(C['fpic'])) else ""), flush=True))
+        atexit.register(lambda: print(f"[substep_fix] 프레임 {ST['frames']} 다시 풂 {ST['retry']} 깊이별 {ST['hist']}" + (f" fpic {ST['fpic']}" if int(float(C['fpic'])) else "") + (f" fpg 프레임 {ST.get('fpgf', 0)} 입자 {ST.get('fpgn', 0)}" if float(C['fpg']) else ""), flush=True))
 
 
 def run_path(path, *a, **kw):
     if not _done[0] and os.path.basename(path) == "fem_an_rt_sim.py":
         _done[0] = True
-        if float(C["tol"]) != 0 or float(C["tolp"]) != 0 or float(C["kex"]) != 0 or float(C["split"]) != 0 or C["dumpfail"] or float(C["bec"]) != 0 or float(C["fpic"]) != 0 or float(C["cgk"]) != 0:
+        if float(C["tol"]) != 0 or float(C["tolp"]) != 0 or float(C["kex"]) != 0 or float(C["split"]) != 0 or C["dumpfail"] or float(C["bec"]) != 0 or float(C["fpic"]) != 0 or float(C["cgk"]) != 0 or float(C["fpg"]) != 0:
             _install()
     return _orig(path, *a, **kw)
 
