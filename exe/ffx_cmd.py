@@ -67,6 +67,8 @@ for m in mods:
         assert re.search(r" --wrx \d+ ", c); c = re.sub(r" --wrx \d+ ", f" --wrx {m[3:]} ", c)
     elif m == "wel":                                    # 절 CM192: 탄성 재질은 X3 를 무너진 프레임에서만 (--wrx_el 1)
         if " --wrx_el " not in c: c = c.replace(" --wrx_col ", " --wrx_el 1 --wrx_col ", 1)
+    elif m in ("sstol", "sstolp"):                     # 절 CM192: 뉴턴 (·PCG) 허용치 x 1/K (exe/ssfix_wrap.py --ssf_tol 1 [--ssf_tolp 1]; K=1 이면 그대로)
+        assert "--ssf_bec " in c; c = c.replace("--ssf_bec ", ("--ssf_tol 1 --ssf_tolp 1 " if m == "sstolp" else "--ssf_tol 1 ") + "--ssf_bec ", 1)
     elif m == "bec2":                                   # 절 CM192: 국소 후퇴 오일러 강제는 다시 풀기에서만
         assert "--ssf_bec 1 " in c; c = c.replace("--ssf_bec 1 ", "--ssf_bec 2 ", 1)
     elif m == "ssr":                                    # 절 CM192: ssfix 다시 풀기 뒤 X3 상태 되돌림
