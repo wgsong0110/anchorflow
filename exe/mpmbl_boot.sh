@@ -91,6 +91,7 @@ PY
 }
 
 for s in $SCN; do
+  [ "$s" = none ] && continue
   scene $s; J=${M}_$s; O=$X/$J; mkdir -p $O
   OEX=""
   if [ $M = omni ]; then
@@ -143,6 +144,7 @@ for s in $SCN; do
   rclone copy $O $RB/$J -q --transfers 8 --exclude "h5/**"
   [ -s $O/phys.json ] && [ -s $O/vis.json ] && touch $O/DONE && rclone copyto $O/DONE $RB/$J/DONE -q
 done
+[ -n "${MB_POST:-}" ] && { say "[후속] $MB_POST"; bash $D/$MB_POST >> /root/mb/post.out 2>&1; say "[후속 끝] $(tail -1 /root/mb/post.out | cut -c1-200)"; }
 kill $SY 2>/dev/null
 rclone copy $X $RB -q --transfers 8 --exclude "*/h5/**"
 if rclone check $X $RB --one-way --size-only -q --exclude "*/h5/**" 2>/root/mb/check.txt; then

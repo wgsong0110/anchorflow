@@ -214,7 +214,7 @@ else:
 os.makedirs(a.out, exist_ok=True)
 PX = torch.empty(L, N, 3, dtype=torch.float32) if a.dump else None
 PF = torch.empty(L, N, 3, 3, dtype=torch.float32) if a.dump else None
-errs, MS = [], []
+errs, MS, ZMIN = [], [], []
 DIV = None
 step = 0
 t0 = time.time()
@@ -238,12 +238,16 @@ for f in range(1, L + 1):
     if a.dump:
         PX[f - 1] = xt.float().cpu(); PF[f - 1] = state_F().float().reshape(N, 3, 3).cpu()
     print(f"  프레임 {f}/{L} 오차 {100 * e:.3f}% (누적 평균 {100 * np.nanmean(errs):.3f}%) {MS[-1]:.1f} ms 최저 z {float(xt[:, 2].min()):.5f} {time.time() - t0:.0f}s", flush=True)
+    ZMIN.append(float(xt[:, 2].min()))
+    if floor is not None and ZMIN[-1] < float(floor["point"][2]) - 3 * dx0 and DIV is None:      # 바닥 (sticky 격자 노드) 을 3 칸 넘게 뚫음 = 폭주 (영역 상자 clip 이 붙잡아 NaN 이 안 됨; 정답 MPM 은 바닥 아래 1 칸 안)
+        DIV = dict(frame=f, substep=nsub, reason=f"바닥 관통 (최저 z {ZMIN[-1]:.4f} < 바닥 - 3 dx)")
+        print(f"[발산] 프레임 {f}: {DIV['reason']}", flush=True); break
     if not np.isfinite(e) or e > 2.0:
         DIV = dict(frame=f, substep=nsub, reason="비유한" if not np.isfinite(e) else f"오차 {100 * e:.1f}% > 200%")
         print(f"[발산] 프레임 {f}", flush=True); break
 summ = dict(args=vars(a), method=a.method, nsub=nsub, dt=dt, n_grid=n_grid, material=MAT, EXT=EXT, n_particles=N, frames_total=L, frames_done=len(errs),
             err_mean=float(np.mean(errs)) if errs else None, err_pct=(100 * float(np.mean(errs))) if (errs and DIV is None) else None, div=DIV,
-            err=errs, sec=time.time() - t0, ms=MS, ms_mean=(float(np.mean(MS[2:])) if len(MS) > 2 else None), ms_max=(float(np.max(MS[2:])) if len(MS) > 2 else None),
+            err=errs, zmin=ZMIN, sec=time.time() - t0, ms=MS, ms_mean=(float(np.mean(MS[2:])) if len(MS) > 2 else None), ms_max=(float(np.max(MS[2:])) if len(MS) > 2 else None),
             af_ipg_fused=os.environ.get("AF_IPG_FUSED"), af_ipg_gpu=os.environ.get("AF_IPG_GPU"), gpu=torch.cuda.get_device_name(0))
 json.dump(summ, open(os.path.join(a.out, "err.json"), "w"), ensure_ascii=False, indent=1)
 if a.dump:
