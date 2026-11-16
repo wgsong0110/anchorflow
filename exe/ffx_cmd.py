@@ -113,6 +113,8 @@ for m in mods:
         assert " --mfloor " not in c; c = c.replace(" --K ", f" --mfloor {m[2:]} --K ", 1)
     elif re.match(r"ssd\d$", m):                       # 절 CM194 진단: ssfix 다시 풀기 깊이 --ssf_split D
         assert "--ssf_split 3 " in c; c = c.replace("--ssf_split 3 ", f"--ssf_split {m[3:]} ", 1)
+    elif re.match(r"bsk[0-9e.-]+$", m):                 # 절 CM194: --be_sub_mfk c' (K > 1 질량 하한 = c' h^2 tr(B)/3)
+        c = c.replace(" --K ", f" --be_sub_mfk {m[3:]} --K ", 1)
     elif m == "nk":                                     # 절 CM194: --be_sub_nk 1 (mf·lv 는 명목 K > 1 실행에만)
         c = c.replace(" --K ", " --be_sub_nk 1 --K ", 1)
     elif re.match(r"bsm[0-9e-]+$", m):                 # 절 CM193: --be_sub_mf c (K > 1 걸음 관성 질량 하한, --be_sub 위)

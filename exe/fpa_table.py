@@ -178,6 +178,20 @@ def vname(v):
     return VN["def_" if v == "def" else v]
 
 
+EIGD = os.environ.get("FPA_EIG_DIR")      # 절 CM195: <캐시>/abl_eig/<장면>_<판>/eig.json (exe/abl_eig_all.sh, R2 lbours/final_fix/abl_eig) -- 강체 (6 x 연결 성분) 뺀 영 모드 수, 네 장면 x 10 판
+
+
+def eig_cell(s, v, a):
+    if EIGD:
+        f = f"{EIGD}/{s}_{v}/eig.json"
+        if os.path.exists(f):
+            c = json.load(open(f))["cases"][0]
+            if "n_zero_nonrigid" in c:
+                return str(c["n_zero_nonrigid"])
+        return "--"
+    return a['eig'] if (a['eig'] is not None and v in ('def', 'q1', 'q27')) else '--'
+
+
 def table(title, vs, extra=True):
     T = [f"\\subsection*{{{title}}}", r"\begin{center}\scriptsize\begin{tabular}{l" + "rr" * len(SC) + "}\\toprule",
          "판 & " + " & ".join(f"\\multicolumn{{2}}{{c}}{{{nm}}}" for _, nm in SC) + r"\\", " & " + " & ".join("오차 \\% & ms" for _ in SC) + r"\\\midrule"]
@@ -185,14 +199,14 @@ def table(title, vs, extra=True):
         T.append(vname(v) + " & " + " & ".join(cell(agg(s, v)) + " & " + ("--" if (v == "q1" and os.environ.get("FPA_Q1_MS", "0") != "1") else cell(agg(s, v), "ms", "%.1f")) for s, _ in SC) + r"\\")   # 절 CM192 사용자 결정: 1^3 판 ms 는 최적화 안 된 별도 구현 (q27_wrap --q1pt 1) 이라 같은 경로로 다시 잴 때까지 --
     T.append(r"\bottomrule\end{tabular}\end{center}")
     if extra:
-        T += [r"\begin{center}\scriptsize\begin{tabular}{llrrrr}\toprule", r"장면 & 판 & 완주/회 & 입자 $\det F\le0$ 최대 & 에너지 최대 증가 (규모 대비) & 영 에너지 모드 수\\\midrule"]
+        T += [r"\begin{center}\scriptsize\begin{tabular}{llrrrr}\toprule", r"장면 & 판 & 완주/회 & 입자 $\det F\le0$ 최대 & 에너지 최대 증가 (규모 대비) & 영 에너지 모드 수" + (" (강체 제외)" if EIGD else "") + r"\\\midrule"]
         for s, nm in SC:
             for v in vs:
                 a = agg(s, v)
                 if not a["n"]:
                     continue
                 T.append(f"{nm} & {vname(v)} & {a['ok']}/{a['n']} & {a['flip'] if a['flip'] is not None else '--'} & "
-                         f"{'%.3g' % a['rise'] if a['rise'] is not None else '--'} & {a['eig'] if (a['eig'] is not None and v in ('def', 'q1', 'q27')) else '--'}\\\\")
+                         f"{'%.3g' % a['rise'] if a['rise'] is not None else '--'} & {eig_cell(s, v, a)}\\\\")
         T.append(r"\bottomrule\end{tabular}\end{center}")
     return T
 
