@@ -3,13 +3,16 @@
 사용: gqj_cmd.py <장면> <판> <조건> <모드> <출력 디렉토리>  -> 표준출력 명령줄
   장면  L000 pillow2sofa bread wolf
   판    def (2x2x2) | q27 (3x3x3, exe/q27b_wrap.py 32 자리) | q1 (1x1x1, 같은 8 레인 배치) | q1g001 q1g01 q1g1 (1x1x1 + 벌점 γ 0.01·0.1·1)
-  조건  base | e10 e100 (영률 x10·x100, --e_scale) | c15 c20 (칸 x1.5·x2, fpa_cmd) | v2 (충격 x2: 중력 x4·경계 속도 x2) | k2 (프레임당 걸음 2, fpa_cmd k2)
+  조건  base | e10 e100 (영률 x10·x100, --e_scale) | c15 c20 (칸 x1.5·x2, fpa_cmd) | v2 (충격 x2: 중력 x4·경계 속도 x2) | k2 (프레임당 걸음 2, fpa_cmd k2) | e10c15 e10c20 e100c15 e100c20 (안정 영역 그림용 조합)
   모드  dump (덤프 + 에너지 비) | met (lean + 에너지 비) | time (lean, 진단 없음 = 시간 측정)
 """
 import os, re, subprocess, sys
 scene, var, cond, mode, out = sys.argv[1:6]
 HERE = os.path.dirname(os.path.abspath(__file__))
-base = {"base": "def", "e10": "def", "e100": "def", "c15": "c15", "c20": "c20", "v2": "def", "k2": "k2"}[cond]
+import re as _re
+_m = _re.match(r"(e10|e100)(c15|c20)$", cond)                          # 안정 영역 그림용 두 축 조합 (영률 x 칸)
+EC = _m.group(1) if _m else None
+base = _m.group(2) if _m else {"base": "def", "e10": "def", "e100": "def", "c15": "c15", "c20": "c20", "v2": "def", "k2": "k2"}[cond]
 toks = [base, "bs2"] + (["dump"] if mode == "dump" else ["lean"])
 env = dict(os.environ, FFX_ND="2")
 c = subprocess.check_output([sys.executable, f"{HERE}/ffx_cmd.py", scene, ".".join(toks), "2", out], env=env, text=True).strip()
@@ -35,9 +38,9 @@ if mode in ("dump", "met"):
     gq += ["--gq_hgm 1"]
 if cond == "v2":
     gq += ["--gq_vs 2"]
-if cond in ("e10", "e100"):
+if cond in ("e10", "e100") or EC:
     assert " --e_scale " not in c
-    c = c.replace(" --K ", f" --e_scale {cond[1:]} --K ", 1)
+    c = c.replace(" --K ", f" --e_scale {(EC or cond)[1:]} --K ", 1)
 if gq:
     c = c.replace("python -u exe/", "python -u exe/gqj_wrap.py " + " ".join(gq) + " exe/", 1)
 print(" ".join(c.split()))
