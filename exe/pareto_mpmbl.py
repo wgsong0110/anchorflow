@@ -37,6 +37,9 @@ ap.add_argument("--omni_fric", type=float, default=None, help="omni sand 마찰�
 ap.add_argument("--omni_elas", default="", help="omni 탄성 구성모델 강제 (corotated|stvk; 기본 = 재질 대응표: metal·sand StVK, 나머지 Corotated)")
 ap.add_argument("--time", action="store_true")
 ap.add_argument("--dump", action="store_true")
+ap.add_argument("--ckpt_every", type=int, default=0, help="이어 돌리기: K 프레임마다 입자·솔버 상태 + 지금까지 기록을 out/ckpt.pt 에 (ipg·pg 만), 0 = 끔")
+ap.add_argument("--ckpt_r2", default="", help="체크포인트를 저장 즉시 올릴 R2 경로 (rclone copyto 대상 파일)")
+ap.add_argument("--resume", action="store_true", help="out/ckpt.pt (없으면 --ckpt_r2 에서 받음) 에서 이어 돌림")
 a = ap.parse_args()
 HERE = os.path.dirname(os.path.abspath(__file__))
 import h5py                                                      # noqa: E402
@@ -220,7 +223,50 @@ errs, MS, ZMIN = [], [], []
 DIV = None
 step = 0
 t0 = time.time()
-for f in range(1, L + 1):
+F0 = 1
+CK = os.path.join(a.out, "ckpt.pt")
+
+
+def _st_arrays():                                                    # 입자 크기 wp 배열 전부 (x·v·C·F·F_trial·응력·Jp·선택 ...)
+    out = {}
+    for k in dir(sol.mpm_state):
+        v = getattr(sol.mpm_state, k, None)
+        if isinstance(v, wp.array) and v.shape and v.shape[0] in (N, 6 * N):
+            out[k] = v
+    return out
+
+
+def ckpt_save(f):
+    S = {k: wp.to_torch(v).detach().cpu().clone() for k, v in _st_arrays().items()}
+    pa = getattr(sol, "_particle_a", None)
+    torch.save(dict(frame=f, step=step, time=float(sol.time), state=S, particle_a=None if pa is None else wp.to_torch(pa).cpu().clone(),
+                    errs=errs, MS=MS, ZMIN=ZMIN, PX=PX[:f].clone() if PX is not None else None, PF=PF[:f].clone() if PF is not None else None,
+                    nsub=nsub, method=a.method, argv=sys.argv), CK + ".tmp")
+    os.replace(CK + ".tmp", CK)
+    if a.ckpt_r2:
+        import subprocess
+        subprocess.run(["rclone", "copyto", CK, a.ckpt_r2, "-q"], check=False)
+    print(f"  [체크포인트] 프레임 {f} 걸음 {step}", flush=True)
+
+
+if a.resume and a.method in ("ipg", "pg"):
+    if not os.path.exists(CK) and a.ckpt_r2:
+        import subprocess
+        subprocess.run(["rclone", "copyto", a.ckpt_r2, CK, "-q"], check=False)
+    if os.path.exists(CK):
+        c = torch.load(CK, map_location="cpu", weights_only=False)
+        assert c["nsub"] == nsub and c["method"] == a.method, "체크포인트 설정 다름"
+        arr = _st_arrays()
+        for k, t in c["state"].items():
+            wp.copy(arr[k], wp.from_torch(t.cuda().contiguous(), dtype=arr[k].dtype))
+        if c["particle_a"] is not None:
+            sol._particle_a = wp.from_torch(c["particle_a"].cuda().contiguous(), dtype=wp.vec3)
+        sol.time = c["time"]; step = c["step"]; F0 = c["frame"] + 1
+        errs, MS, ZMIN = list(c["errs"]), list(c["MS"]), list(c["ZMIN"])
+        if PX is not None:
+            PX[:c["frame"]] = c["PX"]; PF[:c["frame"]] = c["PF"]
+        print(f"[이어 돌리기] 프레임 {c['frame']} 걸음 {step} 시각 {sol.time:.6f} 에서 (상태 {len(c['state'])} 개)", flush=True)
+for f in range(F0, L + 1):
     torch.cuda.synchronize(); wp.synchronize(); _tf = time.perf_counter()
     try:
         for s in range(nsub):
@@ -241,6 +287,8 @@ for f in range(1, L + 1):
         PX[f - 1] = xt.float().cpu(); PF[f - 1] = state_F().float().reshape(N, 3, 3).cpu()
     print(f"  프레임 {f}/{L} 오차 {100 * e:.3f}% (누적 평균 {100 * np.nanmean(errs):.3f}%) {MS[-1]:.1f} ms 최저 z {float(xt[:, 2].min()):.5f} {time.time() - t0:.0f}s", flush=True)
     ZMIN.append(float(xt[:, 2].min()))
+    if a.ckpt_every and a.method in ("ipg", "pg") and f % a.ckpt_every == 0 and f < L:
+        ckpt_save(f)
     if floor is not None and ZMIN[-1] < 2 * dx0 and DIV is None:      # 바닥을 뚫고 영역 상자 바닥 (clip) 까지 빠짐 = 폭주 (clip 이 붙잡아 NaN 이 안 됨)
         DIV = dict(frame=f, substep=nsub, reason=f"영역 바닥까지 빠짐 (최저 z {ZMIN[-1]:.4f}, 바닥 {float(floor['point'][2])})")
         print(f"[발산] 프레임 {f}: {DIV['reason']}", flush=True); break
