@@ -111,6 +111,8 @@ for m in mods:
         c = (f" WST_F0={a_} WST_F1={b_}" + c).replace("exe/startpt_wrap.py", "exe/wfn_st_wrap.py exe/startpt_wrap.py", 1)
     elif re.match(r"mf[0-9e-]+$", m):                  # 절 CM193 진단: 관성 질량 하한 --mfloor c (m' = max(m, c τ² tr(B)/3))
         assert " --mfloor " not in c; c = c.replace(" --K ", f" --mfloor {m[2:]} --K ", 1)
+    elif m == "nk":                                     # 절 CM194: --be_sub_nk 1 (mf·lv 는 명목 K > 1 실행에만)
+        c = c.replace(" --K ", " --be_sub_nk 1 --K ", 1)
     elif re.match(r"bsm[0-9e-]+$", m):                 # 절 CM193: --be_sub_mf c (K > 1 걸음 관성 질량 하한, --be_sub 위)
         assert " --be_sub " in c; c = c.replace(" --be_sub ", f" --be_sub_mf {m[3:]} --be_sub ", 1)
     elif re.match(r"lv[0-9e-]+$", m):                  # 절 CM193: --be_sub_lv c (K > 1 걸음 가장자리 노드 속도 = 이웃 질량 가중 평균, --be_sub 위)
