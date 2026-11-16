@@ -625,11 +625,16 @@ if a.jobs:
                 r = run_free(j["m"], j["t"], j["N"], "dump", O, VR_E.get(j["t"]) if j["m"] == "vrgs" else None)
                 if not (r and r.get("stable")):
                     say(f"[덤프 실패] {j}: {r}"); continue
-                if not os.path.exists(f"{O}/phys.json"):
-                    subprocess.run([PY, "-u", "exe/blx_phys_metrics.py", "--pred", f"{O}/pred.pt", "--data", DATA[j["t"]], "--out", f"{O}/phys.json"], cwd=D,
+                if not os.path.exists(f"{O}/phys.json"):                   # final_fix 와 같은 정의·코드 (exe/ffx_phys.py, b06c860 그대로); 스프링-질량은 F 없음 (--no_F)
+                    subprocess.run([PY, "-u", "exe/ffx_phys.py", "--method", j["m"], "--scene", j["t"], "--N", str(j["N"]), "--data", DATA[j["t"]], "--pred", f"{O}/pred.pt",
+                                    "--floor", ("vel" if j["t"] == "wolf" else "none"), "--frames", str(FRAMES[j["t"]]), "--out", f"{O}/phys.json",
+                                    "--note", "재질 확장 (원 논문은 탄성 전용) 대표 설정 덤프 판"] + ([] if j["m"] == "vrgs" else ["--no_F"]), cwd=D,
                                    stdout=open(f"{O}/phys.log", "w"), stderr=subprocess.STDOUT)
-                vq = visual(j["m"], j["t"], O)
-                say(f"[덤프] {j['m']} {j['t']}: 시각 {vq} 물리 {os.path.exists(O + '/phys.json')}")
+                vq = visual(j["m"], j["t"], O)                             # 렌더 PNG (lb_render, 정답 렌더와 같은 카메라) + stab_vis PSNR·SSIM·LPIPS
+                if os.path.isdir(f"{O}/png") and not os.path.exists(f"{O}/vis_ffx.json"):   # final_fix 와 같은 시각 지표 (exe/ffx_vis.py: NIQE·BRISQUE·MUSIQ·CLIP-IQA·RAFT warping error·PSNR·SSIM·LPIPS)
+                    subprocess.run([PY, "-u", "exe/ffx_vis.py", "--png", f"{O}/png", "--ref", gt_png(j["t"]), "--out", f"{O}/vis_ffx.json"], cwd=D,
+                                   env=dict(os.environ, CUDA_VISIBLE_DEVICES="0"), stdout=open(f"{O}/vis_ffx.log", "w"), stderr=subprocess.STDOUT)
+                say(f"[덤프] {j['m']} {j['t']}: 시각 {vq} 물리 {os.path.exists(O + '/phys.json')} 시각2 {os.path.exists(O + '/vis_ffx.json')}")
             except Exception as ex:                                    # noqa: BLE001
                 say(f"[덤프 오류] {j}: {ex}")
     open(f"{OUT}/grid.END", "w").write(time.strftime("%F %T") + "\n")

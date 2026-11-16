@@ -78,6 +78,7 @@ if [ -n "${FB_HOLD:-}" ] || [ "$MODE" = hold ]; then say "[대기] /root/pr/go �
 rclone copy $OX/$T $O -q --transfers 8 --exclude "*/h5/**"                    # 이어 돌리기 (같은 태그의 이전 인스턴스)
 ( while true; do sleep 300; rclone copy $O $OX/$T -q --transfers 8 --exclude "*/h5/**"; done ) & SY=$!
 EX=""; [ "$MODE" = prep ] && EX="--prep_only"
+python -c "import pyiqa" 2>/dev/null || pip install -q pyiqa -c <(pip freeze | grep -iE "^(torch|torchvision|numpy|opencv-python-headless|scikit-image|scipy)==") 2>&1 | tail -2   # exe/ffx_vis.py (final_fix 와 같은 설치)
 BLX_DUMP=1 PR2_PREP_TMO_H=${FB_PREP_TMO_H:-40} python -u exe/pr2_grid.py --out $O --jobs exe/$FB_JOBS --reps 3 --scenes L000 $EX \
   --until $(( $(date +%s) + 60 * 3600 )) --hard $(( $(date +%s) + 61 * 3600 )) >> $O/grid_main.log 2>&1
 say "[끝] $(tail -1 $O/grid_main.log)"

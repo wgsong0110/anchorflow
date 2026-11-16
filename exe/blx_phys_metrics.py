@@ -1,4 +1,5 @@
 """[blx] 정답 없이 재는 물리 지표 (wolf·bread 재질 확장 베이스라인) -- 정의는 exe/stab_metrics.py (안정성 실험) 를 덤프 pred.pt 에 맞춘 것.
+# [blx] 첫 판 초안 -- 실제 측정은 final_fix 와 같은 코드 exe/ffx_phys.py (b06c860) 를 씀 (pr2_grid BLX_DUMP). 이 파일은 쓰지 않음.
 R2 lbours/final_fix/metrics_def.md 가 나오면 그 정의로 맞춘다 (이 파일 첫 판 작성 때 아직 없었음).
 
 입력: --pred <덤프 pred.pt {pred [L,P,3], F [L,P,3,3] 또는 None}> (프레임 1..L, 전 입자 -- 부분표본 없음), --data <장면 .pt (x[0] 처음 위치, cfg)>.

@@ -8,7 +8,7 @@ for t in $SC; do
   if [ $t = wolf ]; then FR=$FW; DA="--data $AG/wolf.pt --tag wolf --frames $FR --floor vel --cfg_bc"; VS=400x11; E=5e7; CF=$W/PhysGaussian/config/wolf_config.json
   else FR=$FB; DA="--data $AG/bread.pt --tag bread --frames $FR --floor none --cfg_bc --pg_vdamp"; VS=100x11; E=2e3; CF=$W/topo/bread_plastic_config.json; fi
   WARP_CACHE_PATH=/dev/shm/dkta/warp_cache_s python -u exe/pareto_vrgs.py --mode run --out $O/vrgs_$t --E $E --set $VS $DA --dump_F > $O/vrgs_$t.log 2>&1; tail -2 $O/vrgs_$t.log
-  python -u exe/blx_phys_metrics.py --pred $O/vrgs_$t/pred.pt --data $AG/$t.pt --out $O/vrgs_$t/phys.json > $O/vrgs_${t}_phys.log 2>&1; tail -1 $O/vrgs_${t}_phys.log | cut -c1-400
+  FL=$([ $t = wolf ] && echo vel || echo none); python -u exe/ffx_phys.py --method vrgs --scene $t --N 0 --data $AG/$t.pt --pred $O/vrgs_$t/pred.pt --floor $FL --out $O/vrgs_$t/phys.json > $O/vrgs_${t}_phys.log 2>&1; tail -1 $O/vrgs_${t}_phys.log | cut -c1-400
   WARP_CACHE_PATH=/dev/shm/dkta/warp_cache_s PYTHONPATH=$ST_PT_PYPATH python -u exe/stab_phystwin.py --mode fit --phystwin $ST_PT_REPO --out $O/pt_$t $DA --cma_iter 1 --train_iters 1 > $O/ptfit_$t.log 2>&1; tail -2 $O/ptfit_$t.log
   WARP_CACHE_PATH=/dev/shm/dkta/warp_cache_s PYTHONPATH=$ST_PT_PYPATH python -u exe/stab_phystwin.py --mode run --phystwin $ST_PT_REPO --fit $O/pt_$t --out $O/ptr_$t $DA --dump --dump_F > $O/ptrun_$t.log 2>&1; tail -2 $O/ptrun_$t.log
   python -u exe/stab_mv_render.py --sim $AG/gt_$t --config $CF --shape $t --frames $FR --out $O/sg_$t/mv > $O/sgmv_$t.log 2>&1; tail -1 $O/sgmv_$t.log
