@@ -46,7 +46,8 @@ python -c "import pyiqa, torch; print('[pyiqa]', pyiqa.__version__, torch.__vers
 cd $D || exit 1
 export PYTHONUTF8=1 OMP_NUM_THREADS=8 CUPY_CACHE_DIR=/dev/shm/dkta/cache/cupy_pr XDG_CACHE_HOME=/dev/shm/dkta/cache TORCH_EXTENSIONS_DIR=/dev/shm/dkta/cache/torch_ext CUDA_VISIBLE_DEVICES=0
 mkdir -p $CUPY_CACHE_DIR
-[ -s $AG/gt_bread/config.json ] || python -u exe/pg_h5_to_pt.py --h5_dir $W/topo/pg_bread_plastic --config $W/topo/bread_plastic_config.json --out_pt /root/pr/gtbread_unused.pt --out_dir $AG/gt_bread --out_dir_n 1 > /root/pr/gt_bread.log 2>&1
+python exe/ffx_phys_patch_render.py | tee -a $LOG                                   # lb_render 사본에 pillow2sofa sim_area 자르기
+[ -s $AG/gt_bread_full/config.json ] || python -u exe/pg_h5_to_pt.py --h5_dir $W/topo/pg_bread_plastic --config $W/topo/bread_plastic_config.json --out_pt /root/pr/gtbread_unused.pt --out_dir $AG/gt_bread_full > /root/pr/gt_bread.log 2>&1
 [ -s $AG/gt_wolf/config.json ] || python -u exe/pg_h5_to_pt.py --h5_dir $W/topo/pg_wolf_sand --config $W/PhysGaussian/config/wolf_config.json --out_pt /root/pr/gtwolf_unused.pt --out_dir $AG/gt_wolf > /root/pr/gt_wolf.log 2>&1
 PR_SC=pillow2sofa RX=$RX; source exe/pr2_scene_fetch.sh
 O=/dev/shm/dkta/lbours/paper_remeasure2/stab; mkdir -p $O/p; ln -sfn $O /dev/shm/dkta/lbours/stab
@@ -64,7 +65,7 @@ echo "[ok] $(date)" | rclone rcat $MK.setup.done
   touch /root/pr/bl.done
 ) &
 ( while sleep 300; do rclone copy /workspace/fxp $RP -q --transfers 8 --exclude "*/h5/**" --exclude "ours_*/pred.pt"; rclone copyto $LOG $MK.log -q; done ) & SY=$!
-bash exe/ffx_phys_drv.sh > /root/pr/drv.log 2>&1
+FX_WORKERS=${FX_WORKERS:-} bash exe/ffx_phys_drv.sh > /root/pr/drv.log 2>&1
 say "[작업 끝] $(tail -2 /root/pr/drv.log | tr '\n' ' ')"
 kill $SY 2>/dev/null
 rclone copy /workspace/fxp $RP -q --transfers 8 --exclude "*/h5/**" --exclude "ours_*/pred.pt"

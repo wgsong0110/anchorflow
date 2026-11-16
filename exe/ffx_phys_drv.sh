@@ -24,7 +24,7 @@ scene() {   # -> DATA GTD CF SHAPE FR FLOOR DA
     L000) DATA=$SD/L000.pt; GTD=$W/lbdata/test_low/L000; CF=$W/lbdata/config.json; SHAPE=lego; FR=80; FLOOR=vel; DA="--data $DATA --tag L000 --frames 80 --floor vel";;
     pillow2sofa) DATA=$NW/pillow2sofa.pt; GTD=$NW/gt_pillow2sofa; CF=$NW/gt_pillow2sofa/config.json; SHAPE=pillow2sofa; FR=300; FLOOR=none
                  DA="--data $DATA --tag pillow2sofa --frames 300 --floor none --cfg_bc --pg_vdamp";;
-    bread) DATA=$AG/bread.pt; GTD=$AG/gt_bread; CF=$AG/gt_bread/config.json; SHAPE=bread; FR=300; FLOOR=none; DA="";;
+    bread) DATA=$AG/bread.pt; GTD=$AG/gt_bread_full; CF=$AG/gt_bread_full/config.json; SHAPE=bread; FR=300; FLOOR=none; DA="";;
     wolf) DATA=$AG/wolf.pt; GTD=$AG/gt_wolf; CF=$AG/gt_wolf/config.json; SHAPE=wolf; FR=50; FLOOR=vel; DA="";;
   esac
 }
@@ -99,7 +99,7 @@ run_job() {   # $1 종류 $2 장면 $3 판·N ; 카드 = CUDA_VISIBLE_DEVICES
   return 0
 }
 
-worker() {   # $1 카드
+worker() {   # $1 카드 (일꾼 번호 WID; 카드 하나에 일꾼 여럿 가능 -- 작업 대부분이 R2 전송·CPU 지표)
   export CUDA_VISIBLE_DEVICES=$1
   while :; do
     local got=0 left=0
@@ -110,20 +110,24 @@ worker() {   # $1 카드
       left=1
       [ -f $X/$J.ready ] || { ready $m $s $v < /dev/null && touch $X/$J.ready; } || continue
       mkdir $X/$J.claim 2>/dev/null || continue
-      echo "[w$1 $(date '+%F %T')] 시작 $J"
+      echo "[w${WID:-$1} $(date '+%F %T')] 시작 $J"
       run_job $m $s $v < /dev/null
-      [ -f $X/$J/DONE ] || { echo "[w$1] 실패 $J"; touch $X/$J/FAILED; rclone copy $X/$J $RP/$J -q --exclude "h5/**" --exclude "/pred.pt" < /dev/null; }
+      [ -f $X/$J/DONE ] || { echo "[w${WID:-$1}] 실패 $J"; touch $X/$J/FAILED; rclone copy $X/$J $RP/$J -q --exclude "h5/**" --exclude "/pred.pt" < /dev/null; }
       got=1; break
     done < $JL
     [ $left = 0 ] && break
-    [ $(date +%s) -gt $DEADLINE ] && { echo "[w$1] 기한 끝"; break; }
+    [ $(date +%s) -gt $DEADLINE ] && { echo "[w${WID:-$1}] 기한 끝"; break; }
     [ $got = 0 ] && sleep 60
   done
-  echo "[w$1 $(date '+%F %T')] 일꾼 끝"
+  echo "[w${WID:-$1} $(date '+%F %T')] 일꾼 끝"
 }
 
+# 앞 인스턴스에서 끝난 작업 (R2 DONE) 은 건너뜀 -- bread 는 빼고 (앞 판의 bread 정답 렌더 폴더가 0 프레임뿐이었음)
+rclone lsf $RP --dirs-only 2>/dev/null | while read -r d; do J=${d%/}; case $J in *_bread*|*bread_*) continue;; esac
+  rclone lsf $RP/$J/DONE 2>/dev/null | grep -q . && { mkdir -p $X/$J; touch $X/$J/DONE; echo "[건너뜀 R2 DONE] $J"; }; done
+NG=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l); NW_=${FX_WORKERS:-$NG}
 WP=""
-for g in $(nvidia-smi --query-gpu=index --format=csv,noheader); do worker $g > $X/w$g.log 2>&1 & WP="$WP $!"; sleep 5; done
+for w in $(seq 0 $((NW_ - 1))); do (WID=$w; worker $((w % NG))) > $X/w$w.log 2>&1 & WP="$WP $!"; sleep 5; done
 wait $WP
 cat $X/w*.log | grep -E "실패|덤프 없음|기한" ; while read -r m s v; do J=$(jname $m $s $v); [ -f $X/$J/DONE ] || echo "미완 $J"; done < $JL
 echo "DRV_DONE"
