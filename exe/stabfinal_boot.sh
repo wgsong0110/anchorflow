@@ -38,7 +38,7 @@ if ! python -c "import torch, warp, cupy, h5py, lpips, taichi, diff_gaussian_ras
 fi
 python -c "import torch, warp, cupy, h5py, lpips, taichi, diff_gaussian_rasterization, simple_knn; print('[pip] torch', torch.__version__, torch.cuda.is_available(), 'cupy', cupy.__version__)" 2>&1 | tail -1 | tee -a $LOG
 W=/home/dkta/work; MI=$R/_vastmirror; PRX=$R/lbours/paper_remeasure2; HS=$W/h5src_sf; mkdir -p $HS
-SCS=$(echo "$JOBS" | tr ';' '\n' | cut -d: -f1 | sort -u | tr '\n' ' ')
+SCS=$(echo "$JOBS" | tr ';' '\n' | grep -v ':queue$' | cut -d: -f1 | sort -u | tr '\n' ' ')
 [ -d $W/OmniPhysGS/src ] || (rm -rf $W/OmniPhysGS; git clone -q https://github.com/wgsxm/OmniPhysGS $W/OmniPhysGS && git -C $W/OmniPhysGS checkout -q 5ab915b014467b911581b0c6df351713d3114a08) &
 [ -f $W/i-physgaussian/gs_simulation.py ] || rclone copy $MI/i-physgaussian $W/i-physgaussian --exclude ".git/**" --transfers 16 -q &
 [ -f $W/font.otf ] || rclone copyto $R/lbours/fem_cm/code/NotoSansCJKkr-Regular.otf $W/font.otf -q &
@@ -95,7 +95,12 @@ extra_metrics() {   # [stabfinal] 정답 없는 물리 (에너지 증가·부피
 for job in $(echo "$JOBS" | tr ';' ' '); do
   s=${job%%:*}; stg=${job#*:}
   say "[작업] $s $stg"
-  if [ "$stg" = fin ]; then
+  if [ "$stg" = prep ]; then
+    :                                                                  # [CM192] 준비만 (장면 받기·변환은 위에서 함; queue 일꾼이 쓸 장면)
+  elif [ "$stg" = queue ]; then
+    # [CM192] 작업 대기열: 목록 = 이 job 의 장면 이름 자리 (예 ours:queue -> queue/ours.txt), 일꾼 SF_QW 개 (기본 2)
+    for w in $(seq 1 ${SF_QW:-2}); do bash exe/sfq_worker.sh $s ${TAG}_w$w & done; wait
+  elif [ "$stg" = fin ]; then
     # 다른 인스턴스의 계획 (plan_<방법>.json) 이 R2 에 다 올라올 때까지 기다림 (5 분 간격), 그 뒤 장면 결과 전부 받기
     NEED="plan_pg.json plan_ipg.json plan_omni.json plan_ours$HT.json"
     for w in $(seq 1 400); do

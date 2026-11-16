@@ -137,18 +137,19 @@ SOLO = {}; SOLO_ON = threading.Event(); SOLO_LK = threading.Lock()
 def solo_wait(key):
     """[CM192] 메모리 부족 (카드 공유) 로 죽은 판은 카드 단독으로 다시: 다른 판 새로 시작을 막고 카드에 계산 프로세스가 없을 때까지 기다림. 보통 판은 단독 판이 도는 동안 시작을 기다림."""
     if SOLO.get(key):
-        SOLO_LK.acquire(); SOLO_ON.set()
+        SOLO_LK.acquire(); SOLO_ON.set(); open("/tmp/sfq_solo_drv", "w").write(str(os.getpid()))   # 다른 일꾼 (다른 드라이버) 도 새 판 시작을 멈춤
         while subprocess.run("nvidia-smi --query-compute-apps=pid --format=csv,noheader", shell=True, capture_output=True, text=True).stdout.strip():
             time.sleep(30)
         say("단독 실행", S, *key)
     else:
-        while SOLO_ON.is_set():
+        while SOLO_ON.is_set() or (os.path.exists("/tmp/sfq_solo_drv") and open("/tmp/sfq_solo_drv").read().strip() != str(os.getpid())):
             time.sleep(30)
 
 
 def solo_done(key):
     if SOLO.pop(key, None):
         SOLO_ON.clear(); SOLO_LK.release()
+        if os.path.exists("/tmp/sfq_solo_drv"): os.remove("/tmp/sfq_solo_drv")
 
 
 def run(m, n, rep):

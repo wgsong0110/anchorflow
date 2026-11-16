@@ -81,7 +81,7 @@ for name, m, n in items():
     if runs:
         PH[name] = {k: float(np.mean([q[k] for q in runs if k in q])) for k in sorted({k for q in runs for k in q})} | {"runs": len(runs)}
     print("[물리]", name, PH.get(name), flush=True)
-res["phys"] = PH
+res.setdefault("phys", {}).update(PH)        # [CM192] 다른 인스턴스가 낸 항목은 남김
 json.dump(res, open(OUT, "w"), indent=1)
 
 if os.environ.get("SX_PHYS_ONLY") or a.no_visual:
@@ -140,6 +140,6 @@ else:
         VIS[name] = {k: float(np.mean(v)) for k, v in q.items()} | dict(warp_err=float(np.mean(we)), warp_occ_frac=float(np.mean(oc)), frames=len(P) - 1,
                                                                         pyiqa_version=getattr(pyiqa, "__version__", "?"), def_="metrics_def.md (final_fix)")
         print("[시각]", name, VIS[name], flush=True)
-    res["visual"] = VIS
+    res.setdefault("visual", {}).update(VIS)
     json.dump(res, open(OUT, "w"), indent=1)
 print("[stab_extra] ->", OUT)
