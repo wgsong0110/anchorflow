@@ -321,6 +321,10 @@ if a.mode == "train":
         T.logger.info("Begin Train Velocity...")
         T.train_velocity(arg, cfg, scene, recorder)
     T.eval_fitting = T.eval_prediction = lambda *x, **k: T.logger.info("[stab] 공식 평가 건너뜀")
+    import importlib.util as _ilu                                                                # 동역학 이어 돌리기 (exe/sg_resume.py; 공식 코드 불변, SG_RESUME=0 이면 끔)
+    _sp = _ilu.spec_from_file_location("sg_resume", os.path.join(os.path.dirname(os.path.abspath(__file__)), "sg_resume.py"))
+    _sr = _ilu.module_from_spec(_sp); _sp.loader.exec_module(_sr)
+    _sr.install(T, FIT, arg, cfg, f"{FIT}/exp/{exp_path}")
     T.train_dynamic(arg, cfg, scene, recorder)
     cks = sorted(glob.glob(f"{FIT}/exp/{exp_path}/checkpoints_dynamic/checkpoint/Spring_Mass.pth.tar"))
     assert cks, "동역학 체크포인트 없음"
