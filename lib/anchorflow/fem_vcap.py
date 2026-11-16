@@ -26,6 +26,8 @@ __global__ void vc_mmed(const int* IP, const float* mn, float mm, float* meff) {
     if (n >= IP[9]) return;
     if (mn[n] > 0.f && meff[n] < mm) meff[n] = mm;
 }
+// 절 CM196 --be_sub_skc: 장치 전역 float 하나 쓰기 (그래프 안에서 K 별 값)
+__global__ void vc_setf(float* p, float v) { *p = v; }
 }
 """
 _M = {}
@@ -72,3 +74,15 @@ def apply_mmed(s, mm):
     g = ((int(s.capN) + 255) // 256,)
     with RTC._Stream():
         _M["g"](g, (256,), (_P(s.IP), _P(s.mn), np.float32(mm), _P(s.meff)))
+
+
+def setf(s, name, v):
+    """s.mod 의 장치 전역 float name 에 v 를 쓰는 커널 (그래프 캡처 안에서 재생 때마다 같은 값)."""
+    from . import fem_rt_cuda as RTC
+    if "m" not in _M:
+        _M["m"] = cp.RawModule(code=SRC); _M["f"] = _M["m"].get_function("vc_cap")
+    if "s" not in _M:
+        _M["s"] = _M["m"].get_function("vc_setf")
+    ptr = np.uint64(int(s.mod.get_global(name).ptr))
+    with RTC._Stream():
+        _M["s"]((1,), (1,), (ptr, np.float32(v)))

@@ -149,6 +149,7 @@ ap.add_argument("--be_sub_nk", type=int, default=0, help="절 CM194 (기본 0): 
 ap.add_argument("--be_sub_lv", type=float, default=0.0, help="절 CM193 (--be_sub 위, 기본 0 = 그대로): K > 1 걸음 끝마다 가장자리 노드 (질량 < c x 27 이웃 최대 질량) 의 속도를 27 이웃 질량 가중 평균으로 (lib/anchorflow/fem_lightv.py). K = 1 걸음은 그대로")
 ap.add_argument("--be_sub_vcap", type=float, default=0.0, help="절 CM196 (--be_sub 위, 기본 0 = 그대로): K > 1 걸음 끝마다 노드 속도 크기를 c x 에너지 상한 V_E = sqrt(max|v0|² + 2|g| Δz) 로 자름 (lib/anchorflow/fem_vcap.py; --be_sub_nk 1 이면 명목 K > 1 실행에만). K = 1 걸음은 그대로")
 ap.add_argument("--be_sub_mmed", type=float, default=0.0, help="절 CM196 진단 (--be_sub 위, 기본 0): K > 1 걸음 관성 질량 하한 meff >= 이 값 x 첫 프레임 노드 질량 중앙값 (질량 단위, 걸음 길이 무관; --be_sub_nk 1 이면 명목 K > 1 실행에만)")
+ap.add_argument("--be_sub_skc", type=int, default=0, help="절 CM196 (--be_sub·--wrx 1 비트 위, 기본 0): K > 1 걸음의 고착 상한 문턱을 프레임 기준으로 (√k_걸음 < skc^(1/K) 이면 완전 고착 = √k 의 K 거듭제곱 (프레임 고착 인자) < skc; K = 1 은 그대로)")
 ap.add_argument("--wrx_el", type=int, default=0, help="절 CM192 (기본 0 = 소스 그대로): 1 이면 반환 사상 없는 탄성 재질은 --wrx_col 1 (X3 를 무너진 프레임 다시 풀기에서만), 반환 사상 재질 (sand·foam·plasticine·watermelon·metal) 은 주어진 --wrx_col 그대로")
 a = ap.parse_args()
 if a.be_sub_mfl > 0:                                                                  # 절 CM194: 질량 하한을 거의 빈 노드에만 (rt_meff 한 줄, 장치 전역 AF_MFLTHR; 0 이면 하한 그대로)
@@ -399,7 +400,7 @@ if a.be_sub and (a.be_sub == 1 or MATNAME in ("sand", "foam", "plasticine", "wat
         if a.be_sub_mfk > 0 and _nk:                                                   # 절 CM194 --be_sub_mfk: 하한 = c' h^2 tr(B)/3 (K 무관)
             S.mfloor = max(S.mfloor, a.be_sub_mfk * Kx * Kx)
         S._lv_dt = S.h / Kx if (a.be_sub_lv > 0 and _nk) else None                              # 절 CM193 --be_sub_lv: K > 1 그래프에만 걸음 끝 가장자리 노드 속도
-        S._vc_dt = S.h / Kx if ((a.be_sub_vcap > 0 or a.be_sub_mmed > 0) and _nk) else None     # 절 CM196 --be_sub_vcap·mmed: K > 1 그래프에만
+        S._vc_dt = S.h / Kx if ((a.be_sub_vcap > 0 or a.be_sub_mmed > 0 or a.be_sub_skc) and _nk) else None     # 절 CM196 --be_sub_vcap·mmed: K > 1 그래프에만
         try:
             return type(S).record(S, t_, K_)
         finally:
@@ -415,7 +416,7 @@ if a.be_sub and (a.be_sub == 1 or MATNAME in ("sand", "foam", "plasticine", "wat
                 _LV.apply(S, a.be_sub_lv, S._lv_dt)
             return r_
         S.k = _k_lv
-    if a.be_sub_vcap > 0 or a.be_sub_mmed > 0:                                         # 절 CM196: 에너지 상한 (첫 프레임 입자 상태, 호스트에서 한 번)
+    if a.be_sub_vcap > 0 or a.be_sub_mmed > 0 or a.be_sub_skc:                         # 절 CM196: 에너지 상한 (첫 프레임 입자 상태, 호스트에서 한 번)
         from anchorflow import fem_vcap as _VC
         S._vc_dt = None
         _VCM, _vci = _VC.vmax_energy(X0, d["v"][0].to(dev), [float(q) for q in cfg["g"]], FL, h * L, extra_v=globals().get("PVB"))
@@ -426,8 +427,18 @@ if a.be_sub and (a.be_sub == 1 or MATNAME in ("sand", "foam", "plasticine", "wat
             print(f"[절 CM196 --be_sub_mmed {a.be_sub_mmed:g}] K > 1 관성 질량 하한 {_MMD:.4g}", flush=True)
         _k_vc0 = S.k
 
+        _SKF = a.be_sub_skc and a.wrx and (a.wrx & 1)
+        if a.be_sub_skc:
+            assert _SKF, "--be_sub_skc 는 --wrx 1 비트 위"
+            print(f"[절 CM196 --be_sub_skc] K > 1 걸음 고착 상한 문턱 = {a.wrx_skc:g}^(1/K)", flush=True)
+
         def _k_vc(name, n_, args, b=128):
+            _fl = _SKF and S._vc_dt is not None and name in ("mt_floor_n", "rt_floor_n", "ao_floor_n")
+            if _fl:
+                _VC.setf(S, "AF_SKC", float(a.wrx_skc) ** (S._vc_dt / S.h))
             r_ = _k_vc0(name, n_, args, b)
+            if _fl:
+                _VC.setf(S, "AF_SKC", float(a.wrx_skc))
             if S._vc_dt is not None and name.startswith("rt_ga_end") and a.be_sub_vcap > 0:
                 _VC.apply(S, _VCM, S._vc_dt)
             if S._vc_dt is not None and name == "rt_meff" and _MMD > 0:
