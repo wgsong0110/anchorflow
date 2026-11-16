@@ -30,16 +30,11 @@ while true; do
       else say "mc_e 동기화 실패 $(tail -2 /tmp/sfwatch_mce.out | tr '\n' ' ')"; fi
     fi
   fi
-  # 1b) 계획 기다림만 하는 인스턴스 (f6s·f6m 의 fin = 다른 인스턴스가 함) -> 동기화 뒤 destroy
+  # 1b) 계획 기다림만 하는 인스턴스 (f6s·f6m) -> 사건만 (에이전트가 고칠 판을 채우거나 destroy)
   for pair in f6s:60810482 f6m:60859316; do
     t=${pair%%:*}; id=${pair#*:}
     if [ -z "${SEEN[w$t]:-}" ] && rclone cat $RX/marks/$t/vast.log 2>/dev/null | tail -1 | grep -q "\[기다림\]"; then
-      read IP PT STT MSG < <(host $id)
-      if [ -n "${IP:-}" ]; then
-        ssh -n -i $K -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=20 -p $PT root@$IP \
-          'tmux kill-session -t sf; sleep 2; rclone copy /home/dkta/work/stab r2:storage/result/anchorflow/lbours/stabfinal/res -q --update --transfers 8 --exclude "**/vis/dump_*/**" --exclude "**/vis/hexdump_*/**" --exclude "hex_in.pt" --exclude "**/pred.pt" --exclude "**/*_tmp*" --exclude "**/*.ckpt.pt*" --exclude "**/vis/png_*/**" --exclude "*/gt/**" --exclude "*/traj0/**" --exclude "an.json" --exclude "extra.json" --exclude "plan_ipg.json" && rclone copy /root/sf r2:storage/result/anchorflow/lbours/stabfinal/marks/'$t'/logs -q --include "*.log" && echo SYNCOK' > /tmp/sfwatch_$t.out 2>&1
-        if grep -q SYNCOK /tmp/sfwatch_$t.out; then vastai destroy instance $id -y >> $LOG 2>&1; SEEN[w$t]=1; ev "$t: 제 몫 (main·speed) 끝, fin 기다림 -> 동기화 뒤 destroy"; else say "$t 동기화 실패"; fi
-      fi
+      SEEN[w$t]=1; ev "$t: 제 몫 (main·speed) 끝, fin 기다림 -- 할 일 채우거나 destroy"
     fi
   done
   # 2) 표식

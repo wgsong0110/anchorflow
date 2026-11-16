@@ -106,11 +106,15 @@ def oom_artifact(log):
         return False
     if not re.search(r"out of memory|OutOfMemory|MemoryError", t, re.I):
         return False
+    big = [float(x) for x in re.findall(r"Tried to allocate ([0-9.]+) GiB", t)]
+    if big and max(big) >= 20:                       # 20 GiB 넘는 할당 시도 = 발산 (실행기 관례)
+        return False
+    if re.search(r"Process \d+ has [0-9.]+ [GM]iB memory in use", t):   # [CM192] 다른 프로세스가 카드를 같이 쓰다 난 부족 -> 프레임 수와 관계없이 다시 (단독으로)
+        return True
     fr = [int(x) for x in re.findall(r"프레임 (\d+)/%d" % FR, t)]
     if fr and max(fr) >= 5:                          # 몇 프레임 진행한 뒤 메모리가 커져 터짐 = 노드 상자 폭증 (발산), 시작 때 부족과 다름
         return False
-    big = [float(x) for x in re.findall(r"Tried to allocate ([0-9.]+) GiB", t)]
-    return not (big and max(big) >= 20)
+    return True
 
 
 SETUP_ERR = re.compile(r"ModuleNotFoundError|ImportError|Failed to find forward kernel|Failed to load CUDA module|통합 커널은 탄성")
@@ -125,13 +129,34 @@ def setup_error(log):
     return bool(SETUP_ERR.search(t)) and not re.search(r"\| *[1-9]\d*/\d+ \[", t)
 
 
+SOLO = {}; SOLO_ON = threading.Event(); SOLO_LK = threading.Lock()
+
+
+def solo_wait(key):
+    """[CM192] 메모리 부족 (카드 공유) 로 죽은 판은 카드 단독으로 다시: 다른 판 새로 시작을 막고 카드에 계산 프로세스가 없을 때까지 기다림. 보통 판은 단독 판이 도는 동안 시작을 기다림."""
+    if SOLO.get(key):
+        SOLO_LK.acquire(); SOLO_ON.set()
+        while subprocess.run("nvidia-smi --query-compute-apps=pid --format=csv,noheader", shell=True, capture_output=True, text=True).stdout.strip():
+            time.sleep(30)
+        say("단독 실행", S, *key)
+    else:
+        while SOLO_ON.is_set():
+            time.sleep(30)
+
+
+def solo_done(key):
+    if SOLO.pop(key, None):
+        SOLO_ON.clear(); SOLO_LK.release()
+
+
 def run(m, n, rep):
     for k in range(4):
         run1(m, n, rep)
         lg = (L.hex_dir(S, n, rep) + a.hextag + "/log.txt") if m == "ours" else f"{L.res_dir(S, rep)}/{m}_N{n}.log"
         fin = (L.hex_dir(S, n, rep) + a.hextag + "/FIN") if m == "ours" else f"{L.res_dir(S, rep)}/{m}_N{n}.fin"
         if os.path.exists(fin) and oom_artifact(lg) and "rc=0" not in open(fin).read():
-            say("메모리 부족 (다른 프로세스와 카드 공유) 다시", S, m, n, rep, k); os.remove(fin); time.sleep(40); continue
+            say("메모리 부족 (다른 프로세스와 카드 공유) 다시 -- 카드 단독으로", S, m, n, rep, k); os.remove(fin); time.sleep(40)
+            SOLO[(m, n, rep)] = True; continue
         if os.path.exists(fin) and "rc=0" not in open(fin).read() and setup_error(lg):
             say("실행 환경 오류 (발산 아님) 다시", S, m, n, rep, k); os.remove(fin)
             for q in (f"{L.res_dir(S, rep)}/{m}_N{n}.npz",):
@@ -174,7 +199,11 @@ def run1(m, n, rep):
             if os.path.exists(f"{d}/FIN"):
                 say("다른 인스턴스가 끝낸 판", S, m, n, rep)
                 return
-            t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, direct=True)}", f"{d}/log.txt")
+            solo_wait((m, n, rep))
+            try:
+                t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, direct=True)}", f"{d}/log.txt")
+            finally:
+                solo_done((m, n, rep))
         open(f"{d}/FIN", "w").write(f"rc={rc} {time.time() - t0:.0f}s")
         shutil.rmtree(f"{d}/pred.pt", ignore_errors=True)
         if os.path.exists(f"{d}/pred.pt"):
@@ -186,9 +215,11 @@ def run1(m, n, rep):
             return
         with SEM:
             if m == "gf": GSEM.acquire()
+            solo_wait((m, n, rep))
             try:
                 t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 AF_TI_MEM={a.tifrac} {old_cmd(m, n, out)}", out + ".log")
             finally:
+                solo_done((m, n, rep))
                 if m == "gf": GSEM.release()
         for t in glob.glob(out + "_tmp*"):
             shutil.rmtree(t, ignore_errors=True) if os.path.isdir(t) else os.remove(t)
