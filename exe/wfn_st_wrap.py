@@ -24,13 +24,13 @@ def _install():
                 s._stb = torch.zeros(512, 10, device=s.x.device, dtype=torch.float32); s._stb_cap = s.capN
             kk = min(S["k"], 511)
             v = s.vk.reshape(-1, 3).norm(dim=1); act = (s.mn > 0).float(); v = v * act
-            i = torch.argmax(v)
+            i = torch.argmax(v).view(1); g_ = lambda t_: torch.index_select(t_.reshape(t_.shape[0], -1), 0, i).reshape(-1)   # 그래프 안: 0 차원 텐서 색인은 동기화를 부르므로 index_select
             med = s.mn.sum() / act.sum().clamp(min=1.0)                      # 활성 노드 평균 질량 (그래프 안 동기화 없는 연산만)
             fast = (v > 1.0).float()
-            du = (s.U.reshape(-1, 3)[i]).norm()
-            s._stb[kk, 0] = v[i]; s._stb[kk, 1] = i.float(); s._stb[kk, 2] = s.mn[i] / med; s._stb[kk, 3] = s.pm[i].float()
-            s._stb[kk, 4] = s.an[i] / s.mqn[i].clamp(min=1e-30); s._stb[kk, 5] = du; s._stb[kk, 6] = fast.sum(); s._stb[kk, 7] = (fast * s.mn).sum() / med
-            s._stb[kk, 8] = (v * v * s.mn).sum() / med; s._stb[kk, 9] = s.sk[i]
+            du = g_(s.U.reshape(-1, 3)).norm()
+            s._stb[kk, 0] = g_(v)[0]; s._stb[kk, 1] = i.float()[0]; s._stb[kk, 2] = g_(s.mn)[0] / med; s._stb[kk, 3] = g_(s.pm).float()[0]
+            s._stb[kk, 4] = g_(s.an)[0] / g_(s.mqn)[0].clamp(min=1e-30); s._stb[kk, 5] = du; s._stb[kk, 6] = fast.sum(); s._stb[kk, 7] = (fast * s.mn).sum() / med
+            s._stb[kk, 8] = (v * v * s.mn).sum() / med; s._stb[kk, 9] = g_(s.sk)[0]
             S["k"] += 1
         return r
 
