@@ -263,13 +263,18 @@ class St:
         if h.hm is None:
             return
         s, torch = h.s, h.torch
-        nc = int(s.IP[11])
+        import cupy as cp
+        torch.cuda.synchronize()
+        ip = s.IP.cpu().numpy().tolist()
+        nc = int(ip[11])
         h.hmout.zero_()
-        if nc > 0 and int(s.IP[13]) == 0:
+        if nc > 0 and int(ip[13]) == 0:
             n = nc * 8
-            h.hm(((n + 127) // 128,), (128,), (_P(s.IP), _P(s.cb), _P(s.U), _P(h.BG8), np.float64(h.r), _P(h.hmout)))
+            with cp.cuda.ExternalStream(torch.cuda.current_stream().cuda_stream):
+                h.hm(((n + 127) // 128,), (128,), (_P(s.IP), _P(s.cb), _P(s.U), _P(h.BG8), np.float64(h.r), _P(h.hmout)))
+        torch.cuda.synchronize()
         o = h.hmout.cpu().numpy().tolist()
-        h.rows.append(dict(t=float(t), ehg=o[0], etot=o[1], nc=int(o[2]), nbad=int(o[3])))
+        h.rows.append(dict(t=float(t), ehg=o[0], etot=o[1], nc=int(o[2]), nbad=int(o[3]), ip=ip[6:14]))
         with open(os.path.join(OUT[0], "hgm.jsonl"), "a") as f_:
             f_.write(json.dumps(h.rows[-1]) + "\n")
 

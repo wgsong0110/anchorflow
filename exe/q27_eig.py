@@ -24,6 +24,7 @@ ap.add_argument("--kb", type=int, default=2400)
 ap.add_argument("--deg", type=int, default=24)
 ap.add_argument("--iters", type=int, default=14)
 ap.add_argument("--out", required=True)
+ap.add_argument("--hg", type=float, default=0.0, help="절 CM194: --q 1 위 모래시계 벌점 γ (lib/anchorflow/fem_gq1.py 와 같은 식: γμ Σ_g V/8 ‖(∇_g − ∇_c) y F‖²)")
 a = ap.parse_args()
 dev = "cuda"
 torch.manual_seed(0)
@@ -111,7 +112,21 @@ def build(fi, q):
     ids = ids_c[qcell]
     # 노드 지지 칸 점유 수
     occ = torch.zeros(nu.numel(), device=dev, dtype=torch.long).index_add_(0, ids_c.reshape(-1), torch.ones(ids_c.numel(), device=dev, dtype=torch.long))
-    return dict(nc=nc, nq=int(keep.sum()), nn=int(nu.numel()), ids=ids, G=G.float(), V=Vq.float(), occ=occ, np=int(ok.sum()), qcell=qcell, ids_c=ids_c)
+    R = dict(nc=nc, nq=int(keep.sum()), nn=int(nu.numel()), ids=ids, G=G.float(), V=Vq.float(), occ=occ, np=int(ok.sum()), qcell=qcell, ids_c=ids_c)
+    if q == 1 and a.hg > 0:                                                             # 절 CM194: 칸 강성에 γμ Σ_g (V/8) (d_g d_gᵀ) ⊗ I, d_g = Fᵀ (b_g − b_c)
+        g8 = 0.5 / math.sqrt(3)
+        BG8 = torch.zeros(8, 27, 3, device=dev, dtype=torch.float64)
+        for o in range(8):
+            fxv = [1.0 + (g8 if (o >> (2 - t)) & 1 else -g8) for t in range(3)]
+            W = [[0.5 * (1.5 - f) ** 2, 0.75 - (f - 1) ** 2, 0.5 * (f - 0.5) ** 2] for f in fxv]
+            dW = [[f - 1.5, -2 * (f - 1), f - 0.5] for f in fxv]
+            for n in range(27):
+                i, j, k = n // 9, (n // 3) % 3, n % 3
+                gy = torch.tensor([dW[0][i] * W[1][j] * W[2][k], W[0][i] * dW[1][j] * W[2][k], W[0][i] * W[1][j] * dW[2][k]], device=dev, dtype=torch.float64)
+                BG8[o, n] = gy @ Ai
+        Dd = BG8 - BG[0][None]                                                          # [8, 27, 3]
+        R["HGd"] = torch.einsum("qij,gni->qgnj", Fq, Dd).float()                         # [nq(=nc), 8, 27, 3]
+    return R
 
 
 def make_op(S):
@@ -132,6 +147,11 @@ def make_op(S):
         t2 = mu * gg[:, :, None, :, None] * I3[None, None, :, None, :]
         Kc.index_add_(0, qc[q0:q1], ((t1 + t2 + t3) * v[:, None, None, None, None]).float())
         del t1, t2, t3, gg
+        if "HGd" in S:
+            d = S["HGd"][q0:q1].double()
+            hh = torch.einsum("qgnj,qgmj->qnm", d, d) * (a.hg * mu / 8.0)
+            Kc.index_add_(0, qc[q0:q1], (hh[:, :, None, :, None] * I3[None, None, :, None, :] * v[:, None, None, None, None]).float())
+            del d, hh
     ic = S["ids_c"]                                                                     # (nc, 27)
     dof = (ic[:, :, None] * 3 + torch.arange(3, device=dev)[None, None, :]).reshape(nc, 81)
     rows = dof[:, :, None].expand(nc, 81, 81).reshape(-1)
@@ -201,7 +221,7 @@ t0 = time.time()
 fr = []
 for t in a.frames.split(","):
     fr.append(contact_frame() if t == "c" else int(t))
-OUT = dict(pred=a.pred, q=a.q, mu=mu, lam=lam, kap=kap, cell=cell, cases=[])
+OUT = dict(pred=a.pred, q=a.q, hg=a.hg, mu=mu, lam=lam, kap=kap, cell=cell, cases=[])
 for fi in fr:
     S = build(fi, a.q)
     Ah, act, sc = make_op(S)
