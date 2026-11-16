@@ -125,6 +125,10 @@ for m in mods:
         assert " --be_sub " in c; c = c.replace(" --be_sub ", f" --be_sub_lv {m[2:]} --be_sub ", 1)
     elif re.match(r"vc[0-9.e-]+$", m):                  # 절 CM196: --be_sub_vcap c (K > 1 걸음 노드 속도 <= c x 에너지 상한 V_E)
         assert " --be_sub " in c; c = c.replace(" --be_sub ", f" --be_sub_vcap {m[2:]} --be_sub ", 1)
+    elif re.match(r"fr\d+$", m):                        # 절 CM196 진단: --frames N (실패 앞 프레임까지 덤프)
+        assert re.search(r" --frames \d+ ", c); c = re.sub(r" --frames \d+ ", f" --frames {m[2:]} ", c)
+    elif re.match(r"mmd[0-9.e-]+$", m):                 # 절 CM196 진단: --be_sub_mmed a (K > 1 관성 질량 하한 = a x 노드 질량 중앙값)
+        assert " --be_sub " in c; c = c.replace(" --be_sub ", f" --be_sub_mmed {m[3:]} --be_sub ", 1)
     elif m == "dump":
         if " --dump " not in c: c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1)
     else:

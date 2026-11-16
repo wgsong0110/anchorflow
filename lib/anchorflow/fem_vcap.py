@@ -20,6 +20,12 @@ __global__ void vc_cap(const int* IP, const unsigned char* fixd, float vmax, flo
     for (int e=0;e<3;e++) { float v = vk[n*3+e]; float vc = v*r; U[n*3+e] += dt*(vc - v); vk[n*3+e] = vc; ak[n*3+e] = 0.f; }
     if (cnt) atomicAdd(cnt, 1);
 }
+// 절 CM196 --be_sub_mmed a: K > 1 걸음 관성 질량 하한 (질량 단위, 걸음 길이 무관) meff = max(meff, a x 첫 프레임 노드 질량 중앙값) (질량 있는 노드만)
+__global__ void vc_mmed(const int* IP, const float* mn, float mm, float* meff) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    if (mn[n] > 0.f && meff[n] < mm) meff[n] = mm;
+}
 }
 """
 _M = {}
@@ -55,3 +61,14 @@ def apply(s, vmax, dt):
     g = ((int(s.capN) + 255) // 256,)
     with RTC._Stream():
         _M["f"](g, (256,), (_P(s.IP), _P(s.fixd), np.float32(vmax), np.float32(dt), _P(s.U), _P(s.vk), _P(s.ak), _P(s._vc_cnt)))
+
+
+def apply_mmed(s, mm):
+    from . import fem_rt_cuda as RTC
+    if "m" not in _M:
+        _M["m"] = cp.RawModule(code=SRC); _M["f"] = _M["m"].get_function("vc_cap")
+    if "g" not in _M:
+        _M["g"] = _M["m"].get_function("vc_mmed")
+    g = ((int(s.capN) + 255) // 256,)
+    with RTC._Stream():
+        _M["g"](g, (256,), (_P(s.IP), _P(s.mn), np.float32(mm), _P(s.meff)))
