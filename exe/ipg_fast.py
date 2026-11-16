@@ -168,6 +168,12 @@ def newton_gmres_fast(self, step: int, dt: float) -> dict:
     _mass_flat_c = cp.maximum(mass_gpu.ravel()[fi], mass_thresh)
     _inertia_c = cp.repeat(_mass_flat_c, 3) / (beta_nm * dt * dt)
 
+    _diag = os.environ.get("AF_IPG_DIAG") == "1"
+    _fz = float(os.environ.get("AF_DIAG_FLOORZ", "0.48"))
+    if _diag:
+        _pz = wp.to_torch(self.mpm_state.particle_x)[:, 2]
+        print(f"  [diag] 걸음 {step} 바닥 아래 입자 {int((_pz < _fz).sum())} 최저 z {float(_pz.min()):.4f} BC 노드 {int(bc_mask.sum())} "
+              f"질량 노드 {int(mask.sum())}", flush=True)
     for newton_it in range(_newton_max):
         R_k, v_new_k, a_new_k, k_diag_latest = eval_residual(du_k)
         total_evals += 1
@@ -250,6 +256,16 @@ def newton_gmres_fast(self, step: int, dt: float) -> dict:
             if os.environ.get("AF_LS_REJECT") == "1":
                 final_residual = res_norm
                 break
+        if _diag:                                                   # [진단, AF_IPG_DIAG=1] 결과 불변 -- 출력만
+            _r = cp.sqrt((R_k.reshape(-1, 3) ** 2).sum(1)); _tot = float((_r ** 2).sum()) + 1e-30
+            _iz = fi % grid_size[2]; _z = _iz.astype(cp.float64) * _dx
+            _nf = _z < _fz + 3 * _dx
+            _top = int(cp.argmax(_r)); _ti = int(fi[_top])
+            _ijk = np.unravel_index(_ti, grid_size)
+            print(f"    [diag] it {newton_it} |R| {res_norm:.3e} 바닥근처(z<{_fz + 3 * _dx:.3f}) 몫 {float((_r[_nf] ** 2).sum()) / _tot:.3f} "
+                  f"최대 |R| {float(_r[_top]):.3e} @ {_ijk} z {_ijk[2] * _dx:.3f} m {float(mass_gpu.ravel()[_ti]):.2e} "
+                  f"GMRES info {info} dphi0 {dphi_0:.2e} alpha {alpha:.4f} LS {'ok' if phi_trial <= phi_0 + c1 * alpha * dphi_0 else 'FAIL'} "
+                  f"|delta|inf {float(cp.abs(delta_du).max()):.2e} BC {int(bc_mask.sum())} 자유 {int(fi.size)}", flush=True)
         du_k = du_k + alpha * delta_du
 
     # ---- Step 6: Final state (원 코드 그대로, 격자 전체 du 로 되돌림) ----
