@@ -104,6 +104,8 @@ for m in mods:
     elif re.match(r"st\d+-\d+$", m):                  # 절 CM193 진단 (결과 불변): exe/wfn_st_wrap.py 걸음별 노드 최대 속도 기록 (프레임 a..b)
         a_, b_ = m[2:].split("-"); assert "exe/startpt_wrap.py" in c
         c = (f" WST_F0={a_} WST_F1={b_}" + c).replace("exe/startpt_wrap.py", "exe/wfn_st_wrap.py exe/startpt_wrap.py", 1)
+    elif re.match(r"mf[0-9e-]+$", m):                  # 절 CM193 진단: 관성 질량 하한 --mfloor c (m' = max(m, c τ² tr(B)/3))
+        assert " --mfloor " not in c; c = c.replace(" --K ", f" --mfloor {m[2:]} --K ", 1)
     elif m == "dump":
         if " --dump " not in c: c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1)
     else:
