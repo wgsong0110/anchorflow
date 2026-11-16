@@ -14,6 +14,9 @@
   --ssf_tolp 1    PCG 허용치 tolP 에도 1/N 곱함 (선택)
   --ssf_bec 2     (절 CM192) 국소 후퇴 오일러 강제를 다시 푸는 시도에서만 (처음 시도는 실행기 판정 그대로; --ssf_split 위)
   --ssf_wrxr 1    (절 CM192) 다시 푼 뒤 X3 켬 상태를 다시 풀기 전 값으로 되돌림 (0 = 옛 동작: 항상 끔 -> --wrx_col 0 판은 첫 다시 풀기 뒤 X3 가 영영 꺼짐)
+  --ssf_alog 1    (절 CM193 진단, 결과 불변) 다시 푼 프레임의 시도마다 K·비유한·det F<=0 입자 수·덜 풀린 걸음 ‖g‖²/F² 최대·T 넘은 걸음 수·입자 상자 크기를 찍음
+  --ssf_best 1    (절 CM193) 최대 깊이까지 다시 풀어도 무너진 프레임이면 마지막 시도 대신 시도 가운데 가장 덜 나쁜 끝 상태를 받음
+                  (나쁨 순서 = 비유한·메모리 초과 > det F<=0 입자 수 > 덜 풀린 걸음 ‖g‖²/F² 최대); 마지막 시도가 무너지지 않았으면 그대로 (결과 불변)
   --ssf_tsum 1    (wolffix 11-15) 다시 푼 프레임의 시간 s.last_ms = 버린 시도들 + 마지막 시도 합 (실시간 판정용; 0 = 마지막 시도만, 옛 동작)
 사용: python exe/ssfix_wrap.py --ssf_tol 1 exe/stabhex_wrap.py ... exe/fem_an_rt_sim.py ... (바깥 첫 감싸개로)
 """
@@ -24,7 +27,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 argv = sys.argv[1:]
-C = dict(tol="0", tolp="0", kex="0", split="0", bigT="1.0", wrx="1", dumpfail="", det="1", bec="0", tsum="0", kmax="256", wrxr="0")
+C = dict(alog="0", best="0", tol="0", tolp="0", kex="0", split="0", bigT="1.0", wrx="1", dumpfail="", det="1", bec="0", tsum="0", kmax="256", wrxr="0")
 while argv and argv[0].startswith("--ssf_"):
     C[argv[0][6:]] = argv[1]; del argv[:2]
 _orig = runpy.run_path; _done = [False]; _BEC = {}
@@ -82,6 +85,20 @@ def _install():
             stall = s.cjs[:K] <= 0.0                                                    # 선탐색이 받아들인 보폭이 하나도 없는 반복이 있는 걸음 (뉴턴이 전혀 못 나감)
             return bool((fl & big).any())
 
+        AL = float(C["alog"]) != 0; BE = float(C["best"]) != 0
+
+        def meas(s, K, oom):                                                            # 절 CM193: 시도 끝 상태 측정 (--ssf_alog·--ssf_best 일 때만 부름)
+            if oom:
+                return dict(K=K, oom=1, bad=(2, 0, 0.0))
+            if not bool(torch.isfinite(s.x).all()):
+                return dict(K=K, fin=0, bad=(2, 0, 0.0))
+            nd = int((torch.linalg.det(s.F.reshape(-1, 3, 3)) <= 0.0).sum())
+            fl = s.cjl[:K] > 0; g = s.cjg[:K]
+            gm = float(torch.where(fl, g, torch.zeros_like(g)).max()) if K > 0 else 0.0
+            ext = [round(float(q), 3) for q in (s.x.max(0).values - s.x.min(0).values)]
+            return dict(K=K, ndet=nd, g2max=gm, nbig=int((fl & ~(g <= T)).sum()), ext=ext, ms=round(float(getattr(s, "last_ms", 0.0) or 0.0), 1),
+                        bad=(1 if nd > 0 else 0, nd, gm))
+
         def step(s, t):
             ST["frames"] += 1
             bk = s._bk(); K0 = int(s.K); h = float(s.h); cm0 = s.cap_mul
@@ -94,8 +111,11 @@ def _install():
             dp = 0; tw = 0.0
             if float(C["bec"]) == 2 and _BEC.get("bs"):
                 _BEC["bs"]["on"] = False
+            TR = []                                                                     # 절 CM193: 시도별 (측정, 끝 상태 사본) -- 다시 푸는 프레임에서만 채움
             first = ST["frames"] == 1                                                  # 프레임 0 (정지에서 시작하는 첫 풀이) 은 비유한·메모리 초과가 아니면 다시 풀지 않음
             while dp < D and (K0 << (dp + 1)) <= int(float(C["kmax"])) and (oom or (collapsed(s, int(s.K)) and not first) or (first and not bool(torch.isfinite(s.x).all()))):
+                if (AL or BE) and dp == 0:                                              # 절 CM193: 처음 시도의 끝 상태
+                    TR.append((meas(s, int(s.K), oom), None if oom else (s._bk() if BE else None)))
                 tw += float(getattr(s, "last_ms", 0.0) or 0.0) if not oom else 0.0
                 dp += 1; ST["retry"] += 1
                 if oom:
@@ -116,6 +136,19 @@ def _install():
                     if not isinstance(ex_, torch.OutOfMemoryError) and "out of memory" not in str(ex_):
                         raise
                     oom = True
+                if AL or BE:
+                    TR.append((meas(s, int(s.K), oom), None if oom else (s._bk() if BE else None)))
+            fin_col = dp > 0 and (oom or collapsed(s, int(s.K))) if (BE or AL) else None
+            if BE and fin_col:                                                          # 절 CM193 --ssf_best: 끝까지 무너졌으면 가장 덜 나쁜 시도의 끝 상태
+                cand = [(m["bad"], i) for i, (m, sn) in enumerate(TR) if sn is not None]
+                if cand:
+                    bi = min(cand)[1]
+                    if bi != len(TR) - 1:
+                        s._rs(TR[bi][1]); oom = False
+                        print(f"[substep_fix] 프레임 t={t:.4f} 끝까지 무너짐 -> 시도 {bi} (K {TR[bi][0]['K']}) 끝 상태를 받음", flush=True)
+            if AL and dp:
+                print(f"[substep_fix] 시도 t={t:.4f} " + " | ".join(str({k: v for k, v in m.items() if k != 'bad'}) for m, _ in TR), flush=True)
+            del TR
             if C["dumpfail"] and dp == D and (oom or collapsed(s, int(s.K))) and not ST.get("dumped"):   # 최대 깊이에서도 무너진 프레임의 시작 상태 (재현용, 진단)
                 ST["dumped"] = True
                 torch.save(dict(bk=[q.cpu() for q in bk], t=float(t), K0=K0, fi=ST["frames"] - 1), C["dumpfail"])

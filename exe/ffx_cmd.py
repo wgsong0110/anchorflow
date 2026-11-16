@@ -75,6 +75,8 @@ for m in mods:
         assert "--ssf_bec 1 " in c; c = c.replace("--ssf_bec 1 ", "--ssf_bec 1 --ssf_wrxr 1 ", 1)
     elif re.match(r"skc[0-9.e-]+$", m):                 # 절 CM192: X1 고착 상한 문턱 --wrx_skc
         c = c.replace(" --wrx_col ", f" --wrx_skc {m[3:]} --wrx_col ", 1)
+    elif m in ("alog", "best"):                         # 절 CM193: ssfix 시도별 기록 (결과 불변) / 끝까지 무너진 프레임은 가장 덜 나쁜 시도를 받음
+        assert "--ssf_bec " in c; c = c.replace("--ssf_bec ", f"--ssf_{m} 1 --ssf_bec ", 1)
     elif m == "dump":
         if " --dump " not in c: c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1)
     else:
