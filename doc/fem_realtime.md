@@ -11743,3 +11743,8 @@ bloc 2 는 chair 무게중심을 프레임 9 까지 정답에 맞춤 (0.361 대 
 | bread | PhysTwin | N0 200 | 3/3 | 4.96 | 28.6 |
 물리 (ffx_phys) wolf VR-GS det≤0 0 %·|J−1| 최대 0.447 (모래 인장 투영 U Vᵀ 로 부피 증가)·관통 0, PhysTwin 관통 18.3 % (깊이 0.76 % L); 시각 (ffx_vis) PSNR wolf 29.7/31.7, bread 25.7/27.4 (VR-GS/PhysTwin). 전체 값은 pareto_final_1115_blx.tex.
 연기 시험 (짧은 프레임, R2 smoke·smoke_full): 세 방법 wolf·bread 모두 완주.
+
+### CM193.3 Spring-Gaus (11-16 갱신)
+- wolf: 첫 학습 (final_blx_sgw, RTX 4090 24 GB) 이 반복 271 NaN -> 공식 규약 n_step 200->300 증가 -> 메모리 부족 사망. A100 80 GB (final_blx_sgw2) 에서 공식 그대로 다시 -> NaN 없이 끝 (n_step 200, 2.47 h). 측정 final_blx_tw (RTX A6000 단독 3 회): **6.72 %, 540.2 ms** (540.2·521.7·540.5), 물리·시각 지표 R2 blx/TW/g/springgaus_wolf_n200_dump.
+- bread (final_blx_sgb, RTX 6000 Ada): vast 전체 정지 (06:3x UTC) 로 1 차 학습 중단 -> 처음부터 다시 -> 다른 에이전트 ablEig 가 같은 카드 37 GB 를 써 메모리 부족 사망 (15:17 UTC, 약 230/300) -> q3 다시 -> 조정자 결정으로 q4 (exe/sg_resume.py 정확한 이어 돌리기, 5 반복마다 저장, SG_NO_EMPTY_CACHE=1; final_fix_sg 담당 에이전트가 띄움) -> 19:3x UTC vast 결제 실패 (billing_failed, 크레딧 0) 로 9 대 모두 정지, 저장점 n_step 150 구간 (R2 blx/SGB/p/springgaus_bread_prep/sg_resume/cur). 크레딧이 돌아오면 로컬 tmux blxfinish (exe/blx_finish_bread.sh) 가 start -> q4 가 저장점부터 학습 -> 같은 카드 단독 시간 1 회 (조정자: 6000 Ada 에서 바로, 2·3 회는 맨 뒤) + 덤프·지표 -> MEAS_DONE -> pareto_blx.json·BREAD_SG_READY·notify.
+- 지배 판정 (우리 K=1 기준): wolf VR-GS 3.29 %·855 ms (더 정확, 49 배 느림), PhysTwin 4.56 %·41.8 ms, Spring-Gaus 6.72 %·540 ms -- 지배 없음; bread VR-GS 4.86 %·167.7 ms, PhysTwin 4.96 %·28.6 ms -- 지배 없음 (우리 1.81 %·18.3 ms).
