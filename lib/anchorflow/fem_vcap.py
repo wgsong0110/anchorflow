@@ -21,10 +21,13 @@ __global__ void vc_cap(const int* IP, const unsigned char* fixd, float vmax, flo
     if (cnt) atomicAdd(cnt, 1);
 }
 // 절 CM196 --be_sub_mmed a: K > 1 걸음 관성 질량 하한 (질량 단위, 걸음 길이 무관) meff = max(meff, a x 첫 프레임 노드 질량 중앙값) (질량 있는 노드만)
-__global__ void vc_mmed(const int* IP, const float* mn, float mm, float* meff) {
+// cs > 0 이면 하한 = min(mm, cs tr(B)/3) (cs = c τ²: 걸음이 못 푸는 진동수 (ωτ > 1/√c) 노드만, 최대 mm)
+__global__ void vc_mmed(const int* IP, const float* mn, float mm, const float* B, float cs, float* meff) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= IP[9]) return;
-    if (mn[n] > 0.f && meff[n] < mm) meff[n] = mm;
+    float fl = mm;
+    if (cs > 0.f) fl = fminf(mm, cs*(B[n*9] + B[n*9+4] + B[n*9+8])*(1.f/3.f));
+    if (mn[n] > 0.f && meff[n] < fl) meff[n] = fl;
 }
 // 절 CM196 --be_sub_skc: 장치 전역 float 하나 쓰기 (그래프 안에서 K 별 값)
 __global__ void vc_setf(float* p, float v) { *p = v; }
@@ -65,7 +68,7 @@ def apply(s, vmax, dt):
         _M["f"](g, (256,), (_P(s.IP), _P(s.fixd), np.float32(vmax), np.float32(dt), _P(s.U), _P(s.vk), _P(s.ak), _P(s._vc_cnt)))
 
 
-def apply_mmed(s, mm):
+def apply_mmed(s, mm, cs=0.0):
     from . import fem_rt_cuda as RTC
     if "m" not in _M:
         _M["m"] = cp.RawModule(code=SRC); _M["f"] = _M["m"].get_function("vc_cap")
@@ -73,7 +76,7 @@ def apply_mmed(s, mm):
         _M["g"] = _M["m"].get_function("vc_mmed")
     g = ((int(s.capN) + 255) // 256,)
     with RTC._Stream():
-        _M["g"](g, (256,), (_P(s.IP), _P(s.mn), np.float32(mm), _P(s.meff)))
+        _M["g"](g, (256,), (_P(s.IP), _P(s.mn), np.float32(mm), _P(s.B), np.float32(cs), _P(s.meff)))
 
 
 def setf(s, name, v):
