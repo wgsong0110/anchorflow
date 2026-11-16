@@ -253,6 +253,7 @@ def newton_gmres_fast(self, step: int, dt: float) -> dict:
                 break
             alpha *= 0.5
         else:
+            print(f"  [LS 실패] step={step} newton={newton_it} reject={os.environ.get('AF_LS_REJECT') == '1'}", flush=True)
             if os.environ.get("AF_LS_REJECT") == "1":
                 final_residual = res_norm
                 break

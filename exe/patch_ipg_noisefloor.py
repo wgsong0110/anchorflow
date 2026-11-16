@@ -24,6 +24,14 @@ new3 = """                eps_fd = float(_os.environ.get("AF_FD_EPS", "1e-4")) /
 if old3 in s:
     s = s.replace(old3, new3); open(p, "w").write(s); print("[적용] AF_FD_EPS")
 if "AF_NEWTON_ATOL_FEXT" in s:
+    if "[LS 실패]" not in s:
+        o4 = """            else:                                                # [anchorflow noisefloor] 줄 탐색 실패 -> 갱신 버림
+                if _os.environ.get("AF_LS_REJECT") == "1":"""
+        n4 = """            else:                                                # [anchorflow noisefloor] 줄 탐색 실패 -> 갱신 버림
+                print(f"  [LS 실패] step={step} newton={newton_it} reject={_os.environ.get('AF_LS_REJECT') == '1'}", flush=True)
+                if _os.environ.get("AF_LS_REJECT") == "1":"""
+        assert s.count(o4) == 1
+        s = s.replace(o4, n4); open(p, "w").write(s); print("[적용] LS 실패 출력")
     print("[이미 적용] patch_ipg_noisefloor")
     raise SystemExit(0)
 
@@ -47,6 +55,7 @@ new2 = """                if phi_trial <= phi_0 + c1 * alpha * dphi_0:
                     break
                 alpha *= 0.5
             else:                                                # [anchorflow noisefloor] 줄 탐색 실패 -> 갱신 버림
+                print(f"  [LS 실패] step={step} newton={newton_it} reject={_os.environ.get('AF_LS_REJECT') == '1'}", flush=True)
                 if _os.environ.get("AF_LS_REJECT") == "1":
                     final_residual = res_norm
                     break
