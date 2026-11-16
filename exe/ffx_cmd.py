@@ -123,6 +123,8 @@ for m in mods:
         assert " --be_sub " in c; c = c.replace(" --be_sub ", f" --be_sub_mf {m[3:]} --be_sub ", 1)
     elif re.match(r"lv[0-9e-]+$", m):                  # 절 CM193: --be_sub_lv c (K > 1 걸음 가장자리 노드 속도 = 이웃 질량 가중 평균, --be_sub 위)
         assert " --be_sub " in c; c = c.replace(" --be_sub ", f" --be_sub_lv {m[2:]} --be_sub ", 1)
+    elif re.match(r"vc[0-9.e-]+$", m):                  # 절 CM196: --be_sub_vcap c (K > 1 걸음 노드 속도 <= c x 에너지 상한 V_E)
+        assert " --be_sub " in c; c = c.replace(" --be_sub ", f" --be_sub_vcap {m[2:]} --be_sub ", 1)
     elif m == "dump":
         if " --dump " not in c: c = c.replace(" --K ", " --dump --dump_F --dump_part --K ", 1)
     else:
