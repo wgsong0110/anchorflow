@@ -278,7 +278,24 @@ def newton_gmres_fast(self, step: int, dt: float) -> dict:
     from af_newmark import af_g2p_acc
     if getattr(self, "_particle_a", None) is None or self._particle_a.shape[0] != self.n_particles:
         self._particle_a = wp.zeros(shape=self.n_particles, dtype=wp.vec3, device=device)
-    _ga2 = wp.array(cp.asnumpy(a_final.astype(cp.float32)), dtype=wp.vec3, device=device)
+    _a_np = cp.asnumpy(a_final.astype(cp.float32))
+    _abc_msg = ""
+    if os.environ.get("AF_IPG_BCA0") == "1" and len(self.grid_postprocess) > 0:
+        # [stabfinal ship] 경계조건 (sticky 바닥·상자) 이 속도를 정하는 노드는 v^{n+1} 이 BC 값으로 덮이는데 a^{n+1} 은 Newton 이 안 건드린
+        # 예측값 (= a^n, 정지 바닥이면 중력 g 가 그대로) 이 남아 af_g2p_acc 로 입자에 실린다 -> 다음 걸음 v^{n+1} = v^n + dt/2 (a^n + a^{n+1}) 에
+        # 반력 없는 아래 방향 가속이 계속 들어감. BC 가 속도를 정하는 노드 (탐침 속도 +-1 이 바뀌는 노드) 의 a^{n+1} = 0 (정지 노드의 가속도).
+        _cm = np.zeros(mass_n.shape, dtype=bool)
+        for _sg in (1.0, -1.0):
+            _pv = np.full(v_grid_n.shape, _sg, dtype=np.float32)
+            self._write_grid_v(_pv)
+            for k_bc in range(len(self.grid_postprocess)):
+                wp.launch(kernel=self.grid_postprocess[k_bc], dim=grid_size,
+                          inputs=[self.time, dt, self.mpm_state, self.mpm_model, self.collider_params[k_bc]], device=device)
+            _cm |= np.abs(self.mpm_state.grid_v_out.numpy() - _pv).max(axis=-1) > 1e-10
+        _cmm = _cm & mask
+        _abc_msg = (f" bcA0 nodes={int(_cmm.sum())} az_bc_mean={float(_a_np[..., 2][_cmm].mean()) if _cmm.any() else 0.0:.3f}")
+        _a_np[_cm] = 0.0
+    _ga2 = wp.array(_a_np, dtype=wp.vec3, device=device)
     wp.launch(kernel=af_g2p_acc, dim=self.n_particles,
               inputs=[self.mpm_state, self.mpm_model, _ga2, self._particle_a], device=device)
     wp.launch(kernel=mpm.compute_stress_from_F_trial, dim=self.n_particles,
@@ -305,5 +322,5 @@ def newton_gmres_fast(self, step: int, dt: float) -> dict:
     gv_max = float(np.max(np.abs(v_final_np))) if np.all(np.isfinite(v_final_np)) else float('inf')
     print(f"[Newton-GMRES] step={step} newton={newton_it+1} converged={converged} "
           f"res={final_residual:.3e} evals={total_evals} "
-          f"gv_max={gv_max:.2f} max_v={max_v:.3f}", flush=True)
+          f"gv_max={gv_max:.2f} max_v={max_v:.3f}{_abc_msg}", flush=True)
     return {'converged': converged, 'iterations': newton_it + 1, 'final_residual': final_residual, 'max_velocity': max_v}
