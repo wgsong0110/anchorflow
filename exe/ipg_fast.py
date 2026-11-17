@@ -38,6 +38,23 @@ def newton_gmres_fast(self, step: int, dt: float) -> dict:
 
     # ---- Step 2: Save state ----
     self._save_state()
+    # [stabfinal ship] 재질 상태 되돌림 (AF_IPG_MATRESTORE=1): PG plasticine (material 5, von_mises_return_mapping_with_damage) 의
+    # 반환 사상은 model.yield_stress[p] 를 소성 변형만큼 깎고 0 이하면 model.mu·lam 을 0 으로 **바꿔 쓴다**. _save_state/_restore_state 는
+    # 입자 x·v·C·F_trial 만 되돌려서, 걸음마다 수백 번 하는 잔차 평가 (Newton·GMRES 행렬곱·줄 탐색) 가 그때마다 연화를 누적한다
+    # (PG 는 서브스텝당 1 회). -> 걸음 처음 값을 저장해 매 평가 전에 되돌리고, 마지막 확정 평가 1 회에만 연화가 남게 한다.
+    _matr = os.environ.get("AF_IPG_MATRESTORE") == "1"
+    if _matr:
+        _md0 = self.mpm_model
+        _mat_bufs = []
+        for _k in ("yield_stress", "mu", "lam"):
+            _a = getattr(_md0, _k); _b = wp.empty_like(_a); wp.copy(_b, _a); _mat_bufs.append((_a, _b))
+
+        def _mat_restore():
+            for _dst, _src in _mat_bufs:
+                wp.copy(_dst, _src)
+    else:
+        def _mat_restore():
+            pass
 
     # ---- Step 3: Setup (원 코드 그대로, numpy) ----
     beta_nm = 0.25
@@ -112,6 +129,7 @@ def newton_gmres_fast(self, step: int, dt: float) -> dict:
     def eval_forces_c(v_new_c):
         """_af_eval_forces_gpu 와 같은 계산, 자유 성분만 돌려줌 (f_int·f_ext float64 [nc], mass float64 [nf], k_diag float32 [nf])."""
         self._restore_state()
+        _mat_restore()
         cp.cuda.get_current_stream().synchronize()
         gout_flat[...] = base32
         gout_flat[idx3] = v_new_c.astype(cp.float32)
@@ -275,6 +293,12 @@ def newton_gmres_fast(self, step: int, dt: float) -> dict:
     v_final = v_n_gpu + dt * ((1.0 - gamma_nm) * a_n_gpu + gamma_nm * a_final)
     v_final_np = cp.asnumpy(v_final.astype(cp.float32))
     self._restore_state()
+    _mat_restore()
+    if _matr:
+        _ys = wp.to_torch(self.mpm_model.yield_stress)
+        _matr_msg = f" ys_min={float(_ys.min()):.2f} ys_le0={int((_ys <= 0).sum())}"
+    else:
+        _matr_msg = ""
     from af_newmark import af_g2p_acc
     if getattr(self, "_particle_a", None) is None or self._particle_a.shape[0] != self.n_particles:
         self._particle_a = wp.zeros(shape=self.n_particles, dtype=wp.vec3, device=device)
@@ -322,5 +346,5 @@ def newton_gmres_fast(self, step: int, dt: float) -> dict:
     gv_max = float(np.max(np.abs(v_final_np))) if np.all(np.isfinite(v_final_np)) else float('inf')
     print(f"[Newton-GMRES] step={step} newton={newton_it+1} converged={converged} "
           f"res={final_residual:.3e} evals={total_evals} "
-          f"gv_max={gv_max:.2f} max_v={max_v:.3f}{_abc_msg}", flush=True)
+          f"gv_max={gv_max:.2f} max_v={max_v:.3f}{_abc_msg}{_matr_msg}", flush=True)
     return {'converged': converged, 'iterations': newton_it + 1, 'final_residual': final_residual, 'max_velocity': max_v}
