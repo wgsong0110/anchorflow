@@ -22,6 +22,7 @@ else
   DATA=/home/dkta/work/newsc/pillow2sofa.pt; DSRC=$RA/lbours/paper_remeasure2/scenes/pillow2sofa/pillow2sofa.pt; TAG=pillow2sofa; LG=log_2.txt
   ENVX="SG_RESUME_LEGACY=1 SG_NO_EMPTY_CACHE=1"
 fi
+CT=${SG_CT:-$CT}   # [blx] 코드 덮어쓰기 (예: 휴지 길이 재시도 버그 고친 판)
 MK=$OX/marks_mv; say() { echo "[sgmv $S $(date -u '+%F %T')] $*" >> $L; rclone copyto $L $MK/sgmv_$S.log -q; }
 say "시작 $(hostname)"
 rclone lsf $OX/MV_TRAIN_DONE 2>/dev/null | grep -q . && { say "이미 끝"; exit 0; }

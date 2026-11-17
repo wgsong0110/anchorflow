@@ -288,8 +288,16 @@ if PLAST is not None:
         return xyz, v
 
     def _forward_pl(self, xyz_all, xyz, v, frame_id, *x, **k):
-        if int(frame_id) == 1:
+        # [blx 버그 고침 11-17] 휴지 길이는 프레임 시작 상태: 공식 train_step 은 is_nan 이면 n_step 을 올려 같은 프레임을 같은 입력 (xyz, v) 으로 다시 부르는데,
+        #   예전 판은 실패한 시도가 바꾼 휴지 길이 (NaN 직전 폭주한 길이) 를 그대로 들고 다시 돌아 NaN 이 n_step 과 무관하게 이어짐 (bread 반복 247 에서 500 까지 실패).
+        #   같은 frame_id 를 연달아 부르면 (= 재시도) 프레임 시작 때 저장한 휴지 길이로 되돌림. 재시도가 없으면 결과 불변.
+        f = int(frame_id)
+        if f == 1:
             self.af_rest = self.origin_len.detach().clone()
+        elif getattr(self, "af_snap", None) is not None and self.af_snap[0] == f:
+            self.af_rest = self.af_snap[1].clone()
+        if getattr(self, "af_rest", None) is not None:
+            self.af_snap = (f, self.af_rest.detach().clone())
         return _fw1(self, xyz_all, xyz, v, frame_id, *x, **k)
     SMM.Spring_Mass.compute_force = _compute_force_pl
     SMM.Spring_Mass.step = _step_pl
