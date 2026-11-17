@@ -273,8 +273,35 @@ if PLAST is not None:
         finally:
             self.origin_len = o
 
+    _DIAG_F0 = int(os.environ.get("BLX_DIAG_F0", "0"))                                          # [blx 진단] 이 프레임부터 서브스텝 통계 (0 = 끔; 결과 불변, 출력만)
+
+    def _diag(self, tag, xyz, v, K=None):
+        with torch.no_grad():
+            r = self.af_rest; xd = xyz.detach()
+            cur = torch.norm(xd[self.knn_index] - xd.unsqueeze(1), dim=2)
+            q = cur / r.clamp(min=1e-30)
+            fin = bool(torch.isfinite(xd).all() and torch.isfinite(v).all())
+            msg = (f"[blx진단] {tag} 유한 {fin} 휴지 min {float(r.min()):.3e} max {float(r.max()):.3e} (<=1e-6: {int((r <= 1e-6).sum())}) "
+                   f"원래 min {float(self.origin_len.min()):.3e} 길이 min {float(cur.min()):.3e} max {float(cur.max()):.3e} "
+                   f"길이/휴지 min {float(q.min()):.3e} max {float(q.max()):.3e} |v| max {float(v.detach().norm(dim=1).max()):.3e} "
+                   f"|x| max {float(xd.abs().max()):.3e} 휴지/원래 min {float((r / self.origin_len.clamp(min=1e-30)).min()):.3e} max {float((r / self.origin_len.clamp(min=1e-30)).max()):.3e}")
+            if K is not None:
+                msg += f" K max {float(K.max()):.3e}"
+            print(msg, flush=True)
+            return fin
+
     def _step_pl(self, xyz, v, K, m, rebound_k, fric_k, damp, dt):
+        if _DIAG_F0 and getattr(self, "af_fr", 0) >= _DIAG_F0:
+            self.af_sub = getattr(self, "af_sub", 0) + 1
+            if self.af_sub % 20 == 1 or not getattr(self, "af_fin", True):
+                pass
         xyz, v = _st1(self, xyz, v, K, m, rebound_k, fric_k, damp, dt)
+        if _DIAG_F0 and getattr(self, "af_fr", 0) >= _DIAG_F0 and getattr(self, "af_fin", True):
+            fin = bool(torch.isfinite(xyz).all() and torch.isfinite(v).all())
+            if self.af_sub % 20 == 1 or not fin:
+                _diag(self, f"프레임 {self.af_fr} 서브스텝 {self.af_sub} (n_step {self.n_step})", xyz, v, K)
+            if not fin:
+                self.af_fin = False
         with torch.no_grad():
             if getattr(self, "af_rest", None) is None:
                 self.af_rest = self.origin_len.detach().clone()
@@ -298,6 +325,10 @@ if PLAST is not None:
             self.af_rest = self.af_snap[1].clone()
         if getattr(self, "af_rest", None) is not None:
             self.af_snap = (f, self.af_rest.detach().clone())
+        if _DIAG_F0:
+            self.af_fr, self.af_sub, self.af_fin = f, 0, True
+            if f >= _DIAG_F0 and getattr(self, "af_rest", None) is not None:
+                _diag(self, f"프레임 {f} 시작 (n_step {self.n_step})", xyz, v)
         return _fw1(self, xyz_all, xyz, v, frame_id, *x, **k)
     SMM.Spring_Mass.compute_force = _compute_force_pl
     SMM.Spring_Mass.step = _step_pl
