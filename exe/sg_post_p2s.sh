@@ -19,6 +19,7 @@ say "준비 $(hostname)"
 [ -s $F/pillow2sofa.yaml ] || (mkdir -p $O/p && cd $O/p && rclone cat $RB/code/sg_fit_p2s.tar | tar -x)
 [ -s $NW/pillow2sofa.pt ] || rclone copyto $RA/lbours/paper_remeasure2/scenes/pillow2sofa/pillow2sofa.pt $NW/pillow2sofa.pt -q
 [ -d $NW/gt_pillow2sofa ] || rclone copy $RA/lbours/paper_remeasure2/scenes/pillow2sofa/gt_pillow2sofa $NW/gt_pillow2sofa -q --transfers 8
+G0=/home/dkta/work/gtnew/pillow2sofa/simulation_ply/sim_0000000000.h5; [ -s $G0 ] || { mkdir -p $(dirname $G0); rclone copyto $RA/lbours/paper_remeasure2/scenes/pillow2sofa/h5/simulation_ply/sim_0000000000.h5 $G0 -q; }   # lb_render 가 gt_pillow2sofa/meta.json 의 정답 첫 프레임 h5 를 읽음
 rm -rf $C; mkdir -p $C; rclone cat $RB/code/fpabl_cf55da5.tar | tar -x -C $C; rclone cat $FX/code/ffxphys_1717e403.tar | tar -x -C $C
 cd $C; python exe/ffx_phys_patch_render.py >> $L 2>&1; python exe/pr2_patch_models.py >> $L 2>&1
 python -c "import pyiqa" 2>/dev/null || pip install -q pyiqa -c <(pip freeze | grep -iE "^(torch|torchvision|numpy|scipy|scikit-image|opencv-python-headless)==") >> $L 2>&1
