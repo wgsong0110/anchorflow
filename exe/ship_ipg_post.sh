@@ -2,8 +2,8 @@
 # [stabfinal] ship i-PG 수정판 대표 N 을 64 로 (사용자 지시: N1 은 바닥 관통 30.7 %L·부피 폭주로 제외): N64 덤프·렌더·시각 -> i-PG 자리로 an·extra (ipg 항목만 바꿈). stabfinal_boot 의 단계 ipgpost.
 set -u
 cd $(dirname $0)/..
-S=${1:-ship_plastic_lego}; N=${SF_IPGN:-64}; ST=/home/dkta/work/stab; D=$ST/$S
-EV="--ipgr_env AF_FD_EPS=1e-5,AF_LS_REJECT=1,AF_IPG_GPU=1,AF_IPG_FAST=1${SF_IPGENV_ADD:-} --onerep 1 --timeout 43200"
+S=${1:-ship_plastic_lego}; T_=${S1115_TAG:-}; N=${SF_IPGN:-${T_#bcp}}; N=${N:-64}; ST=/home/dkta/work/stab; D=$ST/$S
+EV="--ipgr_env AF_FD_EPS=1e-5,AF_LS_REJECT=1,AF_IPG_GPU=1,AF_IPG_FAST=1${SF_IPGENV_ADD:-,AF_IPG_BCA0=1} --onerep 1 --timeout 43200"
 RXR=r2:storage/result/anchorflow/lbours/stabfinal/res/$S
 rm -f $D/res/ipg_N* $D/res/ipgr_N*            # [bca0] 이전 판 (바닥 노드 가속도 고치기 전) 결과는 이 인스턴스 분석에서 뺌
 python3 - <<PY
