@@ -95,7 +95,9 @@ extra_metrics() {   # [stabfinal] 정답 없는 물리 (에너지 증가·부피
 for job in $(echo "$JOBS" | tr ';' ' '); do
   s=${job%%:*}; stg=${job#*:}
   say "[작업] $s $stg"
-  if [ "$stg" = prep ]; then
+  if [ "$stg" = ipgpost ]; then
+    bash exe/ship_ipg_post.sh $s > /root/sf/ipgpost_$s.log 2>&1; say "[ipgpost] $s $(grep -E '^\[(vis ipg|an ipg|extra ipg)' /root/sf/ipgpost_$s.log | tr '\n' ' ' | cut -c1-600)"
+  elif [ "$stg" = prep ]; then
     :                                                                  # [CM192] 준비만 (장면 받기·변환은 위에서 함; queue 일꾼이 쓸 장면)
   elif [ "$stg" = queue ]; then
     # [CM192] 작업 대기열: 목록 = 이 job 의 장면 이름 자리 (예 ours:queue -> queue/ours.txt), 일꾼 SF_QW 개 (기본 2)
