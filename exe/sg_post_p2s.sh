@@ -20,7 +20,7 @@ say "준비 $(hostname)"
 [ -s $NW/pillow2sofa.pt ] || rclone copyto $RA/lbours/paper_remeasure2/scenes/pillow2sofa/pillow2sofa.pt $NW/pillow2sofa.pt -q
 [ -d $NW/gt_pillow2sofa ] || rclone copy $RA/lbours/paper_remeasure2/scenes/pillow2sofa/gt_pillow2sofa $NW/gt_pillow2sofa -q --transfers 8
 rm -rf $C; mkdir -p $C; rclone cat $RB/code/fpabl_cf55da5.tar | tar -x -C $C; rclone cat $FX/code/ffxphys_1717e403.tar | tar -x -C $C
-cd $C; python exe/ffx_phys_patch_render.py >> $L 2>&1
+cd $C; python exe/ffx_phys_patch_render.py >> $L 2>&1; python exe/pr2_patch_models.py >> $L 2>&1
 python -c "import pyiqa" 2>/dev/null || pip install -q pyiqa -c <(pip freeze | grep -iE "^(torch|torchvision|numpy|scipy|scikit-image|opencv-python-headless)==") >> $L 2>&1
 PPX=""; python -c "import open3d" 2>/dev/null || { mkdir -p /root/o3dstub/open3d; printf 'def __getattr__(n):\n    raise RuntimeError("open3d stub: " + n)\n' > /root/o3dstub/open3d/__init__.py; PPX=/root/o3dstub:; }
 [ -d /root/ref/pillow2sofa ] || { mkdir -p /root/ref/pillow2sofa.tmp && rclone copy $RP/mpm_pillow2sofa/png /root/ref/pillow2sofa.tmp -q --transfers 16 && mv /root/ref/pillow2sofa.tmp /root/ref/pillow2sofa; }
