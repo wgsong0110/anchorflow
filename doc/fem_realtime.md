@@ -11754,3 +11754,8 @@ bloc 2 는 chair 무게중심을 프레임 9 까지 정답에 맞춤 (0.361 대 
 - 세 판 모두 같은 자리: final_blx_sgf (6000 Ada, empty_cache 끔, n_step 400 에서 48 GB 메모리 부족으로 먼저 죽음), 조정자 재시작 판 (empty_cache 켬, 같은 메모리 부족), final_blx_sg80 (A100 80GB, 500 너머까지 올라가 공식 실패). 첫 6000 Ada 학습 (final_blx_sgb) 의 반복 230 대 메모리 부족은 다른 에이전트 프로세스 때문이었음.
 - 확인한 것: 재질 확장의 휴지 길이 상태가 공식 재시도 때 프레임 시작 값으로 안 돌아가던 버그를 고친 판 (2190f3cc, 재시도 없으면 결과 불변) 도 같은 자리에서 같은 실패 -> 그 버그가 원인은 아님. 원인 (학습된 강성·감쇠와 찢김 구간 스프링 상태에서 명시 적분 불안정으로 추정) 은 확인 못 함.
 - 기록: 표 칸 '공식 학습 실패' + 각주, R2 pareto_blx.json (fail=official_training_failed), 근거 R2 lbours/final_pa/blx/SGB/fail_sg80 (log_4.txt·sg_resume 저장점·증거 줄). 근사·우회 없음 (조정자 지시). final_blx_sg80 R2 업로드 뒤 destroy.
+
+### CM193.5 Spring-Gaus bread 결과 (11-17)
+- 공식 3 단계 학습 끝 n_step 200 (exe/sg_resume.py 정확 이어 돌리기 경로, 재질 확장 휴지 길이 재시도 복원 2190f3cc 포함). RTX 6000 Ada 단독 (final_blx_sgada 61002543): **12.59 %, 210.6 ms**; 물리 떨림 1.07e-3 L (F 없음·바닥 없음·E0=0 칸은 해당 없음); 시각 NIQE 9.90, BRISQUE 88.6, MUSIQ 61.2, CLIP-IQA 0.544, warp 0.14e-3, PSNR 26.12, SSIM 0.927, LPIPS 0.090. R2 lbours/final_pa/blx/SGB/{grid.json, g/springgaus_bread_n200_*}.
+- 표 (논문 폴더 pareto_final_1115_table·phys·vis.tex): bread Spring-Gaus 칸·평균 행 갱신 (exe/blx_fin_sgb.py), 각주 'RTX 6000 Ada 단독' 한 줄 (조정자: 반복 횟수·학습 이력은 결과 문서·표에 쓰지 않음). 원본 backup_20261031/*_pre_sgbread.tex.
+- 지배 판정: bread 우리 K=1 1.83 %·18.7 ms -- 지배 없음.
