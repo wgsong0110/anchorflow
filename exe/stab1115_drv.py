@@ -14,12 +14,14 @@ ap.add_argument("--scene", required=True)
 ap.add_argument("--par", type=int, default=4)
 ap.add_argument("--stages", default="main,vis,speed")
 ap.add_argument("--methods", default="pg,ipg,gf,omni,ours")
-ap.add_argument("--cap", default="pg:1024,ipg:16,gf:512,omni:256,ours:256", help="방법별 사다리 상한 N")
+ap.add_argument("--cap", default="pg:1024,ipg:16,gf:512,omni:256,ours:256,ipgr:64", help="방법별 사다리 상한 N")
 ap.add_argument("--hexfix", default="", help="우리 판 추가 플래그 (발산 수정 플래그가 나오면)")
 ap.add_argument("--hextag", default="", help="우리 결과 폴더 접미 (수정판 구분)")
 ap.add_argument("--hexpre", default="", help="우리 판 바깥 감싸개 (stabhex_wrap 앞; 예 'exe/ssfix_wrap.py --ssf_bec 1 ...' 는 'python -u' 뒤에 그대로 끼움)")
 ap.add_argument("--extra_runs", default="", help="main 단계에서 사다리 없이 돌릴 판 (예 pg:1024 = 기준 궤적만)")
 ap.add_argument("--tifrac", type=float, default=0.2)
+ap.add_argument("--ipgr_env", default="", help="[stabfinal ipgr] i-PG 수정판 환경 (쉼표), 예 AF_FD_EPS=1e-5,AF_LS_REJECT=1,AF_IPG_GPU=1,AF_IPG_FAST=1")
+ap.add_argument("--onerep", type=int, default=0, help="[stabfinal] 1 = 확정 단계도 N 마다 1 회 (판 a 만)")
 ap.add_argument("--timeout", type=int, default=10800)
 ap.add_argument("--hexgraph", type=int, default=0, help="[CM192] 1 = 우리 사다리·덤프 판도 프레임 CUDA 그래프 (N >= 512 만 바로 띄움; 0 = 예전처럼 사다리·덤프는 --sh_direct 1). 결과 불변 확인 = --stages gtest")
 ap.add_argument("--gt_ns", default="1,8,32"); ap.add_argument("--gt_fr", type=int, default=12)
@@ -30,6 +32,8 @@ CAP = {kv.split(":")[0]: int(kv.split(":")[1]) for kv in a.cap.split(",")}
 SEM = threading.BoundedSemaphore(a.par); GSEM = threading.BoundedSemaphore(2); OSEM = threading.BoundedSemaphore(int(os.environ.get("S1115_OPAR", "1")))  # [stab4] 우리 판 동시 수 (메모리 크면 1)
 os.makedirs(f"{ST}/{S}", exist_ok=True)
 LOGF = open(f"{ST}/{S}/drv{('_' + os.environ['S1115_TAG']) if os.environ.get('S1115_TAG') else ''}.log", "a"); LK = threading.Lock()   # [stabfinal] 인스턴스별 로그 (한 장면을 여러 인스턴스가 나눠 돌릴 때 R2 에서 서로 안 덮게)
+if "ipgr" in a.methods or "ipgr" in a.extra_runs:            # [stabfinal ipgr] i-PG 수정 패치 (환경 변수로만 켜짐, 기본 동작 불변)
+    subprocess.run([PY, f"{HERE}/patch_ipg_noisefloor.py", "--ipg", PG], check=True)
 FR = L.nframes(S)                                    # [stabfinal] config frame_num (낙하 장면 60, 새 형상 80)
 NS = S in L.NSHAPE                                   # [stabfinal] 새 형상 장면: 우리 판 명령 = exe/nshape_cmd.py (BA_1 사슬, --cg 4) + 같은 감싸개
 DIAG_DROP = "--pdiag --qjd --fhash --hgt --bar_cnt"  # 새 형상 단독 시간 판에서 빼는 진단 플래그 (vast_elastic_new.sh 시간 판과 같음)
@@ -59,8 +63,11 @@ def old_cmd(m, n, out, dump=""):
     if m == "omni":
         c2 = (f"cd {WT} && {PY} -u exe/stab_omni.py --repo {W}/OmniPhysGS --h5 {c}/init/sim_0000000000.h5 --config {c}/config.json --substeps {n} --out {out}.npz")
         return c2 + (f" --dump {dump}" if dump else "")
-    if m in ("pg", "ipg"):
-        c2 = (f"cd {PG} && AF_IPG_FUSED={0 if NS else 1} OMP_NUM_THREADS=2 {PY} -u {WT}/exe/stab_mpm.py --method {m} --h5 {c}/init/sim_0000000000.h5 --config {c}/config.json "
+    if m in ("pg", "ipg", "ipgr"):
+        # [stabfinal ipgr] i-PG 수정판 (wolf 와 같은 수정: FD 섭동·줄 탐색 실패 걸음 버림·자유 노드 구현) = 방법 이름 ipgr, 결과 파일 ipgr_N*, 환경은 S1115_IPGR_ENV (쉼표)
+        ev = a.ipgr_env.replace(",", " ") if m == "ipgr" else ""
+        fu = 0 if (NS or m == "ipgr") else 1
+        c2 = (f"cd {PG} && {ev} AF_IPG_FUSED={fu} OMP_NUM_THREADS=2 {PY} -u {WT}/exe/stab_mpm.py --method {'ipg' if m == 'ipgr' else m} --h5 {c}/init/sim_0000000000.h5 --config {c}/config.json "
               f"--substeps {n} --out {out}.npz --ckpt_every 0")
         return c2 + (f" --dump {dump}" if dump else "")
     c2 = (f"cd {WT} && {PY} -u exe/gf_mpm.py --config {c}/config.json --h5 {c}/init/sim_0000000000.h5 "
@@ -271,8 +278,9 @@ def method_main(m):
             cand = st_i + [hi]
         n = cand[0]; tried = []
         while n <= 2 * hi:
-            pmap(lambda r: run(m, n, r), list(L.REPS))
-            res = [stable(m, n, r) for r in L.REPS]; tried.append((n, res))
+            reps = ("a",) if a.onerep else L.REPS     # [stabfinal] N 마다 1 회 판정 (사용자 지시)
+            pmap(lambda r: run(m, n, r), list(reps))
+            res = [stable(m, n, r) for r in reps]; tried.append((n, res))
             if all(res):
                 plan["N_min"] = n; break
             n += 1

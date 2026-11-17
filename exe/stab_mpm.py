@@ -62,6 +62,11 @@ SUB = ss.subset(N)
 wp.init()
 if a.method == "ipg":
     from implicit_mpm_solver import ImplicitMPMSolver
+    if os.environ.get("AF_IPG_FAST") == "1":                   # [stabfinal ipgr] 같은 Newton-GMRES 를 자유 노드만 압축 (exe/ipg_fast.py)
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from ipg_fast import newton_gmres_fast
+        ImplicitMPMSolver.p2g2p_newton_gmres = newton_gmres_fast
+        print("[AF_IPG_FAST] exe/ipg_fast.newton_gmres_fast", flush=True)
     sol = ImplicitMPMSolver(n_particles=10, n_grid=n_grid, grid_lim=GL)
 else:
     sol = MPM_Simulator_WARP(10)
