@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 from matplotlib import font_manager as fm
 
 L = os.path.expanduser("~/r2/result/anchorflow/lbours")
-OUT = os.path.expanduser("~/workspace/result/anchorflow/v20261009")
+OUT = os.path.expanduser("~/r2/result/anchorflow/v20261009")
 TMP = "/tmp/fem_p_compose"
 os.makedirs(TMP, exist_ok=True)
 here = os.path.dirname(os.path.abspath(__file__))

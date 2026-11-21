@@ -5,7 +5,7 @@
 #  - 잡이 없으면 새 잡이 잡힐 때까지 기다린다 (잡 제출·취소는 하지 않는다 -- keep5 가 넣는다).
 #  - 끝(stab/a5/STAB_A5_DONE)이면 표·그림을 가져와 writing/anchorflow 에 넣고 컴파일, 로그에 STAB_A5_DONE, notify.
 H=dkta@147.46.121.39; LOG=/tmp/stab_a5_local.log; A=/home/dkta/work/stab/a5
-WR=/home/wgsong/workspace/writing/anchorflow
+WR=${PAPER:-/home/wgsong/workspace/FusedGS/paper}
 RELAUNCH="AF_DETACH=1 bash /home/dkta/work/anchorflow/exe/job_run.sh /home/dkta/work/stab_a5_go.sh $A/driver.out"
 say() { echo "[$(date '+%m-%d %H:%M')] $*" >> $LOG; }
 note_once() { k=$1; shift; [ -f /tmp/stab_a5_note_$k ] && return; touch /tmp/stab_a5_note_$k; notify "$@" --session anchorflow; }

@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 R2 = os.path.expanduser("~/r2/result/anchorflow/lbours")
-OUT = os.path.expanduser("~/workspace/result/anchorflow/v20261009")
+OUT = os.path.expanduser("~/r2/result/anchorflow/v20261009")
 TMP = "/tmp/fem_j_compose"
 FB = os.path.expanduser("~/.fonts/NotoSansCJKkr-Bold.otf")
 FR = os.path.expanduser("~/.fonts/NotoSansCJKkr-Regular.otf")

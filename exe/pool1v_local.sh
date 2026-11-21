@@ -15,9 +15,9 @@ exec 9>/tmp/${RUN}_local.lock
 flock -n 9 || { echo "[중단] 다른 감시가 돌고 있다 $(date)"; exit 0; }
 C=372d53f
 RL=r2:storage/result/anchorflow/lbours; RV=$RL/$RUN; RNI=$RL/noinertial; R5=$RL/gunet5_near
-RR=/home/wgsong/workspace/result/anchorflow; D=$RR/v20261009; T=/tmp/${RUN}_dl; mkdir -p $T $D
-TEX=/home/wgsong/workspace/writing/anchorflow/learned_results.tex
-REPO=/home/wgsong/workspace/execute/anchorflow/master
+RR=/home/wgsong/r2/result/anchorflow; D=$RR/v20261009; T=/tmp/${RUN}_dl; mkdir -p $T $D
+TEX=${PAPER:-/home/wgsong/workspace/FusedGS/paper}/learned_results.tex
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 LOGIN=dkta@147.46.121.39
 F=$(fc-list :lang=ko file | head -1 | cut -d: -f1)
 get(){ rclone copyto $1 $2 -q 2>/dev/null; }

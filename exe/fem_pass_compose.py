@@ -8,7 +8,7 @@ import sys
 
 R = "r2:storage/result/anchorflow/lbours"
 SRC = "/tmp/fem_pass_src"
-OUT = os.path.expanduser("~/workspace/result/anchorflow/v20261009")
+OUT = os.path.expanduser("~/r2/result/anchorflow/v20261009")
 here = os.path.dirname(os.path.abspath(__file__))
 ALL = ["0000", "0002", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013", "0014", "0019", "L000", "F"]
 SC = sys.argv[1:] or ALL

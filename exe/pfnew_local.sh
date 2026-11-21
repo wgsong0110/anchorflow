@@ -6,9 +6,9 @@
 exec 9>/tmp/pfnew_local.lock
 flock -n 9 || { echo "[중단] 다른 감시가 돌고 있다 $(date)"; exit 0; }
 RL=r2:storage/result/anchorflow/lbours; RSP=$RL/spstick
-RR=/home/wgsong/workspace/result/anchorflow; D=$RR/v20261009; T=/tmp/pfnew_dl; mkdir -p $T $D
-TEX=/home/wgsong/workspace/writing/anchorflow/learned_results.tex
-REPO=/home/wgsong/workspace/execute/anchorflow/master
+RR=/home/wgsong/r2/result/anchorflow; D=$RR/v20261009; T=/tmp/pfnew_dl; mkdir -p $T $D
+TEX=${PAPER:-/home/wgsong/workspace/FusedGS/paper}/learned_results.tex
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 F=$(fc-list :lang=ko file | head -1 | cut -d: -f1)
 KS=${PFNEW_KS:-"nodestar nodealt floorpe floorcontact noin"}
 declare -A DIR=([nodestar]=nodestar [nodealt]=nodealt [floorpe]=pfip_floorpe [floorcontact]=pfip_floorcontact [noin]=pfip_noin)

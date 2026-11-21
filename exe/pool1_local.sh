@@ -11,9 +11,9 @@ exec 9>/tmp/pool1_local.lock
 flock -n 9 || { echo "[중단] 다른 감시가 돌고 있다 $(date)"; exit 0; }
 C=5f8128a   # 학습 7154293 -> 10-25 --pool_trace 판 5f8128a 로 이어 돌림
 RL=r2:storage/result/anchorflow/lbours; RG=$RL/pool1_gnn; RU=$RL/pool1_gunet; RNI=$RL/noinertial; R5=$RL/gunet5_near
-RR=/home/wgsong/workspace/result/anchorflow; D=$RR/v20261009; T=/tmp/pool1_dl; mkdir -p $T $D
-TEX=/home/wgsong/workspace/writing/anchorflow/learned_results.tex
-REPO=/home/wgsong/workspace/execute/anchorflow/master
+RR=/home/wgsong/r2/result/anchorflow; D=$RR/v20261009; T=/tmp/pool1_dl; mkdir -p $T $D
+TEX=${PAPER:-/home/wgsong/workspace/FusedGS/paper}/learned_results.tex
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 LOGIN=dkta@147.46.121.39
 F=$(fc-list :lang=ko file | head -1 | cut -d: -f1)
 get(){ rclone copyto $1 $2 -q 2>/dev/null; }

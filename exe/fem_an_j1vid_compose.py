@@ -7,7 +7,7 @@ import sys
 
 L = os.path.expanduser("~/r2/result/anchorflow/lbours")
 V = f"{L}/fem_an/j1vid"
-OUT = os.path.expanduser("~/workspace/result/anchorflow/v20261009")
+OUT = os.path.expanduser("~/r2/result/anchorflow/v20261009")
 TMP = "/tmp/fem_an_j1vid_compose"
 FB = os.path.expanduser("~/.fonts/NotoSansCJKkr-Bold.otf")
 FR = os.path.expanduser("~/.fonts/NotoSansCJKkr-Regular.otf")

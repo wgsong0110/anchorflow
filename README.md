@@ -86,7 +86,7 @@ inverted state as an energy minimum and never recover; and the eigendecompositio
 of the anchor scatter matrix has a NaN derivative wherever a Gaussian's
 neighbourhood is degenerate, which a compact support makes common.
 
-See `~/workspace/result/anchorflow/outputs.md` for the full experimental record.
+See `~/r2/result/anchorflow/outputs.md` for the full experimental record.
 
 ## Running
 

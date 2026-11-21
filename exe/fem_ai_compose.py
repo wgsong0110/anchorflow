@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 L = os.environ.get("AI_L", os.path.expanduser("~/r2/result/anchorflow/lbours"))
-OUT = os.path.expanduser("~/workspace/result/anchorflow/v20261009")
+OUT = os.path.expanduser("~/r2/result/anchorflow/v20261009")
 here = os.path.dirname(os.path.abspath(__file__))
 sc = sys.argv[1]
 NEW = "절 AI 새 판: 회전·신장 분리 평균 + 응력 평균 + 매끈한 F 갱신 · 클램프 끔"

@@ -8,7 +8,7 @@ import sys
 
 R = "r2:storage/result/anchorflow/lbours"
 SRC = "/tmp/fem_ah_src"
-OUT = os.path.expanduser("~/workspace/result/anchorflow/v20261009")
+OUT = os.path.expanduser("~/r2/result/anchorflow/v20261009")
 here = os.path.dirname(os.path.abspath(__file__))
 t = sys.argv[1]
 V = sys.argv[2] if len(sys.argv) > 2 else "gkr_d025_vc75"

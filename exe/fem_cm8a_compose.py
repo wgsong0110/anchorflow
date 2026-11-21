@@ -1,10 +1,10 @@
 """절 CM8 (A) lego 영상 합성 (로컬 ffmpeg, 절 CM4 합성 방식): 정답 | 우리 (A) 가우스 점 고착 바닥.
 우리 칸은 멈춘 프레임 뒤 정지 화면 + 발산 프레임 표시. 사용: python exe/fem_cm8a_compose.py L000|0016
-입력 R2 lbours/fem_cm/cm8av/v_<씬>/{summary.json, vj/fem_lego.mp4}; 출력 ~/workspace/result/anchorflow/v20261009/fem_cm8a_lego_<씬>_cmp.mp4"""
+입력 R2 lbours/fem_cm/cm8av/v_<씬>/{summary.json, vj/fem_lego.mp4}; 출력 ~/r2/result/anchorflow/v20261009/fem_cm8a_lego_<씬>_cmp.mp4"""
 import json, os, subprocess, sys
 L = os.path.expanduser("~/r2/result/anchorflow/lbours")
 V = f"{L}/fem_cm/cm8av"
-OUT = os.path.expanduser("~/workspace/result/anchorflow/v20261009")
+OUT = os.path.expanduser("~/r2/result/anchorflow/v20261009")
 TMP = "/tmp/fem_cm8a_compose"
 FB = os.path.expanduser("~/.fonts/NotoSansCJKkr-Bold.otf")
 FR = os.path.expanduser("~/.fonts/NotoSansCJKkr-Regular.otf")

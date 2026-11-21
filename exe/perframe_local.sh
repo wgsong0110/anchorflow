@@ -11,9 +11,9 @@ exec 9>/tmp/perframe_local.lock
 flock -n 9 || { echo "[중단] 다른 감시가 돌고 있다 $(date)"; exit 0; }
 C=${PERFRAME_COMMIT:?커밋}
 R=r2:storage/result/anchorflow/lbours/perframe_fit/ni; RSP=r2:storage/result/anchorflow/lbours/spstick; RNI=r2:storage/result/anchorflow/lbours/noinertial
-RR=/home/wgsong/workspace/result/anchorflow; D=$RR/v20261009; OVN=$RR/ovnet; T=/tmp/perframe_dl; mkdir -p $T $D $OVN
-TEX=/home/wgsong/workspace/writing/anchorflow/learned_results.tex
-REPO=/home/wgsong/workspace/execute/anchorflow/master
+RR=/home/wgsong/r2/result/anchorflow; D=$RR/v20261009; OVN=$RR/ovnet; T=/tmp/perframe_dl; mkdir -p $T $D $OVN
+TEX=${PAPER:-/home/wgsong/workspace/FusedGS/paper}/learned_results.tex
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 LOGIN=dkta@147.46.121.39
 F=$(fc-list :lang=ko file | head -1 | cut -d: -f1)
 get(){ rclone copyto $1 $2 -q 2>/dev/null; }

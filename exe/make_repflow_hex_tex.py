@@ -4,7 +4,7 @@
 우리(육면체) = repflow_hex main 측정 (--new: <형상>_hex.json). 열·서식·굵게(최선) 규칙은 exe/make_repflow_tex.py 와 같다.
 기존 사면체 행은 지우지 않고 'Ours (tet, old)' 별도 행으로 남긴다. 굵게는 사면체 행을 뺀 행들 중 최선.
 
-  python exe/make_repflow_hex_tex.py --old ~/workspace/result/anchorflow/archive_20261009/r10/metrics \
+  python exe/make_repflow_hex_tex.py --old ~/r2/result/anchorflow/archive_20261009/r10/metrics \
       --new /path/to/repflow_hex/main/metrics --tune tune.json --commit <커밋> --out .../repflow_results.tex
 """
 import argparse

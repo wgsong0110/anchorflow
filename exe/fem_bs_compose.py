@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from matplotlib import font_manager as fm
 
 L = os.path.expanduser("~/r2/result/anchorflow/lbours")
-OUT = os.path.expanduser("~/workspace/result/anchorflow/v20261009")
+OUT = os.path.expanduser("~/r2/result/anchorflow/v20261009")
 TMP = "/tmp/fem_bs_compose"
 FB = os.path.expanduser("~/.fonts/NotoSansCJKkr-Bold.otf")
 os.makedirs(TMP, exist_ok=True)

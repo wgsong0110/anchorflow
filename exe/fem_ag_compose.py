@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 SRC = "/tmp/fem_ag_src"
-OUT = os.path.expanduser("~/workspace/result/anchorflow/v20261009")
+OUT = os.path.expanduser("~/r2/result/anchorflow/v20261009")
 here = os.path.dirname(os.path.abspath(__file__))
 sc, N = sys.argv[1], int(sys.argv[2])
 VAR = [v.split(":", 1) for v in (sys.argv[3:] or [":셀 증분 return mapping"])]

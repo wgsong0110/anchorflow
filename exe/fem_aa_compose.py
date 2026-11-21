@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 L = os.path.expanduser("~/r2/result/anchorflow/lbours")
-OUT = os.path.expanduser("~/workspace/result/anchorflow/v20261009")
+OUT = os.path.expanduser("~/r2/result/anchorflow/v20261009")
 here = os.path.dirname(os.path.abspath(__file__))
 shape, tag, name = sys.argv[1], sys.argv[2], sys.argv[3]
 

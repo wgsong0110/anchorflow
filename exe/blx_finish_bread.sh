@@ -1,7 +1,7 @@
 #!/bin/bash
 # [blx] 로컬 마무리 (tmux blxfinish): (1) vast 크레딧이 돌아오고 final_blx_sgb 가 멈춰 있으면 start (onstart 가 q4 로 sg_resume 저장점부터 이어 학습 -> 단독 시간 1 회·덤프·지표),
 #   (2) R2 marks_SGB/MEAS_DONE 이 생기면 R2 pareto_blx.json 에 Spring-Gaus bread 행 추가, 표식 BREAD_SG_READY, notify (표는 final_fix 의 표 생성기가 다시 만듦 -- 표 파일 직접 안 고침).
-R=r2:storage/result/anchorflow/lbours/final_pa/blx; WR=/home/wgsong/workspace/writing/anchorflow; ID=60860713
+R=r2:storage/result/anchorflow/lbours/final_pa/blx; WR=${PAPER:-/home/wgsong/workspace/FusedGS/paper}; ID=60860713
 log() { echo "[finish $(date -u '+%F %T')] $*"; }
 last=0
 until rclone lsf $R/marks_SGB/ 2>/dev/null | grep -q "^MEAS_DONE"; do

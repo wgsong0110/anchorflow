@@ -2,7 +2,7 @@
 # 정답 | 출력만 최적화(L-BFGS 500) | 출력만 최적화 뉴턴 40걸음 3칸 영상 (로컬, ffmpeg). 짧은 칸은 마지막 프레임 유지.
 # bash exe/ovnewton_vid.sh <T> <뉴턴 영상> <출력>
 T=$1; NV=$2; OUT=$3
-S=/home/wgsong/workspace/result/anchorflow/lbours/spstick
+S=/home/wgsong/r2/result/anchorflow/lbours/spstick
 FONT=/home/wgsong/.fonts/NotoSansCJKkr-Bold.otf
 H=480
 lab(){ echo "drawtext=fontfile=$FONT:text='$1':fontsize=26:fontcolor=black:box=1:boxcolor=white@0.7:x=(w-tw)/2:y=10"; }

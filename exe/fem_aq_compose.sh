@@ -13,6 +13,6 @@ H=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0
 ffmpeg -y -loglevel error -i $T/gt.mp4 -i $T/ours.mp4 -filter_complex \
  "[0:v]scale=-2:$H,drawtext=fontfile=$FT:text='정답':x=20:y=20:fontsize=36:fontcolor=black[a];[1:v]scale=-2:$H,drawtext=fontfile=$FT:text='$LAB':x=20:y=20:fontsize=36:fontcolor=black[b];[a][b]hstack=inputs=2:shortest=1" \
  -c:v libx264 -pix_fmt yuv420p -crf 20 $T/out.mp4
-mkdir -p ~/workspace/result/anchorflow/v20261009
-cp $T/out.mp4 ~/workspace/result/anchorflow/v20261009/$NM.mp4
-echo "[합성] ~/workspace/result/anchorflow/v20261009/$NM.mp4"
+mkdir -p ~/r2/result/anchorflow/v20261009
+cp $T/out.mp4 ~/r2/result/anchorflow/v20261009/$NM.mp4
+echo "[합성] ~/r2/result/anchorflow/v20261009/$NM.mp4"

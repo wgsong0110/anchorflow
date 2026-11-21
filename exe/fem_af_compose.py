@@ -8,7 +8,7 @@ import sys
 
 R = "r2:storage/result/anchorflow/lbours/fem_af_lego"
 SRC = "/tmp/fem_af_src"
-OUT = os.path.expanduser("~/workspace/result/anchorflow/v20261009")
+OUT = os.path.expanduser("~/r2/result/anchorflow/v20261009")
 here = os.path.dirname(os.path.abspath(__file__))
 t, N = sys.argv[1], int(sys.argv[2])
 

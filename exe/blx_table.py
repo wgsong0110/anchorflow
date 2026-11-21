@@ -1,5 +1,5 @@
 """[blx] 논문 폴더 pareto_final_1115_blx.tex 생성 (재질 확장 설명 + wolf·bread 확장 베이스라인 물리·시각 지표 표). 입력 R2 lbours/final_pa/blx/<태그>/g/*_dump/{phys.json,vis_ffx.json}."""
-import json, subprocess, sys
+import json, os, subprocess, sys
 R = "r2:storage/result/anchorflow/lbours/final_pa/blx"
 CELLS = [("wolf", "vrgs", "A", 400), ("wolf", "phystwin", "A", 400), ("wolf", "springgaus", None, None),
          ("bread", "vrgs", "A", 100), ("bread", "phystwin", "A", 200), ("bread", "springgaus", None, None)]
@@ -52,5 +52,5 @@ L = [r"% 자동 생성 (/tmp/blx/mk_blx_tex.py; 가지 final_pa_bl 절 CM193 -- 
      r"\begin{center}\scriptsize\begin{tabular}{llrrrrrrrr}\toprule",
      r"장면 & 방법 & NIQE$\downarrow$ & BRISQUE$\downarrow$ & MUSIQ$\uparrow$ & CLIP-IQA$\uparrow$ & warp err$\downarrow$ & PSNR$\uparrow$ & SSIM$\uparrow$ & LPIPS$\downarrow$ \\\midrule"] + rows_v + [
      r"\bottomrule\end{tabular}\end{center}"]
-open("/home/wgsong/workspace/writing/anchorflow/pareto_final_1115_blx.tex", "w").write("\n".join(L) + "\n")
+open(os.environ.get("PAPER", "/home/wgsong/workspace/FusedGS/paper") + "/pareto_final_1115_blx.tex", "w").write("\n".join(L) + "\n")
 print("\n".join(rows_p + rows_v))

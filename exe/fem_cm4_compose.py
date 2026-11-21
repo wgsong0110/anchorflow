@@ -1,6 +1,6 @@
 """절 CM4 영상 합성 (로컬 ffmpeg, R2 마운트): 정답 | 우리 (절 CM3 채택 공통 설정, 묶음 cm4 v_<씬>), 칸 위에 판 이름·오차 (색 범위 조정 없음).
 사용: python exe/fem_cm4_compose.py lego_L000|lego_0016|ficus|wolf|bread   (R2 lbours/fem_cm/marks/cm4.END 가 있어야 한다)
-출력 ~/workspace/result/anchorflow/v20261009/fem_cm_<씬>_cmp.mp4"""
+출력 ~/r2/result/anchorflow/v20261009/fem_cm_<씬>_cmp.mp4"""
 import json
 import os
 import subprocess
@@ -8,7 +8,7 @@ import sys
 
 L = os.path.expanduser("~/r2/result/anchorflow/lbours")
 V = f"{L}/fem_cm/cm4"
-OUT = os.path.expanduser("~/workspace/result/anchorflow/v20261009")
+OUT = os.path.expanduser("~/r2/result/anchorflow/v20261009")
 TMP = "/tmp/fem_cm4_compose"
 FB = os.path.expanduser("~/.fonts/NotoSansCJKkr-Bold.otf")
 FR = os.path.expanduser("~/.fonts/NotoSansCJKkr-Regular.otf")

@@ -1,6 +1,6 @@
 """토폴로지 추적 FEM 표현 판 (2026-10-31, rep_track2 --method fem --riem_partF --feas) 결과 표 -> LaTeX 행.
 
-  python exe/topo_fem31_table.py --dir ~/workspace/result/anchorflow/topo/fem31/main
+  python exe/topo_fem31_table.py --dir ~/r2/result/anchorflow/topo/fem31/main
 metrics 열: t, RMSE/L, CD/L, EMD, 입자 det F 최소, det F ≤ 0 비율, 평균 |x - x_gt|/L
 """
 import argparse

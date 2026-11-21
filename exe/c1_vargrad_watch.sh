@@ -5,8 +5,8 @@
 #   C1VARGRAD_FAIL
 # 순서: 선형 정리 -> /tmp/c1fix_local.log 에 C1FIX_DONE 기다림 -> 그 커밋으로 클러스터 측정(ficus_c1vargrad_fix.sh, job_run.sh) -> 최종 정리
 L=/tmp/c1vargrad_local.log; LOCAL=/tmp/c1vg/full; FIXL=/tmp/c1fix_local.log
-REPO=/home/wgsong/workspace/execute/anchorflow/master; RES=/home/wgsong/workspace/result/anchorflow
-TEX=/home/wgsong/workspace/writing/anchorflow/c1_results.tex
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd); RES=/home/wgsong/r2/result/anchorflow
+TEX=${PAPER:-/home/wgsong/workspace/FusedGS/paper}/c1_results.tex
 RB=/home/dkta/work/lbours/ficus_c1/vargrad; RF=/home/dkta/work/lbours/ficus_c1fix
 SSH="ssh -o ConnectTimeout=20 dkta@147.46.121.39"
 log(){ echo "[$(date +%T)] $*" >> $L; }
@@ -23,7 +23,7 @@ if ! grep -q C1VARGRAD_BARY_DONE $L 2>/dev/null; then
   cat >> $RES/outputs.md <<MD
 
 ## 2026-10-21 ficus 최적화 변수 θ 기준 기울기 (AF_VARGRAD) -- 선형·C¹ none
-- Path: r2:storage/result/anchorflow/lbours/ficus_c1/vargrad/{bary,basenone}/ (vargrad.jsonl, vg_t*.pt: g·θ 벡터·CG 이력, v.log), 그림·표 ~/workspace/result/anchorflow/ovnet/ficus_c1_vargrad.{png,md}
+- Path: r2:storage/result/anchorflow/lbours/ficus_c1/vargrad/{bary,basenone}/ (vargrad.jsonl, vg_t*.pt: g·θ 벡터·CG 이력, v.log), 그림·표 ~/r2/result/anchorflow/ovnet/ficus_c1_vargrad.{png,md}
 - Commit: eb533ff (AF_VARGRAD), 클러스터 /home/dkta/work/ficus_c1vargrad.sh
 - Config: 선형 = lbours/ficus_v0 덤프 역변환 + 다시 풀어 종료 통계 125 스텝, none = c1_base none 첫 스텝 500 회 다시 풀기; CG 100
 - 주의: 같은 폴더 c1/ (46 스텝) 은 기울기 버그판 C¹ 측정으로 10-21 지시로 중지 -- 부분 결과, 쓰지 말 것 (클러스터 C1VARGRAD_DONE 표식도 이 부분 결과 기준이라 무효)
@@ -87,7 +87,7 @@ PY
 cat >> $RES/outputs.md <<MD
 
 ## 2026-10-21 ficus C¹ (기울기 버그 고친 코드) 최적화 변수 θ 기준 기울기 (AF_VARGRAD)
-- Path: r2:storage/result/anchorflow/lbours/ficus_c1fix/vargrad/c1/ (vargrad.jsonl, vg_t*.pt, v.log), 그림·표 ~/workspace/result/anchorflow/ovnet/ficus_c1_vargrad.{png,md} (선형·none 겹침)
+- Path: r2:storage/result/anchorflow/lbours/ficus_c1fix/vargrad/c1/ (vargrad.jsonl, vg_t*.pt, v.log), 그림·표 ~/r2/result/anchorflow/ovnet/ficus_c1_vargrad.{png,md} (선형·none 겹침)
 - Commit: $C, 클러스터 /home/dkta/work/ficus_c1vargrad_fix.sh, 해 = lbours/ficus_c1fix/N1/roll_ov.pt 역변환
 - Config: --interp c1wf --c1_barrier 1.0 --c1_jhat 0.3 (c1_base pl), AF_OV_NODE_TGT 로 상태를 덤프에 맞춤, CG 100
 - Files: c1_results.tex 절 "ficus C¹ (기울기 버그 고친 코드, c1fix N1) 최적화 변수 기준 기울기"

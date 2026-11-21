@@ -6,7 +6,7 @@
 #   *_FAIL -> 로컬 표식 ALLMODELS_FAIL / FAILMODE_FAIL (내용 포함)
 LOG=/tmp/allmodels_local.log; LOGIN=dkta@147.46.121.39; U=/home/dkta/work/lbours/allmodels
 BOOT=${1:?부트 스크립트}; C=${2:?커밋}
-RA=r2:storage/result/anchorflow; OUT=/home/wgsong/workspace/result/anchorflow/outputs.md
+RA=r2:storage/result/anchorflow; OUT=/home/wgsong/r2/result/anchorflow/outputs.md
 exec 9>/tmp/allmodels_local.lock; flock -n 9 || { echo "[중단] 다른 감시가 돈다 $(date)" >> $LOG; exit 0; }
 log(){ echo "[$(date '+%F %T')] $*" >> $LOG; }
 log "감시 시작 (부트 $BOOT, 커밋 $C)"
@@ -24,7 +24,7 @@ while :; do
     if rclone lsf $RA/v20261009/ --include "allmodels_*.mp4" | grep -q allmodels_0000.mp4 && rclone lsf $RA/ovnet/ --include allmodels_err.md | grep -q .; then
       M=$(rclone cat $RA/ovnet/allmodels_err.md)
       { echo; echo "## $(date +%F) lego 학습 모델 열 개 L000·0000 롤아웃 비교 영상 (allmodels)"
-        echo "- Path: ~/workspace/result/anchorflow/v20261009/allmodels_L000.mp4, allmodels_0000.mp4 (4열×3행: 정답 MPM + 모델 10 개, 칸 제목 = 모델·위치 오차·반복), 오차 표 ~/workspace/result/anchorflow/ovnet/allmodels_err.md"
+        echo "- Path: ~/r2/result/anchorflow/v20261009/allmodels_L000.mp4, allmodels_0000.mp4 (4열×3행: 정답 MPM + 모델 10 개, 칸 제목 = 모델·위치 오차·반복), 오차 표 ~/r2/result/anchorflow/ovnet/allmodels_err.md"
         echo "- R2 원본: r2:storage/result/anchorflow/lbours/allmodels/ (roll/ F32 덤프·로그·명령, h5/, vid/ 칸별 렌더, ck/ 체크포인트 사본, manifest.tsv, cmdline_check.txt, err_compare.txt, gt_check_*.log)"
         echo "- Commit: $C (드라이버 exe/allmodels.sh); 각 모델 롤아웃은 자기 학습 커밋 워크트리·원래 명령 (BASE 원문 재구성·기록 글자 대조), --iters 0, AF_ROLL_DUMP_F=32"
         echo "- 오차 표:"; grep '^| ' <<<"$M"; grep '^- 0000 정답' <<<"$M"; } >> $OUT
@@ -34,7 +34,7 @@ while :; do
   if [ $FD = 0 ] && grep -q 'MARK FAILMODE_CLUSTER_DONE' <<<"$S"; then
     if rclone lsf $RA/ovnet/ --include "allmodels_failmode.*" | grep -q png; then
       { echo; echo "## $(date +%F) lego 학습 모델 바닥 충돌 이후 실패 양상 판정 (allmodels failmode)"
-        echo "- Path: ~/workspace/result/anchorflow/ovnet/allmodels_failmode.md (표: 모델×궤적 L000·0000·0004 -> 판정·시작 프레임·핵심 수치), allmodels_failmode.png (프레임 곡선·판정 구간)"
+        echo "- Path: ~/r2/result/anchorflow/ovnet/allmodels_failmode.md (표: 모델×궤적 L000·0000·0004 -> 판정·시작 프레임·핵심 수치), allmodels_failmode.png (프레임 곡선·판정 구간)"
         echo "- R2 원본: r2:storage/result/anchorflow/lbours/allmodels/fail/fm_{L000,0000,0004}.json (프레임별 지표), allmodels_failmode.json"
         echo "- Commit: $C (exe/allmodels_failmode.py, exe/allmodels_report.py); 덤프는 allmodels 롤아웃(F float32)과 같다"
         echo "- 문턱: 멈춤 이동량·무게중심 비 < 0.2 가 10 프레임 연속 & 뒤집힘 0; 늘어남 max|σ−1| 99% > 0.5 또는 σ1/σ3 99% > 3 & 뒤집힘 0 & 멈춤 아님; 망가짐 det F≤0 > 0.1% 또는 ψ > 정답×1e3 또는 비유한"; } >> $OUT

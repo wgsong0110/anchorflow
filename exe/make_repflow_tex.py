@@ -5,7 +5,7 @@
   B/<sim>_<shape>_<method>.json   같은 형식 (+ IP_mean)
 출력: writing/anchorflow/repflow_results.tex (단독 컴파일되는 문서)
 
-  python exe/make_repflow_tex.py --src /tmp/repflow_sum --out /home/wgsong/workspace/writing/anchorflow/repflow_results.tex
+  python exe/make_repflow_tex.py --src /tmp/repflow_sum --out /home/wgsong/workspace/FusedGS/paper/repflow_results.tex
 """
 import argparse
 import glob

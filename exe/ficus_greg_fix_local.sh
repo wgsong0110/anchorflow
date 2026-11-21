@@ -2,8 +2,8 @@
 # ficus_greg_fix 로컬 감시·후처리 (tmux gregfix). SSH 안 씀: R2 마운트에 표식이 보이면 그림·영상·outputs.md·알림.
 #   표식 GREGFIX_CLUSTER_DONE -> 후처리, GREGFIX_FAIL -> 알림만
 set -u
-M=/home/wgsong/workspace/execute/anchorflow/master
-B=/home/wgsong/workspace/result/anchorflow/lbours/ficus_v0_greg_fix; RES=/home/wgsong/workspace/result/anchorflow
+M=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+B=/home/wgsong/r2/result/anchorflow/lbours/ficus_v0_greg_fix; RES=/home/wgsong/r2/result/anchorflow
 LOG=/tmp/gregfix_local.log
 START=/tmp/gregfix_local.start; touch $START   # 이 시각 전의 실패 표식(이전 시도)은 무시
 while true; do
@@ -20,8 +20,8 @@ bash exe/ficus_greg_fix_vid.sh >> $LOG 2>&1 || { notify "ficus 로컬 변형 영
 ERR=$(cat $B/run/err_ov.txt 2>/dev/null)
 {
   echo; echo "## $(date +%F) ficus 로컬 변형 버그 수정판 (--gregory, 고친 skin.py) 출력만 최적화 — ficus_v0_greg 다시 돌리기"
-  echo "- Path: ~/workspace/result/anchorflow/ovnet/ficus_greg_fix.png (탄성·운동 에너지, 무게중심·줄기 끝 x, 반경 분포, 로컬/글로벌 ΔE), ficus_greg_fix.md (진동 표),"
-  echo "  ~/workspace/result/anchorflow/v20261009/ficus_greg_fix.mp4 (3DGS 정답 | 선형 | 이전 Gregory | 수정 Gregory, 프레임 번호 빨간색), ficus_greg_fix_psi.mp4 (탄성 색, 공통 고정 범위 log10(ψ+1e-3) -3.000 ~ 4.933)"
+  echo "- Path: ~/r2/result/anchorflow/ovnet/ficus_greg_fix.png (탄성·운동 에너지, 무게중심·줄기 끝 x, 반경 분포, 로컬/글로벌 ΔE), ficus_greg_fix.md (진동 표),"
+  echo "  ~/r2/result/anchorflow/v20261009/ficus_greg_fix.mp4 (3DGS 정답 | 선형 | 이전 Gregory | 수정 Gregory, 프레임 번호 빨간색), ficus_greg_fix_psi.mp4 (탄성 색, 공통 고정 범위 log10(ψ+1e-3) -3.000 ~ 4.933)"
   echo "- R2 원본: r2:storage/result/anchorflow/lbours/ficus_v0_greg_fix/ (run/: roll_ov.pt, h5_ov/, v_ov.log, inv_ov.jsonl, psi/, ov_ficus.mp4; ana/: osc.json, energy/, nodes_stats.json, split_el/, locked/; smoke/ 3 프레임 시험; cmdline.txt, unit_*.log)"
   echo "- Commit: 롤아웃 f599abb (브랜치 gregfix-c95f79c = c95f79c + 고친 skin.py 만), 분석 69df168 (master); 클러스터 /home/dkta/work/ficus_greg_fix.sh"
   echo "- Config: ficus_v0_greg (c95f79c) 와 명령줄 같음 (cmdline.txt 자동 대조 '같다'); 바뀐 것은 로컬 변형 식뿐: λ' = λ + W(ρ) − W(ρ_ref), x' = Σλ'(X+U) (옛: du = ΣW U)"

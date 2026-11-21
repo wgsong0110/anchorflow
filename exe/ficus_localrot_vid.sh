@@ -3,7 +3,7 @@
 #   3DGS 알파블렌딩 렌더 -> v20261009/ficus_localrot_4.mp4
 #   탄성 에너지 색 (psi_color 공통 고정 범위 log10(ψ+1e-3) -3.000 ~ 4.933, 칸별 정규화 없음) -> v20261009/ficus_localrot_psi4.mp4
 set -eu
-B=/home/wgsong/workspace/result/anchorflow/lbours; V=/home/wgsong/workspace/result/anchorflow/v20261009
+B=/home/wgsong/r2/result/anchorflow/lbours; V=/home/wgsong/r2/result/anchorflow/v20261009
 FB=/home/wgsong/.fonts/NotoSansCJKkr-Bold.otf
 mk(){ # 출력 제목 정답 선형 수정Gregory 회전판
   local out=$1 ttl=$2; shift 2

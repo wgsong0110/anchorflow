@@ -1,7 +1,7 @@
 #!/bin/bash
 # 절 CM192: 표·그림 전부 다시 만들고 컴파일 (로컬). 사용: bash exe/ffx_cm192_refresh.sh [SG pillow2sofa 메모]
 set -e
-W=/home/wgsong/workspace/execute/anchorflow/ffl_wt; P=/home/wgsong/workspace/writing/anchorflow; T=/tmp/cm192
+W=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd); P=${PAPER:-/home/wgsong/workspace/FusedGS/paper}; T=/tmp/cm192
 cd $W
 bash exe/ffx_nd2_cache.sh $T/tab > /dev/null
 SGNOTE="${1:-}" bash $W/exe/ffx_cm192_gen.sh $P > $T/gen.log 2>&1

@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 L = os.path.expanduser("~/r2/result/anchorflow/lbours")
-OUT = os.path.expanduser("~/workspace/result/anchorflow/v20261009")
+OUT = os.path.expanduser("~/r2/result/anchorflow/v20261009")
 here = os.path.dirname(os.path.abspath(__file__))
 title = ("lego L000 80 프레임 · A6000 단독 · 명시적 lag (프레임당 P2G 1 회 → 사면체 메시 서브스텝 N → G2P 1 회) · "
          "노드 질량: 절 R 셀 안 입자 m_T/4 | 절 X barycentric Σλm (적분점 = 셀 질량점)")

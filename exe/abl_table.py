@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """절 CM183 표·그림 생성: R2 lbours/ablation/runs/*/metrics.json (판당 3 회) -> 중앙값 표 (ablation_1115_tables.tex) + 그림 (fig/abl_*.png).
-사용: python exe/abl_table.py <논문 폴더 /home/wgsong/workspace/writing/anchorflow>"""
+사용: python exe/abl_table.py <논문 폴더 /home/wgsong/workspace/FusedGS/paper>"""
 import json, os, statistics as S, subprocess, sys, glob
 OUT = sys.argv[1]; CACHE = "/tmp/ablruns"
 subprocess.run(["rclone", "copy", "r2:storage/result/anchorflow/lbours/ablation/runs", CACHE, "--include", "*/metrics.json", "-q"], check=False)

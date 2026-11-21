@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 L = os.environ.get("AI_L", os.path.expanduser("~/r2/result/anchorflow/lbours"))
-OUT = os.path.expanduser("~/workspace/result/anchorflow/v20261009")
+OUT = os.path.expanduser("~/r2/result/anchorflow/v20261009")
 here = os.path.dirname(os.path.abspath(__file__))
 sc = sys.argv[1]
 NEW = "절 AK 새 판: 입자 적분점 셀 탄성 + 원래 F 갱신 + 상한 없음 · 띠 0 바닥 · 클램프 없음"

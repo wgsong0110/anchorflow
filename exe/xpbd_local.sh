@@ -7,8 +7,8 @@ exec 9>/tmp/xpbd_local.lock
 flock -n 9 || { echo "[중단] 다른 감시가 돌고 있다 $(date)"; exit 0; }
 C=${1:?커밋}
 RL=r2:storage/result/anchorflow/lbours; RX=$RL/xpbd
-RR=/home/wgsong/workspace/result/anchorflow; D=$RR/v20261009; O=$RR/ovnet; T=/tmp/xpbd_dl; mkdir -p $T $D $O
-TEX=/home/wgsong/workspace/writing/anchorflow/learned_results.tex
+RR=/home/wgsong/r2/result/anchorflow; D=$RR/v20261009; O=$RR/ovnet; T=/tmp/xpbd_dl; mkdir -p $T $D $O
+TEX=${PAPER:-/home/wgsong/workspace/FusedGS/paper}/learned_results.tex
 LOGIN=dkta@147.46.121.39
 FONT=$(fc-list :lang=ko file | head -1 | cut -d: -f1)
 KEYS="n1k1 n1k10 n4k1 n16k1 n64k1"

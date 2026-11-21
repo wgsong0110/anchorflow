@@ -4,7 +4,7 @@
 #   bash exe/topo_pa_vid.sh wolf
 set -eu
 S=$1
-R=/home/wgsong/workspace/result/anchorflow/topo/riem
+R=/home/wgsong/r2/result/anchorflow/topo/riem
 E=$R/eps_cmp/vid; P=$R/proj_alm/vid; J=$R/proj_alm/${S}_tetmesh_proj_alm.json
 FONT=/home/wgsong/.fonts/NotoSansCJKkr-Bold.otf
 st() { python3 -c "import json; print(json.load(open('$J'))['$1']['stall'])"; }
