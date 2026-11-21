@@ -1,0 +1,9 @@
+\section*{설정}
+\begin{itemize}
+\item 장면: Lego (L000 세팅, 60 프레임), pillow2sofa (60 프레임), ship (PG plasticine, Lego 세팅, 80 프레임), mic (PG metal, Lego 세팅, 80 프레임). 정답 = PhysGaussian 궤적.
+\item 방법: PhysGaussian (PG), i-PhysGaussian (i-PG), OmniPhysGS, 우리 (육면체). 모두 같은 처음 입자$\cdot$같은 config (물성$\cdot$경계$\cdot$프레임 간격), 프레임당 서브스텝 $N$ 만 바꿈.
+\item 우리 판 = 기본 판 (\texttt{--cg 4} + 서브스텝 수정 감싸개 \texttt{ssfix\_wrap --ssf\_bec 1 --ssf\_split 3 --ssf\_bigT 0.5 --ssf\_tsum 1}, 꼬리 \texttt{--wrx\_col 0 --mlow 1e-3 --ue\_loc 51}). ship$\cdot$mic 은 새 기본 판 (절 CM191, \texttt{--fpi\_el 1}: 가우스 점 $F$ 보간 교체를 탄성 재질에만) 에 큰 $N$ 공통 규칙 \texttt{--ssf\_cgk 0.5} (절 CM192/d192: 재질 판의 PCG 반복 상한을 $\min(64, 4\sqrt{N})$ 로; $N{=}1$ 과 탄성 장면은 그대로 4) 을 더해 잼. 새 판만으로는 큰 $N$ 에서 PCG 4 회가 모자라 덜 풀린 걸음의 국소 붕괴를 입자 $F$ 가 들고 가 발산 (ship $N$ 32$\cdot$64, mic $N$ 32). Lego$\cdot$pillow2sofa 는 탄성이라 두 플래그 모두 계산을 바꾸지 않음 (옛 판 결과 그대로).
+\item 안정 판정: NaN 없이 전 프레임, 운동+중력 위치 에너지 증가 최대 $\le 1$, 바닥 관통 $\le 0.5L$. 최소 안정 $N$: 2 의 거듭제곱 사다리 $\to$ 발산한 $N$ 과 처음 안정한 $N$ 사이 정수를 아래부터 $\to$ 같은 $N$ 세 번 모두 안정이면 확정. mic 은 2026-11-16 사용자 지시로 반복 없이 $N$ 마다 1 회 판정 (처음 안정한 $N$ 이 최소 $N$, 그 $N$ 의 렌더$\cdot$지표도 1 회); i-PhysGaussian 사다리는 $N{=}16$ 까지 ($N$ 32$\cdot$64 는 최소 $N$ 판정에 필요 없어 멈춤).
+\item 시간: RTX A6000, 같은 카드에 다른 계산 프로세스 없음 (단독), 진단 기록 끔, 시뮬 재생 GPU 시간 평균.
+\item 렌더: lb\_render (F 반영 3DGS, 모든 방법 같은 렌더러), 위에서 비스듬히 내려다보는 카메라 (고도 40$^\circ$, 화면 위 = 세계 위, 중력이 화면 아래).
+\end{itemize}

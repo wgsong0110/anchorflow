@@ -35,6 +35,8 @@ if "--rr_shape" in argv:                                                        
     from anchorflow import rtrender1 as _RR1
     _RR1.MODEL.setdefault("mic", "mic_whitebg-trained")
 REC = dict(rows=[], X=[], T=[], IT=[], stop="끝까지", t0=time.time())
+from concurrent.futures import ThreadPoolExecutor as _TPE                            # [CM192] 프레임 통계 (탄성 에너지 numpy SVD, 49 만 입자 프레임당 ~1 s CPU -- cProfile 실측) 를 뒤 스레드 여럿으로
+_SX = _TPE(max_workers=int(os.environ.get("STABHEX_STAT_W", "6")))
 _orig = runpy.run_path
 _done = [False]
 
@@ -69,7 +71,7 @@ def _install():
         vo = torch.empty_like(s.v); vo[s.perm] = s.v
         Fo = torch.empty_like(s.F); Fo[s.perm] = s.F
         xn, vn, Fn = xo.double().cpu().numpy(), vo.double().cpu().numpy(), Fo.reshape(-1, 3, 3).double().cpu().numpy()
-        REC["rows"].append(SS.frame_stats(xn, vn, Fn, m, G, FZ, **EK))
+        REC["rows"].append(_SX.submit(SS.frame_stats, xn, vn, Fn, m, G, FZ, **EK))     # [CM192] 같은 함수·같은 입력을 뒤 스레드로 (numpy SVD 가 GIL 을 놓아 시뮬과 겹침; 결과 비트 같음)
         REC["X"].append(xn[SUB].astype(np.float32))
         it = o.get("it") or {}
         REC["IT"].append([it.get(k, -1) for k in ("nN", "nP", "capN", "capP", "steps", "solves")])
@@ -110,7 +112,7 @@ def _save():
     os.makedirs(os.path.dirname(os.path.abspath(OPT["npz"])), exist_ok=True)
     tmp = OPT["npz"] + ".tmp.npz"
     np.savez_compressed(tmp, sub=REC["sub"], x=np.stack(REC["X"]).astype(np.float32), t=np.array(REC["T"]), keys=np.array(K),
-                        stats=np.array([[r.get(k, np.nan) for k in K] for r in REC["rows"]]), substeps=int(_arg("--K", 1)), dt=REC["h"],
+                        stats=np.array([[r.get(k, np.nan) for k in K] for r in [q.result() if hasattr(q, "result") else q for q in REC["rows"]]]), substeps=int(_arg("--K", 1)), dt=REC["h"],
                         newton=int(_arg("--newton", -1)), cg=int(_arg("--cg", -1)), tolN=float(_arg("--tolN", -1)), tolP=float(_arg("--tolP", -1)),
                         it=np.array(REC["IT"], dtype=np.float64).reshape(-1, 6), frames_done=len(REC["X"]) - 1, stop=REC["stop"])
     os.replace(tmp, OPT["npz"])

@@ -1,0 +1,9 @@
+\section*{주석 (판$\cdot$바꾼 것$\cdot$남은 것)}
+\begin{itemize}
+\item \textbf{ship$\cdot$mic 우리 판 = \_f7} (CM191 새 기본 판 \texttt{--fpi\_el 1} + CM192 \texttt{--ssf\_cgk 0.5}). 옛 판 값은 교체함 (참고): \_f5 (옛 기본 판) 최소 $N$ 1, A6000 단독 $N{=}1$ ship 18.2 ms$\cdot$mic 9.3 ms; \_f6 (\texttt{--fpi\_el 1} 만) 최소 $N$ 1, mic $N{=}1$ 7.9 ms, 사다리에서 ship $N$ 32$\cdot$64 와 mic $N$ 32 발산 (PCG 4 회 고정이라 큰 $N$ 에서 걸음이 덜 풀리고 그 국소 붕괴를 입자 $F$ 가 지우지 못함; 절 d192) $\to$ \texttt{--ssf\_cgk 0.5} (재질 판 PCG 상한 $\min(64, 4\sqrt N)$, $N{=}1$$\cdot$탄성 장면 불변) 로 mic $N$ 1$\sim$64 전부, ship $N$ 1$\sim$32 안정.
+\item \textbf{i-PhysGaussian 사다리 상한 16 $\to$ 64} (발산 칸을 측정 없이 두지 말라는 지시): ship 은 $N$ 1$\sim$64 모두 바닥 접촉 무렵 Newton 잔차가 폭주 (GMRES Hessenberg NaN, \texttt{SVD did not converge}) $\to$ 최소 $N$ $>64$. mic 은 $N$ 8$\cdot$16 이 예전 3 시간 제한에 걸려 판정이 없어 제한 12 시간 (상한 64 이어 돌림은 24 시간) 으로 다시 잼.
+\item \textbf{메모리 부족 판정}: 같은 카드를 다른 실행과 나눠 쓰다 난 메모리 부족 (오류 글에 다른 프로세스가 찍힘) 은 발산이 아니라 실행 오류로 보고 카드 단독으로 다시 돌림 (\_f6 사다리 ship$\cdot$mic $N{=}8$).
+\item \textbf{단독 시간}: ship$\cdot$mic \_f7 은 RTX A6000 인스턴스가 없어 아직 못 잼 (사용자 지시로 새 인스턴스 보류). \texttt{--ssf\_cgk} 는 $N{=}1$ 의 계산 경로를 바꾸지 않으므로 $N{=}1$ 시간은 \_f6 판과 같은 명령 (mic 7.9 ms).
+\item \textbf{CUDA 그래프 시험}: 사다리 판을 프레임 CUDA 그래프로 돌려도 GPU 사용률이 오르지 않음 (ship $N$ 8: 그래프 끔 6.8 \%, 켬 6.3 \%; 궤적 차는 같은 명령 반복 차와 같은 수준 0.15 \%$L$) $\to$ 병목은 커널 띄우기가 아님; 한 카드에 실행 여럿을 모아 돌림.
+\item Lego 의 PhysGaussian$\cdot$i-PhysGaussian 은 2026-11-12 결과 재사용 ($^\dagger$; 정합성 기준 = 그때의 PG $N{=}1024$).
+\end{itemize}

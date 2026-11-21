@@ -28,7 +28,7 @@ from scipy.spatial import cKDTree
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
 
 
-def load(res, m, n):
+def load(res, m, n, nf=60):
     """-> dict(status, rows{key:[T]}, X[T,S,3]) 또는 None (실행 없음)"""
     npz, log = f"{res}/{m}_N{n}.npz", f"{res}/{m}_N{n}.log"
     ck = next((p for p in (f"{res}/{m}_N{n}.npz.ckpt.pt", f"{res}/{m}_N{n}.main.npz.ckpt.pt") if os.path.exists(p)), None)
@@ -37,7 +37,7 @@ def load(res, m, n):
         keys = [str(k) for k in z["keys"]]
         rows = {k: z["stats"][:, i] for i, k in enumerate(keys)}
         st = "끝"
-        if np.nanmax(rows["nan"]) > 0 or len(z["x"]) < 61:
+        if np.nanmax(rows["nan"]) > 0 or len(z["x"]) < nf + 1:
             st = "발산"
         return dict(status=st, rows=rows, X=z["x"])
     # 체크포인트가 남아 있어도 로그가 오류로 끝났으면 발산이다 (i-PG 는 SVD 미수렴으로 죽기 전에 체크포인트를 남긴다).

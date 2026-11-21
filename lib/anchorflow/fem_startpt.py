@@ -14,6 +14,10 @@ import os
 
 import numpy as np
 import torch
+from concurrent.futures import ThreadPoolExecutor as _TPE
+import atexit as _ax
+_SPW = _TPE(max_workers=1)                                                       # [CM192] sp/f*.npz 압축 쓰기 전용 스레드 (순서대로), 끝날 때 다 쓰고 나감
+_ax.register(lambda: _SPW.shutdown(wait=True))
 
 INFO = dict(n_snap=0, n_snapdrop=0, meta={}, n_inst=0, n_alloc=0, n_wrapfn=0, n_win=0, n_delta=0, n_fin=0, n_rec=0, n_line=0, err=None, names=[], over=[], skipptr=None, cls=None)
 OUT = ["."]
@@ -557,7 +561,7 @@ def _analyze(s, W, t):
     out["rEnd"] = rr(s.U[:nn].double() @ n_).float().cpu().numpy()
     out["terms"] = np.array(["관성", "중력", "질량하한"] + names + ["합", "풀이기잔차"])
     os.makedirs(os.path.join(OUT[0], "sp"), exist_ok=True)
-    np.savez_compressed(os.path.join(OUT[0], "sp", f"f{fr:03d}.npz"), steps=np.array(json.dumps(steps, ensure_ascii=False)), **out)
+    _SPW.submit(np.savez_compressed, os.path.join(OUT[0], "sp", f"f{fr:03d}.npz"), steps=np.array(json.dumps(steps, ensure_ascii=False)), **out)   # [CM192] 압축 쓰기는 뒤 스레드 (같은 함수·같은 배열 = 같은 파일; 프레임당 0.4 s CPU 를 시뮬과 겹침)
     gs = W.gs.cpu().tolist(); gc = W.gc.cpu().tolist()
     o.update(ncell=int(len(hs)), steps=steps, snapdrop=INFO["n_snapdrop"], g2=[[gs[2 * k], gs[2 * k + 1], gc[2 * k + 1]] for k in range(KSG) if gs[2 * k] >= 0])
     return o

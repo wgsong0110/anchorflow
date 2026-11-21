@@ -76,6 +76,12 @@ for _dg, _ax in zip(cfg.get("rotation_degree") or [], cfg.get("rotation_axis") o
     _R = {0: [[1, 0, 0], [0, _c, -_s], [0, _s, _c]], 1: [[_c, 0, _s], [0, 1, 0], [-_s, 0, _c]], 2: [[_c, -_s, 0], [_s, _c, 0], [0, 0, 1]]}[int(_ax)]
     _RT = torch.tensor(_R, device=dev, dtype=torch.float32) @ _RT
 ROT = bool((_RT - torch.eye(3, device=dev)).abs().max() > 0)
+if cfg.get("sim_area") is not None:                                  # [stabfinal] PG gs_simulation 과 같이 회전 뒤 sim_area 안의 가우시안만 (pillow2sofa 등; 없으면 그대로)
+    _XR = gs.get_xyz[KIDX] @ _RT.T if ROT else gs.get_xyz[KIDX]
+    _b = cfg["sim_area"]; _m = torch.ones(_XR.shape[0], dtype=torch.bool, device=_XR.device)
+    for _i in range(3):
+        _m = _m & (_XR[:, _i] > _b[2 * _i]) & (_XR[:, _i] < _b[2 * _i + 1])
+    KIDX = KIDX[_m]
 TP, SO, MEAN = transform2origin(gs.get_xyz[KIDX] @ _RT.T if ROT else gs.get_xyz[KIDX], float(cfg.get("scale", 1.0)))
 TP = shift2center111(TP)
 NG = KIDX.numel()

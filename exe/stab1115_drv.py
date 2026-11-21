@@ -14,21 +14,29 @@ ap.add_argument("--scene", required=True)
 ap.add_argument("--par", type=int, default=4)
 ap.add_argument("--stages", default="main,vis,speed")
 ap.add_argument("--methods", default="pg,ipg,gf,omni,ours")
-ap.add_argument("--cap", default="pg:1024,ipg:16,gf:512,omni:256,ours:256", help="방법별 사다리 상한 N")
+ap.add_argument("--cap", default="pg:1024,ipg:16,gf:512,omni:256,ours:256,ipgr:64", help="방법별 사다리 상한 N")
 ap.add_argument("--hexfix", default="", help="우리 판 추가 플래그 (발산 수정 플래그가 나오면)")
 ap.add_argument("--hextag", default="", help="우리 결과 폴더 접미 (수정판 구분)")
 ap.add_argument("--hexpre", default="", help="우리 판 바깥 감싸개 (stabhex_wrap 앞; 예 'exe/ssfix_wrap.py --ssf_bec 1 ...' 는 'python -u' 뒤에 그대로 끼움)")
 ap.add_argument("--extra_runs", default="", help="main 단계에서 사다리 없이 돌릴 판 (예 pg:1024 = 기준 궤적만)")
 ap.add_argument("--tifrac", type=float, default=0.2)
+ap.add_argument("--ipgr_env", default="", help="[stabfinal ipgr] i-PG 수정판 환경 (쉼표), 예 AF_FD_EPS=1e-5,AF_LS_REJECT=1,AF_IPG_GPU=1,AF_IPG_FAST=1")
+ap.add_argument("--onerep", type=int, default=0, help="[stabfinal] 1 = 확정 단계도 N 마다 1 회 (판 a 만)")
 ap.add_argument("--timeout", type=int, default=10800)
+ap.add_argument("--hexgraph", type=int, default=0, help="[CM192] 1 = 우리 사다리·덤프 판도 프레임 CUDA 그래프 (N >= 512 만 바로 띄움; 0 = 예전처럼 사다리·덤프는 --sh_direct 1). 결과 불변 확인 = --stages gtest")
+ap.add_argument("--gt_ns", default="1,8,32"); ap.add_argument("--gt_fr", type=int, default=12)
 a = ap.parse_args()
 S = a.scene; ST = L.ST; W = os.path.dirname(ST); PY = sys.executable
 PG = f"{W}/i-physgaussian"
 CAP = {kv.split(":")[0]: int(kv.split(":")[1]) for kv in a.cap.split(",")}
 SEM = threading.BoundedSemaphore(a.par); GSEM = threading.BoundedSemaphore(2); OSEM = threading.BoundedSemaphore(int(os.environ.get("S1115_OPAR", "1")))  # [stab4] 우리 판 동시 수 (메모리 크면 1)
 os.makedirs(f"{ST}/{S}", exist_ok=True)
-LOGF = open(f"{ST}/{S}/drv.log", "a"); LK = threading.Lock()
-FR = 60
+LOGF = open(f"{ST}/{S}/drv{('_' + os.environ['S1115_TAG']) if os.environ.get('S1115_TAG') else ''}.log", "a"); LK = threading.Lock()   # [stabfinal] 인스턴스별 로그 (한 장면을 여러 인스턴스가 나눠 돌릴 때 R2 에서 서로 안 덮게)
+if "ipgr" in a.methods or "ipgr" in a.extra_runs:            # [stabfinal ipgr] i-PG 수정 패치 (환경 변수로만 켜짐, 기본 동작 불변)
+    subprocess.run([PY, f"{HERE}/patch_ipg_noisefloor.py", "--ipg", PG], check=True)
+FR = L.nframes(S)                                    # [stabfinal] config frame_num (낙하 장면 60, 새 형상 80)
+NS = S in L.NSHAPE                                   # [stabfinal] 새 형상 장면: 우리 판 명령 = exe/nshape_cmd.py (BA_1 사슬, --cg 4) + 같은 감싸개
+DIAG_DROP = "--pdiag --qjd --fhash --hgt --bar_cnt"  # 새 형상 단독 시간 판에서 빼는 진단 플래그 (vast_elastic_new.sh 시간 판과 같음)
 
 
 def say(*s):
@@ -50,12 +58,16 @@ def sh(cmd, log, timeout=None):
 
 
 def old_cmd(m, n, out, dump=""):
+    """[stabfinal] i-PG 통합 커널 (AF_IPG_FUSED, 같은 식의 가속) 은 탄성 재질 0 만 -> 새 형상 (plasticine·metal) 은 끔."""
     c = f"{ST}/{S}"
     if m == "omni":
         c2 = (f"cd {WT} && {PY} -u exe/stab_omni.py --repo {W}/OmniPhysGS --h5 {c}/init/sim_0000000000.h5 --config {c}/config.json --substeps {n} --out {out}.npz")
         return c2 + (f" --dump {dump}" if dump else "")
-    if m in ("pg", "ipg"):
-        c2 = (f"cd {PG} && AF_IPG_FUSED=1 OMP_NUM_THREADS=2 {PY} -u {WT}/exe/stab_mpm.py --method {m} --h5 {c}/init/sim_0000000000.h5 --config {c}/config.json "
+    if m in ("pg", "ipg", "ipgr"):
+        # [stabfinal ipgr] i-PG 수정판 (wolf 와 같은 수정: FD 섭동·줄 탐색 실패 걸음 버림·자유 노드 구현) = 방법 이름 ipgr, 결과 파일 ipgr_N*, 환경은 S1115_IPGR_ENV (쉼표)
+        ev = a.ipgr_env.replace(",", " ") if m == "ipgr" else ""
+        fu = 0 if (NS or m == "ipgr") else 1
+        c2 = (f"cd {PG} && {ev} AF_IPG_FUSED={fu} OMP_NUM_THREADS=2 {PY} -u {WT}/exe/stab_mpm.py --method {'ipg' if m == 'ipgr' else m} --h5 {c}/init/sim_0000000000.h5 --config {c}/config.json "
               f"--substeps {n} --out {out}.npz --ckpt_every 0")
         return c2 + (f" --dump {dump}" if dump else "")
     c2 = (f"cd {WT} && {PY} -u exe/gf_mpm.py --config {c}/config.json --h5 {c}/init/sim_0000000000.h5 "
@@ -63,7 +75,24 @@ def old_cmd(m, n, out, dump=""):
     return c2 + (f"--out {dump} --resume" if dump else f"--out {out}_tmp --stab_out {out}.npz")
 
 
-def hex_cmd(n, d, dump=False, stats=1, direct=None, frames=FR):
+def hex_cmd_ns(n, d, dump=False, stats=1, direct=None, frames=FR, speed=False):
+    """[stabfinal] 새 형상: nshape_cmd.py (BA_1 = 레고·wolf·bread 와 같은 H9 사슬, 장면 의존 부분만 바꿈, --cg 4) -> stabhex 기록 감싸개 + --hexpre 를 실행 사슬 맨 앞에."""
+    env = dict(os.environ, NS_NODUMP="0" if dump else "1", NS_DROP=DIAG_DROP if speed else "")
+    c = subprocess.run([PY, f"{HERE}/nshape_cmd.py", f"{W}/BA_1.txt", f"{ST}/{S}/hex_in.pt", str(frames), S, d, f"{ST}/{S}/gt", f"{ST}/{S}/gt/config.json", str(n)],
+                       env=env, capture_output=True, text=True, check=True).stdout.strip()
+    dr = 1 if (n >= 512 or direct) else 0
+    head, sep, tail = c.partition(" -u exe/startpt_wrap.py ")
+    assert sep, "nshape 명령에 startpt_wrap 이 없음"
+    pre = (a.hexpre + " ") if a.hexpre else ""
+    c = f"{head} -u {pre}exe/stabhex_wrap.py --sh_npz {d}/res.npz --sh_stats {stats} --sh_direct {dr} exe/startpt_wrap.py {tail}"
+    if speed:
+        c = re.sub(r"AF_SP_FR=\S+ |AF_E1_DG=1 |AF_G1_DG=1 ", "", c)
+    return f"cd {WT} && {c} {a.hexfix}"
+
+
+def hex_cmd(n, d, dump=False, stats=1, direct=None, frames=FR, speed=False):
+    if NS:
+        return hex_cmd_ns(n, d, dump=dump, stats=stats, direct=direct, frames=frames, speed=speed)
     base = open(f"{HERE}/stab1115_base.txt").read().strip()
     dr = 1 if (n >= 512 or direct) else 0
     du = "--dump --dump_F " if dump else ""
@@ -73,6 +102,8 @@ def hex_cmd(n, d, dump=False, stats=1, direct=None, frames=FR):
         base = base.replace(k, v)
     if a.hexpre:
         base = base.replace("python -u exe/stabhex_wrap.py", f"python -u {a.hexpre} exe/stabhex_wrap.py", 1)
+    if speed:
+        base = base.replace(env, "")
     return f"cd {WT} && {base} {a.hexfix}"
 
 
@@ -84,11 +115,48 @@ def oom_artifact(log):
         return False
     if not re.search(r"out of memory|OutOfMemory|MemoryError", t, re.I):
         return False
-    fr = [int(x) for x in re.findall(r"프레임 (\d+)/60", t)]
+    big = [float(x) for x in re.findall(r"Tried to allocate ([0-9.]+) GiB", t)]
+    if big and max(big) >= 20:                       # 20 GiB 넘는 할당 시도 = 발산 (실행기 관례)
+        return False
+    if re.search(r"Process \d+ has [0-9.]+ [GM]iB memory in use", t):   # [CM192] 다른 프로세스가 카드를 같이 쓰다 난 부족 -> 프레임 수와 관계없이 다시 (단독으로)
+        return True
+    fr = [int(x) for x in re.findall(r"프레임 (\d+)/%d" % FR, t)]
     if fr and max(fr) >= 5:                          # 몇 프레임 진행한 뒤 메모리가 커져 터짐 = 노드 상자 폭증 (발산), 시작 때 부족과 다름
         return False
-    big = [float(x) for x in re.findall(r"Tried to allocate ([0-9.]+) GiB", t)]
-    return not (big and max(big) >= 20)
+    return True
+
+
+SETUP_ERR = re.compile(r"ModuleNotFoundError|ImportError|Failed to find forward kernel|Failed to load CUDA module|통합 커널은 탄성")
+
+
+def setup_error(log):
+    """[stabfinal] 실행 환경 오류 (모듈 없음·warp 커널 캐시 동시 컴파일 경합·재질 가드) 로 첫 프레임 전에 죽은 판 = 발산 아님 -> 다시."""
+    try:
+        t = open(log, errors="ignore").read()
+    except Exception:
+        return False
+    return bool(SETUP_ERR.search(t)) and not re.search(r"\| *[1-9]\d*/\d+ \[", t)
+
+
+SOLO = {}; SOLO_ON = threading.Event(); SOLO_LK = threading.Lock()
+
+
+def solo_wait(key):
+    """[CM192] 메모리 부족 (카드 공유) 로 죽은 판은 카드 단독으로 다시: 다른 판 새로 시작을 막고 카드에 계산 프로세스가 없을 때까지 기다림. 보통 판은 단독 판이 도는 동안 시작을 기다림."""
+    if SOLO.get(key):
+        SOLO_LK.acquire(); SOLO_ON.set(); open("/tmp/sfq_solo_drv", "w").write(str(os.getpid()))   # 다른 일꾼 (다른 드라이버) 도 새 판 시작을 멈춤
+        while subprocess.run("nvidia-smi --query-compute-apps=pid --format=csv,noheader", shell=True, capture_output=True, text=True).stdout.strip():
+            time.sleep(30)
+        say("단독 실행", S, *key)
+    else:
+        while SOLO_ON.is_set() or (os.path.exists("/tmp/sfq_solo_drv") and open("/tmp/sfq_solo_drv").read().strip() != str(os.getpid())):
+            time.sleep(30)
+
+
+def solo_done(key):
+    if SOLO.pop(key, None):
+        SOLO_ON.clear(); SOLO_LK.release()
+        if os.path.exists("/tmp/sfq_solo_drv"): os.remove("/tmp/sfq_solo_drv")
 
 
 def run(m, n, rep):
@@ -97,19 +165,55 @@ def run(m, n, rep):
         lg = (L.hex_dir(S, n, rep) + a.hextag + "/log.txt") if m == "ours" else f"{L.res_dir(S, rep)}/{m}_N{n}.log"
         fin = (L.hex_dir(S, n, rep) + a.hextag + "/FIN") if m == "ours" else f"{L.res_dir(S, rep)}/{m}_N{n}.fin"
         if os.path.exists(fin) and oom_artifact(lg) and "rc=0" not in open(fin).read():
-            say("메모리 부족 (다른 프로세스와 카드 공유) 다시", S, m, n, rep, k); os.remove(fin); time.sleep(40); continue
+            say("메모리 부족 (다른 프로세스와 카드 공유) 다시 -- 카드 단독으로", S, m, n, rep, k); os.remove(fin); time.sleep(40)
+            SOLO[(m, n, rep)] = True; continue
+        if os.path.exists(fin) and "rc=0" not in open(fin).read() and setup_error(lg):
+            say("실행 환경 오류 (발산 아님) 다시", S, m, n, rep, k); os.remove(fin)
+            for q in (f"{L.res_dir(S, rep)}/{m}_N{n}.npz",):
+                os.path.exists(q) and m != "ours" and os.remove(q)
+            time.sleep(20 + 10 * k); continue
         break
+
+
+def stale_fin(fin, log):
+    """[stabfinal] 옛 실행 환경 오류의 .fin 위에 다시 돌린 판이 중간에 끊긴 경우 (로그가 .fin 보다 1 분 넘게 새것) -> 이 인스턴스의 .fin 을 치우고 다시 돌림."""
+    try:
+        return os.path.exists(fin) and os.path.getmtime(log) > os.path.getmtime(fin) + 60
+    except OSError:
+        return False
 
 
 def run1(m, n, rep):
     """한 실행 (있으면 건너뜀). 결과는 L.load(S, m, n, rep)."""
     if m == "ours":
+        d0 = L.hex_dir(S, n, rep) + a.hextag
+        if stale_fin(f"{d0}/FIN", f"{d0}/log.txt"):
+            say("끊긴 판 다시", S, m, n, rep); os.remove(f"{d0}/FIN")
+    else:
+        o0 = f"{L.res_dir(S, rep)}/{m}_N{n}"
+        if stale_fin(o0 + ".fin", o0 + ".log"):
+            say("끊긴 판 다시", S, m, n, rep); os.remove(o0 + ".fin")
+        elif os.path.exists(o0 + ".fin"):                 # [stabfinal] 예전 시간 제한에 걸린 판 (rc=-9) 은 지금 제한이 더 길면 다시 (mic i-PG N8·16: 3 시간 제한, 카드 넷이 나눠 써 프레임당 240~390 초)
+            mm = re.match(r"rc=-9 (\d+)s", open(o0 + ".fin").read().strip())
+            if mm and int(mm.group(1)) < a.timeout - 60:
+                say("시간 제한 판 다시 (제한", a.timeout, "s)", S, m, n, rep); os.remove(o0 + ".fin")
+    if m == "ours":
         d = L.hex_dir(S, n, rep) + a.hextag
         if os.path.exists(f"{d}/FIN"):
             return
         os.makedirs(d, exist_ok=True)
-        with SEM, OSEM:                                  # 우리 판은 카드 메모리를 크게 써서 (플레인 17 GB) 한 번에 하나
-            t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, direct=True)}", f"{d}/log.txt")
+        with OSEM, SEM:                                  # [stabfinal] OSEM 먼저 (SEM 을 쥔 채 OSEM 을 기다리면 다른 방법이 굶음) -- 우리 판은 카드 메모리를 크게 써서 (플레인 17 GB) 한 번에 하나
+            r2 = f"r2:storage/result/anchorflow/lbours/stabfinal/res/{S}/hex/{os.path.basename(d)}"
+            if subprocess.run(f"rclone lsf {r2}/FIN", shell=True, capture_output=True, text=True).stdout.strip():
+                subprocess.run(f"rclone copy {r2} {d} -q", shell=True)   # 기다리는 동안 다른 인스턴스가 끝낸 판 (R2 에서 받아 옴)
+            if os.path.exists(f"{d}/FIN"):
+                say("다른 인스턴스가 끝낸 판", S, m, n, rep)
+                return
+            solo_wait((m, n, rep))
+            try:
+                t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, direct=not a.hexgraph)}", f"{d}/log.txt")
+            finally:
+                solo_done((m, n, rep))
         open(f"{d}/FIN", "w").write(f"rc={rc} {time.time() - t0:.0f}s")
         shutil.rmtree(f"{d}/pred.pt", ignore_errors=True)
         if os.path.exists(f"{d}/pred.pt"):
@@ -121,9 +225,11 @@ def run1(m, n, rep):
             return
         with SEM:
             if m == "gf": GSEM.acquire()
+            solo_wait((m, n, rep))
             try:
                 t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 AF_TI_MEM={a.tifrac} {old_cmd(m, n, out)}", out + ".log")
             finally:
+                solo_done((m, n, rep))
                 if m == "gf": GSEM.release()
         for t in glob.glob(out + "_tmp*"):
             shutil.rmtree(t, ignore_errors=True) if os.path.isdir(t) else os.remove(t)
@@ -132,7 +238,7 @@ def run1(m, n, rep):
 
 
 def stable(m, n, rep):
-    r = L.hex_load(L.hex_dir(S, n, rep) + a.hextag) if m == "ours" else L.load(S, m, n, rep)     # [stab4] 우리 판은 hextag 폴더 (L.load 는 접미 없이 읽어 판정이 None 이 됐음)
+    r = L.hex_load(L.hex_dir(S, n, rep) + a.hextag, FR) if m == "ours" else L.load(S, m, n, rep)     # [stab4] 우리 판은 hextag 폴더 (L.load 는 접미 없이 읽어 판정이 None 이 됐음)
     ok, mt = L.judge(r, S)
     return ok
 
@@ -161,12 +267,20 @@ def method_main(m):
         if hi > 1:
             lo = hi // 2
             ints = list(range(lo + 1, hi))
-            pmap(lambda n: run(m, n, "a"), ints)
-            cand = [n for n in ints if stable(m, n, "a")] + [hi]
+            # [stabfinal] 아래부터 동시 수 (--par) 만큼씩 돌리고 안정한 정수가 나오면 멈춤 (처음 안정한 N 은 전부 돌린 판과 같음; 계산 줄이기)
+            st_i = []
+            for i in range(0, len(ints), max(a.par, 1)):
+                bt = ints[i:i + max(a.par, 1)]
+                pmap(lambda n: run(m, n, "a"), bt)
+                st_i = [n for n in bt if stable(m, n, "a")]
+                if st_i:
+                    break
+            cand = st_i + [hi]
         n = cand[0]; tried = []
         while n <= 2 * hi:
-            pmap(lambda r: run(m, n, r), list(L.REPS))
-            res = [stable(m, n, r) for r in L.REPS]; tried.append((n, res))
+            reps = ("a",) if a.onerep else L.REPS     # [stabfinal] N 마다 1 회 판정 (사용자 지시)
+            pmap(lambda r: run(m, n, r), list(reps))
+            res = [stable(m, n, r) for r in reps]; tried.append((n, res))
             if all(res):
                 plan["N_min"] = n; break
             n += 1
@@ -177,8 +291,9 @@ def method_main(m):
 
 def stage_main():
     ms = a.methods.split(",")
-    for kv in [x for x in a.extra_runs.split(",") if x]:
-        run(kv.split(":")[0], int(kv.split(":")[1]), "a")
+    ex = [x.split(":") for x in a.extra_runs.split(",") if x]          # [stabfinal] 방법:N[:판] -- 다른 인스턴스의 사다리를 나눠 맡을 때 (동시에)
+    pmap(lambda kv: run(kv[0], int(kv[1]), kv[2] if len(kv) > 2 else "a"), ex)
+    ms = [m for m in ms if m in CAP]                                   # --methods none = 나눠 맡은 판만
     ts = {m: threading.Thread(target=method_main, args=(m,)) for m in ms if m != "gf"}
     [t.start() for t in ts.values()]
     if "gf" in ms:                                   # GF 는 taichi 가 GPU 메모리를 크게 잡아 (우리 판·PG 가 끝난 뒤) 따로 -- 동시 실행은 메모리 부족 (ficus 시험)
@@ -189,29 +304,57 @@ def stage_main():
 
 
 # --------------------------------------------------------------------------------------------- 시각 지표
+def up_vec():
+    """렌더러는 회전 전 모델 좌표로 그림 -> 세계 위 (중력 반대) = config 회전 R 의 셋째 행 (vast_elastic_new.sh 와 같은 식; 회전 없는 장면은 0,0,1)."""
+    import math
+    import numpy as np
+    c = json.load(open(f"{ST}/{S}/config.json")); R = np.eye(3)
+    for dg, ax in zip(c.get("rotation_degree") or [], c.get("rotation_axis") or []):
+        cs, sn = math.cos(dg / 180 * 3.1415926), math.sin(dg / 180 * 3.1415926)
+        R = np.array({0: [[1, 0, 0], [0, cs, -sn], [0, sn, cs]], 1: [[cs, 0, sn], [0, 1, 0], [-sn, 0, cs]], 2: [[cs, -sn, 0], [sn, cs, 0], [0, 0, 1]]}[int(ax)]) @ R
+    return ",".join("%.6f" % q for q in R[2])
+
+
+def traj0():
+    """lb_render·lb_roll_to_h5 용 0 프레임 궤적 폴더 (meta.json: h5 = 처음 입자, R = I; sim_0 = 처음 x, F = I)."""
+    T0 = f"{ST}/{S}/traj0"
+    if not os.path.exists(f"{T0}/sim_0000000000.h5"):
+        os.makedirs(T0, exist_ok=True)
+        sh(f"""cd {WT} && {PY} - <<'PYEOF'
+import h5py, json, numpy as np
+with h5py.File('{ST}/{S}/init/sim_0000000000.h5') as h:
+    x = np.array(h['x']); x = x.T if x.shape[0] == 3 else x
+with h5py.File('{T0}/sim_0000000000.h5', 'w') as o:
+    o.create_dataset('x', data=x.astype(np.float32)); o.create_dataset('F', data=np.tile(np.eye(3, dtype=np.float32).reshape(1, 9), (len(x), 1)))
+json.dump(dict(h5='{ST}/{S}/init/sim_0000000000.h5', R=np.eye(3).tolist()), open('{T0}/meta.json', 'w'))
+PYEOF""", f"{ST}/{S}/traj0.log")
+    return T0
+
+
+# [stabfinal] 렌더 = lb_render.py (F 반영 3DGS, 네 장면 같은 렌더러), 위에서 내려다보는 카메라 (고도 40 도, 위 = 세계 위 -> 중력이 화면 아래), vast_elastic_new.sh 의 기본값
+CAM = "--cam_back 1.6 --elev 40 --back2 1.1"
+
+
 def vis_one(name, m, n):
     V = f"{ST}/{S}/vis"; os.makedirs(V, exist_ok=True)
     png = f"{V}/png_{name}"
     if os.path.exists(f"{png}/DONE"):
         return png
     dump = f"{V}/dump_{name}"; shutil.rmtree(dump, ignore_errors=True)
+    T0 = traj0(); rc = -1
     with SEM:
         if m == "ours":
             d = f"{V}/hexdump_{name}"; os.makedirs(d, exist_ok=True)
-            sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, dump=True, stats=1, direct=True)}", f"{d}/log.txt")
-            sh(f"""cd {WT} && {PY} - <<'PYEOF'
-import torch, numpy as np
-q = torch.load('{d}/pred.pt', map_location='cpu', weights_only=False)
-np.savez('{V}/{name}_full.npz', traj_full=q['pred'].float().numpy(), F_full=q['F'].float().numpy())
-PYEOF""", f"{V}/{name}_conv.log")
-            rc = sh(f"cd {WT} && CUDA_VISIBLE_DEVICES=0 {PY} -u exe/rep_ip.py --sim {ST}/{S}/init --cfg {ST}/{S}/config.json --shape {S} --method ours --frames {FR} --no_ref "
-                    f"--render_npz {V}/{name}_full.npz --video {V}/{name}.mp4 --png_dir {png} --out {V}/{name}.r.npz", f"{V}/{name}_render.log")
-            shutil.rmtree(d, ignore_errors=True); os.path.exists(f"{V}/{name}_full.npz") and os.remove(f"{V}/{name}_full.npz")
+            sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, dump=True, stats=1, direct=not a.hexgraph)}", f"{d}/log.txt")
+            sh(f"cd {WT} && {PY} -u exe/lb_roll_to_h5.py --dump {d}/pred.pt --traj {T0} --out {dump}", f"{V}/{name}_conv.log")
+            shutil.rmtree(d, ignore_errors=True)
         else:
             sh(f"CUDA_VISIBLE_DEVICES=0 AF_TI_MEM=0.5 {old_cmd(m, n, f'{V}/{name}', dump=dump)}", f"{V}/{name}_dump.log")
-            rc = sh(f"cd {WT} && CUDA_VISIBLE_DEVICES=0 {PY} -u exe/rep_ip.py --sim {dump} --cfg {ST}/{S}/config.json --shape {S} --method ours --frames {FR} --render_ref "
-                    f"--video {V}/{name}.mp4 --png_dir {png} --out {V}/{name}.r.npz", f"{V}/{name}_render.log")
-            shutil.rmtree(dump, ignore_errors=True)
+            shutil.copyfile(f"{T0}/meta.json", f"{dump}/meta.json") if os.path.isdir(dump) else None
+        if os.path.exists(f"{dump}/meta.json"):
+            rc = sh(f"cd {WT} && CUDA_VISIBLE_DEVICES=0 {PY} -u exe/lb_render.py --sim {dump} --config {ST}/{S}/config.json --shape {S} --out {V}/{name}.mp4 "
+                    f"--png {png} {CAM} --up {up_vec()} --fps 30", f"{V}/{name}_render.log")
+        shutil.rmtree(dump, ignore_errors=True)
     if os.path.isdir(png) and len(glob.glob(f"{png}/*.png")) >= FR:
         open(f"{png}/DONE", "w").write(str(rc))
     else:
@@ -239,15 +382,24 @@ def stage_vis():
 # --------------------------------------------------------------------------------------------- 단독 시간
 def stage_speed():
     SP = f"{ST}/{S}/speed"; os.makedirs(SP, exist_ok=True)
-    for n in (1, 2, 4, 8, 16):
+    ns = [1, 2, 4, 8, 16]
+    if os.path.exists(plan_path("ours")):                              # [stabfinal] 확정 N 도 (16 넘으면)
+        nm = json.load(open(plan_path("ours"))).get("N_min")
+        if nm and nm not in ns:
+            ns.append(int(nm))
+    for n in ns:
         d = f"{SP}/t_N{n}{a.hextag}"
         if os.path.exists(f"{d}/FIN"):
             continue
         os.makedirs(d, exist_ok=True)
-        # 단독: 이 카드에 다른 계산 프로세스 0 (이 드라이버는 직렬, 다른 단계는 끝난 뒤)
-        out = subprocess.run("nvidia-smi --query-compute-apps=pid --format=csv,noheader", shell=True, capture_output=True, text=True).stdout.strip()
+        # 단독: 이 카드에 다른 계산 프로세스 0 (이 드라이버는 직렬, 다른 단계는 끝난 뒤) -- [stabfinal] 다른 프로세스가 있으면 빌 때까지 기다림 (최대 2 시간)
+        for _w in range(240):
+            out = subprocess.run("nvidia-smi --query-compute-apps=pid --format=csv,noheader", shell=True, capture_output=True, text=True).stdout.strip()
+            if not out:
+                break
+            time.sleep(30)
         open(f"{d}/apps_at_start.txt", "w").write(out)
-        cmd = hex_cmd(n, d, stats=0).replace("AF_SP_FR=1,60 AF_E1_DG=1 AF_G1_DG=1 ", "")
+        cmd = hex_cmd(n, d, stats=0, speed=True)
         if os.path.exists(plan_path("ours")):                          # 사다리에서 발산한 N 은 시간 안 잼
             lad = json.load(open(plan_path("ours"))).get("ladder", {})
             if lad.get(str(n)) is False:
@@ -257,12 +409,58 @@ def stage_speed():
         say("단독 시간", S, n, "rc", rc)
 
 
-if "ours" in a.methods.split(",") or "speed" in a.stages:
+
+def stage_cmd():
+    """[CM192 측정] 사다리 판과 같은 우리 명령을 --gt_ns 의 N 마다 출력 (앞 --gt_fr 프레임, 결과 폴더 <장면>/prof/N<n>)"""
+    for n in [int(q) for q in a.gt_ns.split(",")]:
+        d = f"{ST}/{S}/prof/N{n}"; os.makedirs(d, exist_ok=True)
+        print("CMD", hex_cmd(n, d, direct=not a.hexgraph, frames=a.gt_fr), flush=True)
+
+
+# --------------------------------------------------------------------------------------------- 그래프 켬/끔 결과 불변 확인 (CM192)
+def stage_gtest():
+    """같은 우리 판 명령을 --sh_direct 1 (그래프 끔) 두 번 + 0 (그래프 켬) 한 번, 앞 --gt_fr 프레임, 카드 단독으로 차례로.
+    궤적 차 (부분표본, L 대비) 를 끔-끔 (같은 명령 비결정 범위) 과 켬-끔 으로 비교, 실행 중 GPU 사용률 평균 (2 초 간격) -> <장면>/gtest/gtest.json"""
+    import numpy as np
+    G = f"{ST}/{S}/gtest"; os.makedirs(G, exist_ok=True)
+    out = json.load(open(f"{G}/gtest.json")) if os.path.exists(f"{G}/gtest.json") else {}
+    for n in [int(q) for q in a.gt_ns.split(",")]:
+        for v, dr in (("d1", True), ("d2", True), ("g1", False), ("s1", False)):     # s1 = 그래프 + 진단 플래그 뺌 (단독 시간 판과 같은 DIAG_DROP, 안정성 기록 stats 1 은 그대로)
+            d = f"{G}/N{n}_{v}"
+            if os.path.exists(f"{d}/FIN"):
+                continue
+            os.makedirs(d, exist_ok=True)
+            while subprocess.run("nvidia-smi --query-compute-apps=pid --format=csv,noheader", shell=True, capture_output=True, text=True).stdout.strip():
+                time.sleep(20)
+            mon = subprocess.Popen(f"nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits -lms 2000 > {d}/util.csv", shell=True)
+            t0 = time.time(); rc = sh(f"CUDA_VISIBLE_DEVICES=0 {hex_cmd(n, d, direct=dr, frames=a.gt_fr, speed=(v == 's1'))}", f"{d}/log.txt")
+            mon.terminate(); subprocess.run("pkill -f 'nvidia-smi --query-gpu=utilization.gpu,memory.used'", shell=True)
+            open(f"{d}/FIN", "w").write(f"rc={rc} {time.time() - t0:.0f}s")
+            say("gtest", S, n, v, "rc", rc, f"{time.time() - t0:.0f}s")
+        R = {}
+        for v in ("d1", "d2", "g1", "s1"):
+            r = L.hex_load(f"{G}/N{n}_{v}", a.gt_fr)
+            u = np.loadtxt(f"{G}/N{n}_{v}/util.csv", delimiter=",", ndmin=2) if os.path.exists(f"{G}/N{n}_{v}/util.csv") else np.zeros((0, 2))
+            R[v] = dict(r=r, util=float(u[:, 0].mean()) if len(u) else None, mem_max=float(u[:, 1].max()) if len(u) else None,
+                        sec=float(open(f"{G}/N{n}_{v}/FIN").read().split()[1].rstrip("s")))
+        o = dict(util={v: R[v]["util"] for v in R}, mem_max_mib={v: R[v]["mem_max"] for v in R}, sec={v: R[v]["sec"] for v in R},
+                 frames={v: (None if R[v]["r"] is None else len(R[v]["r"]["X"]) - 1) for v in R})
+        if all(R[v]["r"] is not None for v in R):
+            X = {v: R[v]["r"]["X"] for v in R}; T = min(len(x) for x in X.values())
+            Lb = float(np.linalg.norm(X["d1"][0].max(0) - X["d1"][0].min(0)))
+            dd = lambda p, q: [float(np.sqrt(((X[p][t] - X[q][t]) ** 2).sum(-1).mean()) / Lb) for t in range(T)]
+            o.update(rmse_d1_d2=dd("d1", "d2"), rmse_d1_g1=dd("d1", "g1"), rmse_d2_g1=dd("d2", "g1"),
+                     max_d1_d2=max(dd("d1", "d2")), max_d1_g1=max(dd("d1", "g1")), rmse_d1_s1=dd("d1", "s1"), max_d1_s1=max(dd("d1", "s1")))
+        out[str(n)] = o; json.dump(out, open(f"{G}/gtest.json", "w"), indent=1)
+        say("gtest", S, n, {k: v for k, v in o.items() if not k.startswith("rmse")})
+
+if "ours" in a.methods.split(",") or "speed" in a.stages or "gtest" in a.stages:
     os.makedirs(f"{ST}/{S}/rr", exist_ok=True)
     json.dump({"h5": f"{ST}/{S}/init/sim_0000000000.h5", "R": [[1, 0, 0], [0, 1, 0], [0, 0, 1]]}, open(f"{ST}/{S}/rr/meta.json", "w"))
     if not os.path.exists(f"{ST}/{S}/hex_in.pt"):
-        subprocess.run([PY, f"{HERE}/stabhex_data.py", f"{ST}/{S}", f"{ST}/{S}/hex_in.pt", "60"], check=True)
+        assert not NS, "새 형상 장면의 hex_in.pt 는 부팅이 pg_h5_to_pt 로 만듦"
+        subprocess.run([PY, f"{HERE}/stabhex_data.py", f"{ST}/{S}", f"{ST}/{S}/hex_in.pt", str(FR)], check=True)
 for st in a.stages.split(","):
-    {"main": stage_main, "vis": stage_vis, "speed": stage_speed}[st]()
+    {"main": stage_main, "vis": stage_vis, "speed": stage_speed, "gtest": stage_gtest, "cmd": stage_cmd}[st]()
 open(f"{ST}/{S}/DRV_DONE_{a.stages.replace(',', '_')}{a.hextag}", "w").write(time.strftime("%F %T"))
 say("끝", S, a.stages)

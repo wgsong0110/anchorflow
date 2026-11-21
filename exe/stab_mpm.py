@@ -46,6 +46,8 @@ G = [float(q) for q in cfg["g"]]
 floor = ([b for b in cfg["boundary_conditions"] if b["type"] == "surface_collider"] or [None])[0]
 FZ = float(floor["point"][2]) if floor is not None else 0.0      # 바닥이 없는 씬(plane·pillow2sofa)은 관통 지표를 안 쓴다
 OFFICIAL_BC = any(b["type"] not in ("bounding_box", "surface_collider") for b in cfg["boundary_conditions"])
+# [stabfinal] 새 형상 장면 (레고 L000 세팅 + PG plasticine/metal, config 에 stab_official) 은 경계조건이 상자·바닥뿐이어도 재질·감쇠·경계조건을 공식 함수로 (jelly 고정 판을 쓰지 않음)
+OFFICIAL_BC = OFFICIAL_BC or bool(cfg.get("stab_official", False))
 with h5py.File(a.h5) as h:
     x = np.array(h["x"]); x = np.ascontiguousarray((x.T if x.shape[0] == 3 else x).astype(np.float32))
     v = np.array(h["v"]) if "v" in h else np.zeros_like(x.T)
@@ -60,6 +62,11 @@ SUB = ss.subset(N)
 wp.init()
 if a.method == "ipg":
     from implicit_mpm_solver import ImplicitMPMSolver
+    if os.environ.get("AF_IPG_FAST") == "1":                   # [stabfinal ipgr] 같은 Newton-GMRES 를 자유 노드만 압축 (exe/ipg_fast.py)
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from ipg_fast import newton_gmres_fast
+        ImplicitMPMSolver.p2g2p_newton_gmres = newton_gmres_fast
+        print("[AF_IPG_FAST] exe/ipg_fast.newton_gmres_fast", flush=True)
     sol = ImplicitMPMSolver(n_particles=10, n_grid=n_grid, grid_lim=GL)
 else:
     sol = MPM_Simulator_WARP(10)

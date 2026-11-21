@@ -38,6 +38,23 @@ def newton_gmres_fast(self, step: int, dt: float) -> dict:
 
     # ---- Step 2: Save state ----
     self._save_state()
+    # [stabfinal ship] 재질 상태 되돌림 (AF_IPG_MATRESTORE=1): PG plasticine (material 5, von_mises_return_mapping_with_damage) 의
+    # 반환 사상은 model.yield_stress[p] 를 소성 변형만큼 깎고 0 이하면 model.mu·lam 을 0 으로 **바꿔 쓴다**. _save_state/_restore_state 는
+    # 입자 x·v·C·F_trial 만 되돌려서, 걸음마다 수백 번 하는 잔차 평가 (Newton·GMRES 행렬곱·줄 탐색) 가 그때마다 연화를 누적한다
+    # (PG 는 서브스텝당 1 회). -> 걸음 처음 값을 저장해 매 평가 전에 되돌리고, 마지막 확정 평가 1 회에만 연화가 남게 한다.
+    _matr = os.environ.get("AF_IPG_MATRESTORE") == "1"
+    if _matr:
+        _md0 = self.mpm_model
+        _mat_bufs = []
+        for _k in ("yield_stress", "mu", "lam"):
+            _a = getattr(_md0, _k); _b = wp.empty_like(_a); wp.copy(_b, _a); _mat_bufs.append((_a, _b))
+
+        def _mat_restore():
+            for _dst, _src in _mat_bufs:
+                wp.copy(_dst, _src)
+    else:
+        def _mat_restore():
+            pass
 
     # ---- Step 3: Setup (원 코드 그대로, numpy) ----
     beta_nm = 0.25
@@ -112,6 +129,7 @@ def newton_gmres_fast(self, step: int, dt: float) -> dict:
     def eval_forces_c(v_new_c):
         """_af_eval_forces_gpu 와 같은 계산, 자유 성분만 돌려줌 (f_int·f_ext float64 [nc], mass float64 [nf], k_diag float32 [nf])."""
         self._restore_state()
+        _mat_restore()
         cp.cuda.get_current_stream().synchronize()
         gout_flat[...] = base32
         gout_flat[idx3] = v_new_c.astype(cp.float32)
@@ -275,10 +293,33 @@ def newton_gmres_fast(self, step: int, dt: float) -> dict:
     v_final = v_n_gpu + dt * ((1.0 - gamma_nm) * a_n_gpu + gamma_nm * a_final)
     v_final_np = cp.asnumpy(v_final.astype(cp.float32))
     self._restore_state()
+    _mat_restore()
+    if _matr:
+        _ys = wp.to_torch(self.mpm_model.yield_stress)
+        _matr_msg = f" ys_min={float(_ys.min()):.2f} ys_le0={int((_ys <= 0).sum())}"
+    else:
+        _matr_msg = ""
     from af_newmark import af_g2p_acc
     if getattr(self, "_particle_a", None) is None or self._particle_a.shape[0] != self.n_particles:
         self._particle_a = wp.zeros(shape=self.n_particles, dtype=wp.vec3, device=device)
-    _ga2 = wp.array(cp.asnumpy(a_final.astype(cp.float32)), dtype=wp.vec3, device=device)
+    _a_np = cp.asnumpy(a_final.astype(cp.float32))
+    _abc_msg = ""
+    if os.environ.get("AF_IPG_BCA0") == "1" and len(self.grid_postprocess) > 0:
+        # [stabfinal ship] 경계조건 (sticky 바닥·상자) 이 속도를 정하는 노드는 v^{n+1} 이 BC 값으로 덮이는데 a^{n+1} 은 Newton 이 안 건드린
+        # 예측값 (= a^n, 정지 바닥이면 중력 g 가 그대로) 이 남아 af_g2p_acc 로 입자에 실린다 -> 다음 걸음 v^{n+1} = v^n + dt/2 (a^n + a^{n+1}) 에
+        # 반력 없는 아래 방향 가속이 계속 들어감. BC 가 속도를 정하는 노드 (탐침 속도 +-1 이 바뀌는 노드) 의 a^{n+1} = 0 (정지 노드의 가속도).
+        _cm = np.zeros(mass_n.shape, dtype=bool)
+        for _sg in (1.0, -1.0):
+            _pv = np.full(v_grid_n.shape, _sg, dtype=np.float32)
+            self._write_grid_v(_pv)
+            for k_bc in range(len(self.grid_postprocess)):
+                wp.launch(kernel=self.grid_postprocess[k_bc], dim=grid_size,
+                          inputs=[self.time, dt, self.mpm_state, self.mpm_model, self.collider_params[k_bc]], device=device)
+            _cm |= np.abs(self.mpm_state.grid_v_out.numpy() - _pv).max(axis=-1) > 1e-10
+        _cmm = _cm & mask
+        _abc_msg = (f" bcA0 nodes={int(_cmm.sum())} az_bc_mean={float(_a_np[..., 2][_cmm].mean()) if _cmm.any() else 0.0:.3f}")
+        _a_np[_cm] = 0.0
+    _ga2 = wp.array(_a_np, dtype=wp.vec3, device=device)
     wp.launch(kernel=af_g2p_acc, dim=self.n_particles,
               inputs=[self.mpm_state, self.mpm_model, _ga2, self._particle_a], device=device)
     wp.launch(kernel=mpm.compute_stress_from_F_trial, dim=self.n_particles,
@@ -305,5 +346,5 @@ def newton_gmres_fast(self, step: int, dt: float) -> dict:
     gv_max = float(np.max(np.abs(v_final_np))) if np.all(np.isfinite(v_final_np)) else float('inf')
     print(f"[Newton-GMRES] step={step} newton={newton_it+1} converged={converged} "
           f"res={final_residual:.3e} evals={total_evals} "
-          f"gv_max={gv_max:.2f} max_v={max_v:.3f}", flush=True)
+          f"gv_max={gv_max:.2f} max_v={max_v:.3f}{_abc_msg}{_matr_msg}", flush=True)
     return {'converged': converged, 'iterations': newton_it + 1, 'final_residual': final_residual, 'max_velocity': max_v}

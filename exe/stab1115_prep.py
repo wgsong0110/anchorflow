@@ -8,6 +8,17 @@ base = json.load(open(sys.argv[1])); off, h5r, out = sys.argv[2], sys.argv[3], s
 KEEP = ("rotation_degree", "rotation_axis", "sim_area", "scale", "opacity_threshold", "particle_filling", "mpm_space_vertical_upward_axis",
         "mpm_space_viewpoint_center", "default_camera_index", "init_azimuthm", "init_elevation", "init_radius", "move_camera", "delta_a", "delta_e", "delta_r", "show_hint")
 for s in sys.argv[5:]:
+    if s in ("ship_plastic_lego", "mic_metal_lego"):  # [stabfinal] 새 형상 = 정답 PG 사본 (R2 nshape/gt_pg/<장면>) 의 config (바닥 해석된 값) · 0 프레임 그대로
+        c = json.load(open(f"{h5r}/{s}/gt/config.json"))
+        c.setdefault("grid_lim", 2.0)                # PG decode_param 기본값 (config 에 없음) 을 명시 (pg_h5_to_pt 와 같음)
+        c["stab_official"] = True                    # stab_mpm·stab_omni: 재질·감쇠·경계조건을 공식 함수로
+        c["drop_note"] = f"레고 L000 세팅 + PG 재질 ({c.get('material')}); 정답 PG 사본 config·0 프레임 그대로"
+        os.makedirs(f"{out}/{s}/init", exist_ok=True)
+        json.dump(c, open(f"{out}/{s}/config.json", "w"), indent=1)
+        if not os.path.exists(f"{out}/{s}/init/sim_0000000000.h5"):
+            shutil.copyfile(f"{h5r}/{s}/gt/simulation_ply/sim_0000000000.h5", f"{out}/{s}/init/sim_0000000000.h5")
+        print("[prep]", s, flush=True)
+        continue
     if s in ("ficus", "lego"):                       # lego = 기존 stab (11-12 표) 과 같은 낙하 config (물리·회전 0 동일)
         c = copy.deepcopy(base)
     else:
