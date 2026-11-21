@@ -37,6 +37,7 @@ ap.add_argument("--par", type=int, default=1, help="동시 비측정 판 상한"
 ap.add_argument("--jobs", default="")
 ap.add_argument("--reps", type=int, default=3)
 ap.add_argument("--smoke", type=int, default=0, help="연기 시험: 프레임 수를 이 값으로 (표는 smoke 표시)")
+ap.add_argument("--prep_only", action="store_true", help="[final_pa_bl] 준비 판 (공개 코드 베이스라인 물성·학습, VR-GS E 맞춤) 만 하고 끝 (시간 안 재는 카드용)")
 a = ap.parse_args()
 PY = "/home/dkta/.conda/envs/af/bin/python"
 W = "/home/dkta/work"
@@ -95,7 +96,7 @@ HI = dict(mpm=dict(L000=833, ficus=400, wolf=1999, bread=100),       # 공식 co
           phystwin=dict(L000=None, ficus=None),                       # 준비 판 fit.json 의 N0 (공식 dt 5e-5 를 프레임 간격에 맞춘 서브스텝)
           simplicits=dict(L000=64, ficus=64),                         # 공식 서브스텝 개념 없음 (암시 뉴턴) -- 사다리 끝
           springgaus=dict(L000=None, ficus=None))                     # 준비 판 sg_train.json 의 학습 끝 n_step
-NAME = dict(mpm="정답 MPM (PG warp, 공식 config)", vrgs="VR-GS (직접 구현, XPBD 케이지, 반복 11)", bnv="명시적 B-스플라인 (같은 표현, 명시적 적분)",
+NAME = dict(mpm="정답 MPM (PG warp, 공식 config)", vrgs="VR-GS (직접 구현, XPBD 케이지, 반복 VR_IT)", bnv="명시적 B-스플라인 (같은 표현, 명시적 적분)",
             ours="우리 (채택 판 (B): 장벽 + --y0eb)", phystwin="PhysTwin (공식 코드, CMA-ES + 경사 학습 물성)",
             simplicits="Simplicits (kaolin 0.18 공식, 기본 가중치 학습)", springgaus="Spring-Gaus (공식 코드, 다시점 영상 3 단계 학습)")
 BL = ("phystwin", "simplicits", "springgaus")                          # 공개 코드 베이스라인 (절 S.3)
@@ -105,7 +106,7 @@ BLENV = dict(phystwin=dict(PYTHONPATH=os.environ.get("ST_PT_PYPATH", "")), simpl
 PT_REPO = os.environ.get("ST_PT_REPO", f"{W}/PhysTwin")
 SG_REPO = os.environ.get("ST_SG_REPO", f"{W}/Spring-Gaus")
 RETRY = int(os.environ.get("ST_RETRY", "4"))                                         # 덤프·시간 판 다시 시도 수 (절 S.8)
-VR_IT = 11   # 설정 격자에서는 작업마다 바꿈                                                             # 논문 PG 비교 설정의 반복 수
+VR_IT = int(os.environ.get("PR2_VR_IT", "1"))   # [final_fix_vrgs] 논문 6.1 PG 비교 설정 "XPBD iteration per substep to 1" (raw HTML alttext="1"; 예전 11 은 텍스트 추출 오독). PR2_VR_IT=11 이면 예전 판
 
 
 def da_elastic(t):
@@ -198,7 +199,7 @@ def prep_cmds(m, t, F):
             [PY, "-u", f"{D}/exe/stab_sg.py", "--mode", "train", "--sg", SG_REPO, "--fit", F, "--out", F] + da_elastic(t)]
 
 
-def prep(m, t, tmo=16 * 3600):
+def prep(m, t, tmo=float(os.environ.get("PR2_PREP_TMO_H", "16")) * 3600):
     """씬마다 한 번 (빈 카드 하나). 반환: 상한 hi (실패·마감이면 None). 결과 p/<방법>_<씬>_prep/res.json."""
     F = pdir(m, t, 0, "prep")
     if os.path.exists(f"{F}/res.json"):
@@ -495,7 +496,7 @@ def da_elastic(t):                                                              
 
 
 # ---------- paper_remeasure2: 설정 격자 x 반복 ----------
-VR_E = dict(L000=245525.5146265931, ficus=164393654.74356765)   # E = 논문 PG 비교 설정 (L000 167 x 11, ficus 400 x 11) 에서 논문 절차 (황금분할 10 회) 로 맞춘 값, 격자 내내 고정
+VR_E = dict(L000=245525.5146265931, ficus=164393654.74356765) if VR_IT == 11 else {}   # 반복 11 에서 맞춘 E (예전 판); 다른 반복 수면 그 설정에서 논문 절차로 다시 맞춤 (ensure_E)
 JOBS = []
 GRID = f"{OUT}/g"
 os.makedirs(GRID, exist_ok=True)
@@ -557,7 +558,7 @@ def one_run_cached(m, t, N, k):
     return json.load(open(f)) if os.path.exists(f) else None
 
 
-VR_REF = dict(vasedeck=400)                                          # VR-GS E 를 맞추는 기준 서브스텝 (프레임 간격 / 논문 비교 dt 1e-4), 반복 11
+VR_REF = dict(vasedeck=400, pillow2sofa=200, L000=167, ficus=400)                                         # VR-GS E 를 맞추는 기준 서브스텝 (프레임 간격 / 논문 비교 dt 1e-4), 반복 11
 
 
 def ensure_E(t):
@@ -569,11 +570,16 @@ def ensure_E(t):
         r = run_free("vrgs", t, N, "probe", O)
     r = json.load(open(f"{O}/res.json"))
     VR_E[t] = r["E"]
-    say(f"[VR-GS E] {t}: 논문 절차 (황금분할 10 회, N {N} x 반복 11) E = {r['E']}")
+    say(f"[VR-GS E] {t}: 논문 절차 (황금분할 10 회, N {N} x 반복 {VR_IT}) E = {r['E']}")
 
 
 if a.jobs:
     for m, t, Ns in json.load(open(a.jobs)):
+        if Ns == "hi":                                                     # [final_pa_bl] 대표 점 하나: 준비 판의 공식 서브스텝 (PhysTwin N0 · Spring-Gaus 학습 끝 n_step)
+            hi = prep(m, t)
+            if hi is None:
+                say(f"[준비 실패] {m} {t}"); continue
+            Ns = [hi]
         if Ns == "auto":                                                   # 공개 코드 베이스라인: 준비 판 (논문 절차 물성) 뒤 공식 서브스텝 hi 의 1/4, 1/2, 1 배
             hi = prep(m, t)
             if hi is None:
@@ -582,6 +588,11 @@ if a.jobs:
         if m == "vrgs":
             ensure_E(t)
         JOBS += [dict(m=m, t=t, N=N) for N in Ns]
+    if a.prep_only:
+        json.dump(JOBS, open(f"{OUT}/prep_jobs.json", "w"), ensure_ascii=False, indent=1)
+        open(f"{OUT}/prep.END", "w").write(time.strftime("%F %T") + "\n")
+        say("[준비만 끝]")
+        os._exit(0)
     for k in range(1, a.reps + 1):                                     # 반복을 바깥으로: 같은 설정이 시간상 떨어져 측정됨 (워밍업·열 효과 분산)
         for j in JOBS:
             if time.time() >= a.until:

@@ -94,7 +94,7 @@ if a.mode == "prep":
     lo, hi = Xs.reshape(-1, 3).min(0).values, Xs.reshape(-1, 3).max(0).values
     pad = 0.1 * float((hi - lo).max())
     lo, hi = (lo - pad).tolist(), (hi + pad).tolist()
-    fix = bool(S["BOX"]) or bool(S["ROT"])
+    fix = bool(S["BOX"]) or bool(S["ROT"]) or bool(S["BOXW"])
     if S["FZ"] is not None:
         gz = float(to_sg(torch.tensor([[0.0, 0.0, S["FZ"]]]))[0, 2])
         zmin = Xs[..., 2].amin(dim=1)                                                           # 프레임별 최저점
@@ -158,6 +158,8 @@ DYNAMIC:
     if fix:
         for (pt, sz) in S["BOX"]:
             bc["fix_boxes_sg"].append((to_sg(torch.tensor([pt]))[0].tolist(), [float(q) * Ks for q in sz]))
+        if S["BOXW"]:                                                                           # [final_pa_bl] PG 시간 구간 cuboid (시각은 시뮬 초, 실행 때 c 로 나눠 비교)
+            bc["fix_boxes_sg_w"] = [(to_sg(torch.tensor([b_[0]]))[0].tolist(), [float(q) * Ks for q in b_[1]], b_[2], b_[3], c) for b_ in S["BOXW"]]
         bc["rot_sg"] = [dict(pt=to_sg(torch.tensor([g_[0]]))[0].tolist(), n=g_[1], hh=g_[2] * Ks, rr=g_[3] * Ks, wins=g_[4], c=c) for g_ in S["ROT"]]   # paper_remeasure2: PG 회전 구동기 (SG 길이 단위, 시간은 c 배)
         torch.save(dict(x0=to_sg(x0).float(), v0=(S["v0"] * (Ks / c)).float()), f"{FIT}/af_v0.pt")
         bc["v0"] = f"{FIT}/af_v0.pt"
@@ -172,7 +174,7 @@ sys.path.insert(0, SG)
 GPU = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
 BC = json.load(open(BCJ))
 import lib.models.spring_mass.Spring_Mass as SMM                                              # noqa: E402
-if BC["fix_boxes_sg"] or BC["v0"] or BC.get("rot_sg"):                                          # (2) ficus 화분 고정·초기 속도장 (+ 회전 구동 앵커)
+if BC["fix_boxes_sg"] or BC["v0"] or BC.get("rot_sg") or BC.get("fix_boxes_sg_w"):                                          # (2) ficus 화분 고정·초기 속도장 (+ 회전 구동 앵커)
     _V = torch.load(BC["v0"])
     _init0, _step0 = SMM.Spring_Mass.initialize, SMM.Spring_Mass.step
 
@@ -189,10 +191,14 @@ if BC["fix_boxes_sg"] or BC["v0"] or BC.get("rot_sg"):                          
             m_ = (ax.abs() < g_["hh"]) & (rp.norm(dim=-1) < g_["rr"])
             self.af_rot.append((m_, n_, p_, g_)); self.af_fix = self.af_fix | m_
         self.af_nstep = 0
+        self.af_fixw = [(C.in_boxes(self.init_xyz.float(), [b_[:2]]) & ~self.af_fix, b_[2], b_[3], b_[4]) for b_ in (BC.get("fix_boxes_sg_w") or [])]
         v = V0[idx].mean(1)
         v[self.af_fix] = 0.0
+        for (m_, t0_, t1_, c_) in self.af_fixw:                                                   # 시각 0 에 켜진 구간 고정 앵커도 속도 0
+            if C.box_active(t0_, t1_, 0.0):
+                v[m_] = 0.0
         self.init_v = v.to(self.init_xyz.dtype)
-        print(f"[ficus 처리] 앵커 {self.n_points}, 고정 {int(self.af_fix.sum())}, 초기 속력 최대 {float(v.norm(dim=1).max()):.3g}", flush=True)
+        print(f"[ficus 처리] 앵커 {self.n_points}, 고정 {int(self.af_fix.sum())}, 구간 고정 {[(int(q[0].sum()), q[1], q[2]) for q in self.af_fixw]}, 초기 속력 최대 {float(v.norm(dim=1).max()):.3g}", flush=True)
 
     def _step(self, xyz, v, K, m, rebound_k, fric_k, damp, dt):
         xyz_in = xyz
@@ -212,11 +218,28 @@ if BC["fix_boxes_sg"] or BC["v0"] or BC.get("rot_sg"):                          
             vnew = torch.where(mm, ((xr - xyz_in) / float(dt)).to(v.dtype), vnew)
             fx = fx & ~mm
             base = base
+        t_w = self.af_nstep * float(dt)                                                           # [final_pa_bl] 이 서브스텝 시작 시각 (SG 단위; 구간 고정용)
         self.af_nstep += 1
         keep = self.af_fix[:, None]
         for (m_, _n, _p, _g) in self.af_rot:
             keep = keep & ~m_[:, None]
+        if self.af_fixw:                                                                          # PG cuboid start <= t < end 동안만 처음 위치·속도 0
+            on = torch.zeros_like(self.af_fix)
+            for (m_, t0_, t1_, c_) in self.af_fixw:
+                if C.box_active(t0_, t1_, t_w / c_):
+                    on = on | m_
+            if bool(on.any()):
+                keep = keep | on[:, None]
+                v = torch.where(on[:, None], torch.zeros_like(v), v)
         return torch.where(keep, self.init_xyz, xyz), torch.where(self.af_fix[:, None], vnew, v)
+
+    _fwd0 = SMM.Spring_Mass.forward
+
+    def _forward(self, xyz_all, xyz, v, frame_id, *x, **k):
+        if self.af_fixw:                                                                          # [final_pa_bl] 시각 = 프레임 번호에서 (학습 반복마다 처음부터 다시 도는 롤아웃도 맞게)
+            self.af_nstep = (int(frame_id) - 1) * int(self.n_step)
+        return _fwd0(self, xyz_all, xyz, v, frame_id, *x, **k)
+    SMM.Spring_Mass.forward = _forward
     SMM.Spring_Mass.initialize = _initialize
     SMM.Spring_Mass.step = _step
 import train as T                                                                               # noqa: E402  (공식 train.py, __main__ 블록은 안 돎)

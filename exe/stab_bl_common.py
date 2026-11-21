@@ -58,12 +58,16 @@ def load_scene(a, dev="cpu"):
         pl = [b for b in cfg["boundary_conditions"] if b.get("type") == "surface_collider"][0]
         assert abs(float(pl["normal"][2]) - 1.0) < 1e-6, "바닥 법선이 z 가 아님"
         FZ = float(pl["point"][2])
-    BOX = []
+    BOX, BOXW = [], []
     if a.cfg_bc:
         for bc in (cfg.get("boundary_conditions") or []):
             if bc.get("type") == "cuboid":
                 assert max(abs(float(q)) for q in bc["velocity"]) == 0.0
-                BOX.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]]))
+                w_ = cuboid_window(bc, L * float(cfg["frame_dt"]))
+                if w_ is None:
+                    BOX.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]]))
+                else:                                                                    # final_pa_bl: 시간 구간 cuboid (pillow2sofa 방석 받침) -> BOXW
+                    BOXW.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]], w_[0], w_[1]))
             elif bc.get("type") == "enforce_particle_translation":                       # paper_remeasure2: 정지 영역 (속도 0) 도 조작점 상자로 (vasedeck 윗부분·pillow2sofa 소파)
                 assert max(abs(float(q)) for q in bc["velocity"]) == 0.0, "속도가 있는 translation 은 미지원"
                 BOX.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]]))
@@ -79,9 +83,25 @@ def load_scene(a, dev="cpu"):
     g = [float(q) for q in cfg["g"]]
     assert abs(g[0]) < 1e-12 and abs(g[1]) < 1e-12 and g[2] <= 0, f"중력이 -z 또는 0 이 아님 {g}"   # ficus 공식 config = 0
     S = dict(d=d, cfg=cfg, L=L, x0=x0, X=d["x"][:L + 1], v0=d["v"][0].double(), vol=vol, rho=rho, mass=vol * rho,
-             EXT=float((x0.max(0).values - x0.min(0).values).norm()), FZ=FZ, BOX=BOX, ROT=ROT, g=g, frame_dt=float(cfg["frame_dt"]),
+             EXT=float((x0.max(0).values - x0.min(0).values).norm()), FZ=FZ, BOX=BOX, BOXW=BOXW, ROT=ROT, g=g, frame_dt=float(cfg["frame_dt"]),
              E=float(cfg["E"]), nu=float(cfg["nu"]))
     return S
+
+
+def cuboid_window(bc, horizon):
+    """[final_pa_bl] PG cuboid 의 시간 구간 (PhysGaussian mpm_utils set_velocity_on_cuboid: start_time <= t < end_time 동안만 상자 안 격자 속도 = velocity,
+    그 뒤 자유). 구간이 롤아웃 [0, horizon] 전체를 덮으면 None (= 예전처럼 상시 고정 -- 결과 불변), 아니면 (start, end).
+    reset=1 (end 뒤 15 dt 동안 전체 격자 속도 0) 은 end 가 롤아웃 밖일 때만 허용."""
+    t0, t1 = float(bc.get("start_time", 0.0)), float(bc.get("end_time", 1e3))
+    if t0 <= 0.0 and t1 > horizon:
+        return None
+    assert int(bc.get("reset", 0)) == 0, f"구간 안에서 끝나는 reset cuboid 는 미지원 {bc}"
+    return (t0, t1)
+
+
+def box_active(t0, t1, t, eps=1e-6):
+    """PG 조건 start <= t < end (t 는 프레임 시작 시각; 부동소수 오차 eps)."""
+    return t0 <= t + eps and t + eps < t1
 
 
 def time_scale(Kl, g):
@@ -124,7 +144,8 @@ def rot_traj(x0, rot, masks, L, h):
 def in_boxes(x, boxes):
     """|x − point| < size (모든 축) -- vrgs_xpbd 고정 상자와 같은 판정."""
     m = torch.zeros(x.shape[0], dtype=torch.bool, device=x.device)
-    for (pt, sz) in boxes:
+    for b_ in boxes:
+        pt, sz = b_[0], b_[1]
         m |= ((x - torch.as_tensor(pt, device=x.device, dtype=x.dtype)).abs() < torch.as_tensor(sz, device=x.device, dtype=x.dtype)).all(-1)
     return m
 

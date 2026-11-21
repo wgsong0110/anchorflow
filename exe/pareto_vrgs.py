@@ -39,6 +39,8 @@ ap.add_argument("--E", type=float, default=0.0, help="run: 고정 E (0 = fit_jso
 ap.add_argument("--nfit", type=int, default=10)
 ap.add_argument("--span", type=float, default=2.0, help="탐색 폭 (정답 E 의 10^±span)")
 ap.add_argument("--warm", type=int, default=2)
+ap.add_argument("--no_collide", action="store_true", help="[final_fix_vrgs] 물체-물체 충돌 끄기 (예전 판; 케이지 성분 하나면 원래 없음)")
+ap.add_argument("--contact_fric", choices=["none", "stick"], default="none", help="[final_fix_vrgs] 물체-물체 접촉 접선 처리 (논문·Deul 2016 인용에 계수 없음 -> 기본 마찰 없음)")
 ap.add_argument("--dump_F", action="store_true", help="run: 첫 설정 덤프에 입자 F (결속 사면체 F) 도 -> pred.pt {pred, F} (안정 서브스텝 표 렌더용, doc/pareto.md 절 S)")
 a = ap.parse_args()
 RTC.RAWPTR[0] = True
@@ -56,12 +58,22 @@ if a.floor == "vel":
     pl = [b for b in cfg["boundary_conditions"] if b.get("type") == "surface_collider"][0]
     assert abs(float(pl["normal"][2]) - 1.0) < 1e-6, "바닥 법선이 z 가 아님"
     FZ = float(pl["point"][2])
-BOX = []
+BOX, BOXW, BBOX = [], [], None
 if a.cfg_bc:
     for bc in (cfg.get("boundary_conditions") or []):
         if bc.get("type") == "cuboid":
             assert max(abs(float(q)) for q in bc["velocity"]) == 0.0
-            BOX.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]]))
+            _t0, _t1 = float(bc.get("start_time", 0.0)), float(bc.get("end_time", 1e3))
+            if _t0 <= 0.0 and _t1 > L * float(cfg["frame_dt"]):
+                BOX.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]]))
+            else:                                                                        # final_pa_bl: PG 시간 구간 cuboid (start <= t < end 동안만 고정, 뒤엔 자유; pillow2sofa 방석 받침)
+                assert int(bc.get("reset", 0)) == 0, "구간 안에서 끝나는 reset cuboid 는 미지원"
+                BOXW.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]], _t0, _t1))
+        elif bc.get("type") == "bounding_box":                                          # [final_fix_vrgs] PG add_bounding_box (padding 3 칸, 시간 구간 기본 0~999 s)
+            assert float(bc.get("start_time", 0.0)) <= 0.0 and float(bc.get("end_time", 999.0)) > L * float(cfg["frame_dt"]), "시간 구간이 있는 bounding_box 는 미지원"
+            _gl, _ng = float(cfg.get("grid_lim", 2.0)), int(cfg["n_grid"])                 # PG utils/decode_param.py: grid_lim 기본 2.0
+            _dx = _gl / _ng
+            BBOX = ([2 * _dx] * 3, [(_ng - 3) * _dx] * 3)                                   # 노드 i<3 (위치 <= 2dx) · i>=n_grid-3 (위치 >= (n_grid-3)dx) 바깥 속도 0
         elif bc.get("type") == "enforce_particle_translation":                          # paper_remeasure2: 정지 영역 (속도 0) 도 고정 정점으로 (vasedeck 윗부분·pillow2sofa 소파)
             assert max(abs(float(q)) for q in bc["velocity"]) == 0.0 and float(bc.get("start_time", 0.0)) == 0.0 and float(bc.get("end_time", 1e3)) >= 1e3 * 0.0 + 0.9, "시간 구간이 있는 translation 은 미지원"
             BOX.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]]))
@@ -92,10 +104,11 @@ def parse(sv):
 
 SETS = [parse(q) for q in a.set]
 S = VG.VRGS(x0, d["v"][0], m, rho_p, E_GT, NU, cfg["g"], float(cfg["frame_dt"]), SETS[0][0], SETS[0][1], vmax=a.vmax, floor_z=FZ, fix_boxes=BOX,
-            damp_scale=DSC, damp_dt=float(cfg["substep_dt"]), rot_bcs=ROT)
+            damp_scale=DSC, damp_dt=float(cfg["substep_dt"]), rot_bcs=ROT, fix_boxes_t=BOXW,
+            origin=(0.5 * (x0.min(0).values + x0.max(0).values)).tolist() if BOXW else None, collide=not a.no_collide, bbox=BBOX, cfric=(1.0 if a.contact_fric == "stick" else 0.0))   # [final_pa_bl] 구간 고정 장면 (정지에서 풀려 떨어짐) 만 float32 반올림 정지 막는 원점 이동 (vrgs_xpbd 주석)
 INFO = S.info()
-print(f"[VR-GS] {a.tag} 입자 {S.Np}, 케이지 정점 {S.nv} 사면체 {S.nt} 칸 {S.h:.5f} 색 {len(S.colors)} 고정 정점 {INFO['nfixed']}, 질량 케이지 {S.mass_cage:.4g} / 입자 {S.mass_part:.4g}, "
-      f"결속 무게중심 최소 {S.bind_min:.2e}, 바닥 {FZ}, 감쇠 {DSC}, 정답 E {E_GT:g} ν {NU}, 프레임 {L}, EXT {EXT:.5f}", flush=True)
+print(f"[VR-GS] {a.tag} 입자 {S.Np}, 케이지 정점 {S.nv} 사면체 {S.nt} 칸 {S.h:.5f} 색 {len(S.colors)} 고정 정점 {INFO['nfixed']} (구간 고정 {INFO.get('nfixed_t')}), 질량 케이지 {S.mass_cage:.4g} / 입자 {S.mass_part:.4g}, "
+      f"결속 무게중심 최소 {S.bind_min:.2e}, 물체 (케이지 성분) {S.ncomp} 개 (큰 순 {S.comp_sizes}) 충돌 {'켬 d %.5f 마찰 %s' % (S.cd_d, a.contact_fric) if S.collide else '없음'}, 경계 상자 {BBOX}, 바닥 {FZ}, 감쇠 {DSC}, 정답 E {E_GT:g} ν {NU}, 프레임 {L}, EXT {EXT:.5f}", flush=True)
 print(f"[명령] {' '.join(sys.argv)}", flush=True)
 
 

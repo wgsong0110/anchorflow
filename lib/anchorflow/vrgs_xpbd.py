@@ -17,9 +17,14 @@
   - 풀이 순서: 가우스-자이델, 사면체 탐욕 색칠 (같은 색은 꼭짓점을 공유하지 않음) -- GPU XPBD 표준.
   - 질량: 사면체 집중 질량 ρ V_T / 4 (ρ = 사면체 안 가우시안의 입자 밀도 평균, 없으면 config 밀도).
   - 바닥: 정점 비관통 z ≥ 바닥 (반복마다 투영) + 고착 (닿은 정점은 이번 서브스텝 접선 이동 취소) = 정답 sticky collider.
-  - 고정 경계 (ficus cuboid): rest 위치가 상자 안인 정점 역질량 0.
+  - 고정 경계 (ficus cuboid): rest 위치가 상자 안인 정점 역질량 0. 시간 구간 cuboid (pillow2sofa) 는 PG 와 같이 start <= t < end 동안만 (프레임 시작 시각 판정).
   - 감쇠: 씬 config grid_v_damping_scale 를 같은 시간율로 정점 속도에 (서브스텝마다 s^(dt/substep_dt)); lego 는 1 (없음).
   - 초기 속도: 입자 속도의 질량·무게중심 가중 평균 (한 번, 프레임 0).
+  - [final_fix_vrgs] 물체-물체 충돌: 논문은 충돌을 다루지만 (4.3.1 "relative density between two objects based on their deformations under collision",
+    6.2 "dining table and objects on it serve as collision boundaries ... [Deul et al. 2016]", 표 1 "CD: collision detections per step" 5~20) 알고리즘 세부가 없음 ->
+    XPBD 표준: 물체 = 케이지 연결 성분, 다른 물체 정점 쌍의 비관통 부등식 구속 |x_i − x_j| >= d (d = 케이지 칸 h, α = 0), 마찰 없음 (cfric 0; 1 = 고착),
+    해시 격자 검출을 반복마다 (서브스텝당 CD = 반복 수), 야코비 + 구속 평균. 성분 하나 (레고) 면 커널 없음.
+  - [final_fix_vrgs] PG bounding_box: 격자 노드 i < 3 / i >= n_grid − 3 의 바깥 방향 속도 0 (미끄럼 벽) -> 정점 축별 [2 dx, grid_lim − 3 dx] 투영.
 서브스텝 안에서는 입자를 쓰지 않는다 (가우시안 갱신은 프레임 끝 한 번).
 """
 from __future__ import annotations
@@ -143,6 +148,70 @@ __global__ void vg_floor(int n, float* x, const float* xp, const float* w, float
   if (w[i] > 0.f && x[3*i+2] < fz) { x[3*i+2] = fz; x[3*i] = xp[3*i]; x[3*i+1] = xp[3*i+1]; }
 }
 
+// [final_fix_vrgs] 물체-물체 충돌 (XPBD 표준 정점 비관통 부등식 구속, 논문에 세부 없음 -- doc/pareto.md 절 P.1c)
+//   해시 격자 (칸 = 접촉 거리 d = 케이지 칸 h) 에 정점을 넣고, 다른 성분 (케이지 연결 성분 = 물체) 정점 j 와 |x_i − x_j| < d 이면
+//   C = |x_i − x_j| − d >= 0 를 강성 무한 (α = 0) 으로 투영. 마찰 없음이 기본 (fr 0); fr 1 = 접선 상대 변위 취소 (고착, 예전 판).
+//   야코비 + 구속 평균 (Macklin et al. 2014 Unified Particle Physics 4.2): 정점마다 접촉 보정 합 / 접촉 수.
+__device__ __forceinline__ unsigned vg_hash(int ix, int iy, int iz, unsigned mask) {
+  return (((unsigned)ix * 73856093u) ^ ((unsigned)iy * 19349663u) ^ ((unsigned)iz * 83492791u)) & mask;
+}
+__global__ void vg_hclear(int n, int* cnt) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < n) cnt[i] = 0;
+}
+__global__ void vg_hins(int n, const float* x, const int* comp, float ih, unsigned mask, int cap, int* cnt, int* slot) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x; if (i >= n || comp[i] < 0) return;
+  unsigned b = vg_hash((int)floorf(x[3*i]*ih), (int)floorf(x[3*i+1]*ih), (int)floorf(x[3*i+2]*ih), mask);
+  int k = atomicAdd(&cnt[b], 1);
+  if (k < cap) slot[b*cap + k] = i;
+}
+__global__ void vg_contact(int n, const float* x, const float* xp, const float* w, const int* comp, float ih, unsigned mask, int cap,
+                           const int* cnt, const int* slot, float d, float fr, float* dx) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x; if (i >= n) return;
+  float ax = 0.f, ay = 0.f, az = 0.f; int nc = 0;
+  float wi = w[i];
+  if (wi > 0.f && comp[i] >= 0) {
+    float xi = x[3*i], yi = x[3*i+1], zi = x[3*i+2];
+    float ui = xi - xp[3*i], vi = yi - xp[3*i+1], si = zi - xp[3*i+2];
+    int cx = (int)floorf(xi*ih), cy = (int)floorf(yi*ih), cz = (int)floorf(zi*ih);
+    int ci = comp[i];
+    float d2 = d*d;
+    for (int ox = -1; ox <= 1; ox++) for (int oy = -1; oy <= 1; oy++) for (int oz = -1; oz <= 1; oz++) {
+      int qx = cx+ox, qy = cy+oy, qz = cz+oz;
+      unsigned b = vg_hash(qx, qy, qz, mask);
+      int m = min(cnt[b], cap);
+      for (int k = 0; k < m; k++) {
+        int j = slot[b*cap + k];
+        if (comp[j] == ci) continue;
+        float xj = x[3*j], yj = x[3*j+1], zj = x[3*j+2];
+        if ((int)floorf(xj*ih) != qx || (int)floorf(yj*ih) != qy || (int)floorf(zj*ih) != qz) continue;   // 해시 충돌로 같은 버킷에 든 다른 칸 정점 (중복 방지)
+        float rx = xi-xj, ry = yi-yj, rz = zi-zj;
+        float r2 = rx*rx + ry*ry + rz*rz;
+        if (r2 >= d2 || r2 < 1e-20f) continue;
+        float r = sqrtf(r2), nx = rx/r, ny = ry/r, nz = rz/r;
+        float wj = w[j];
+        float sw = wi / (wi + wj);
+        float pen = d - r;
+        float dux = ui - (xj - xp[3*j]), duy = vi - (yj - xp[3*j+1]), duz = si - (zj - xp[3*j+2]);
+        float dn = dux*nx + duy*ny + duz*nz;
+        float tx = dux - dn*nx, ty = duy - dn*ny, tz = duz - dn*nz;
+        ax += sw*(pen*nx - fr*tx); ay += sw*(pen*ny - fr*ty); az += sw*(pen*nz - fr*tz);   // fr 0 = 마찰 없음 (기본), 1 = 고착
+        nc++;
+      }
+    }
+  }
+  float inv = nc > 0 ? 1.f / (float)nc : 0.f;
+  dx[3*i] = ax*inv; dx[3*i+1] = ay*inv; dx[3*i+2] = az*inv;
+}
+__global__ void vg_addx(int n, float* x, const float* dx) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x; if (i >= n) return;
+  x[3*i] += dx[3*i]; x[3*i+1] += dx[3*i+1]; x[3*i+2] += dx[3*i+2];
+}
+// [final_fix_vrgs] PG bounding_box (mpm_solver_warp add_bounding_box: 벽에서 padding 3 칸 안 격자 노드의 바깥 방향 속도 0 = 미끄럼 벽) -> 정점 축별 [lo, hi] 투영 (접선 자유)
+__global__ void vg_box(int n, float* x, const float* w, float lx, float ly, float lz, float hx, float hy, float hz) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x; if (i >= n || w[i] <= 0.f) return;
+  x[3*i] = fminf(fmaxf(x[3*i], lx), hx); x[3*i+1] = fminf(fmaxf(x[3*i+1], ly), hy); x[3*i+2] = fminf(fmaxf(x[3*i+2], lz), hz);
+}
+
 __global__ void vg_vel(int n, const float* x, const float* xp, float* v, float idt) {
   int i = blockIdx.x * blockDim.x + threadIdx.x; if (i >= n) return;
   for (int r = 0; r < 3; r++) v[3*i+r] = (x[3*i+r] - xp[3*i+r]) * idt;
@@ -264,7 +333,7 @@ class VRGS:
     """케이지 XPBD. x0 [Np,3] 입자 rest, v0 [Np,3], m [Np] 입자 질량, rho_p [Np] 입자 밀도."""
 
     def __init__(s, x0, v0, m, rho_p, E, nu, g, frame_dt, N, iters, vmax=30000, floor_z=None, fix_boxes=(), damp_scale=1.0, damp_dt=None,
-                 h=None, nrot=5, rot_bcs=()):
+                 h=None, nrot=5, rot_bcs=(), fix_boxes_t=(), origin=None, collide=True, bbox=None, hcap=16, cfric=0.0):
         dev = "cuda"
         s.Np = x0.shape[0]
         x0 = x0.to(dev).double()
@@ -304,7 +373,17 @@ class VRGS:
             msk = (ax.abs() < hh) & (rp.norm(dim=-1) < rr)
             s.kin_g.append(msk); s.kin |= msk
         s.fixed |= s.kin
+        # [final_pa_bl] 시간 구간 고정 상자 (PG cuboid start <= t < end): rest 위치가 상자 안인 정점은 그 구간 동안만 역질량 0, 뒤엔 자유 (프레임 시작 시각으로 판정)
+        s.fixw = []
+        for (pt, sz, t0, t1) in fix_boxes_t:
+            mw = ((V - torch.tensor(pt, device=dev, dtype=torch.float64)).abs() < torch.tensor(sz, device=dev, dtype=torch.float64)).all(-1) & ~s.fixed
+            s.fixw.append((mw, float(t0), float(t1)))
+        s.w_free = w.float().contiguous().clone()
+        s.w_free[s.fixed] = 0.0
         w[s.fixed] = 0.0
+        for (mw, t0, t1) in s.fixw:
+            if t0 <= 1e-6 < t1:
+                w[mw] = 0.0
         s.fr = 0
         s.vd = torch.zeros(s.nv, 3, device=dev, dtype=torch.float32)
         s.kin_u8 = s.kin.to(torch.uint8).contiguous()
@@ -317,6 +396,13 @@ class VRGS:
         vbar = (m_[:, None] * v0).sum(0) / m_.sum()
         vv = torch.where(Ms[:, None] > 0, Ps / Ms.clamp(min=1e-300)[:, None], vbar[None])
         vv[s.fixed] = 0.0
+        vv[w == 0.0] = 0.0
+        # [final_pa_bl] 좌표 원점 옮김 (평행 이동만; 동역학 불변): float32 위치에서 서브스텝 변위 g dt² 가 위치의 반 ulp 보다 작으면 (pillow2sofa: g 5, dt 1e-4 -> 5e-8,
+        #   z >= 1 의 반 ulp 6e-8) 정지에서 출발한 정점이 반올림으로 제자리에 머물고 v = (x − xp)/dt = 0 이 되어 영영 안 떨어진다 -> 시뮬 내부 좌표를 origin 기준으로.
+        #   출력 xo 는 프레임 끝 (시간 밖) 에 origin 을 더해 원래 좌표. origin None = 예전 그대로.
+        s.origin = None if origin is None else torch.as_tensor(origin, device=dev, dtype=torch.float64)
+        if s.origin is not None:
+            V = V - s.origin
         s.X0 = V.float().contiguous(); s.V0 = vv.float().contiguous()
         s.x = s.X0.clone(); s.xp = s.X0.clone(); s.v = s.V0.clone()
         s.w = w.float().contiguous()
@@ -324,10 +410,41 @@ class VRGS:
         s.lam = torch.zeros(2 * s.nt, device=dev); s.q = torch.zeros(s.nt, 4, device=dev); s.q[:, 3] = 1.0
         s.xo = torch.zeros(s.Np, 3, device=dev)
         s.g = [float(q) for q in g]; s.frame_dt = float(frame_dt); s.nu = float(nu)
-        s.fz = -1e30 if floor_z is None else float(floor_z)
+        s.fz = -1e30 if floor_z is None else float(floor_z) - (0.0 if s.origin is None else float(s.origin[2]))
         s.damp_scale, s.damp_dt = float(damp_scale), damp_dt
         s.nrot = int(nrot)
         s.aR = torch.zeros(s.nt, device=dev); s.aV = torch.zeros(s.nt, device=dev)
+        # [final_fix_vrgs] 물체 = 케이지 연결 성분 (사면체로 이어진 정점들). 성분이 둘 이상일 때만 물체-물체 충돌 (하나면 그래프에 커널을 넣지 않음 -> 레고 등 예전과 같음)
+        lab = torch.arange(s.nv, device=dev)
+        Tl = T.long()
+        while True:
+            tm = lab[Tl].min(1).values
+            nl = lab.scatter_reduce(0, Tl.reshape(-1), tm.repeat_interleave(4), reduce="amin")
+            nl = nl[nl]
+            if bool((nl == lab).all()):
+                break
+            lab = nl
+        _, comp = torch.unique(lab, return_inverse=True)
+        s.ncomp = int(comp.max()) + 1
+        s.comp_sizes = torch.bincount(comp).sort(descending=True).values[:8].tolist()
+        s.collide = bool(collide) and s.ncomp > 1
+        s.comp = comp.int().contiguous()
+        s.cd_d = float(s.h)                                                              # 접촉 거리 = 케이지 칸 (같은 격자 위 다른 물체 정점은 처음에 >= h; 칸 면 구멍 h/√2 < h 라 정점이 면을 못 지나감)
+        s.hcap = int(hcap)
+        s.cfric = float(cfric)                                                           # [final_fix_vrgs] 접촉 접선 처리: 0 = 마찰 없음 (논문·인용에 마찰 계수 없음 -> 기본), 1 = 고착 (예전 판 94f47ec)
+        hs = 1
+        while hs < 2 * s.nv:
+            hs *= 2
+        s.hsize = hs
+        if s.collide:
+            s.hcnt = torch.zeros(hs, device=dev, dtype=torch.int32)
+            s.hslot = torch.zeros(hs * s.hcap, device=dev, dtype=torch.int32)
+            s.cdx = torch.zeros(s.nv, 3, device=dev)
+        # [final_fix_vrgs] PG bounding_box 벽 (시뮬 내부 좌표 = origin 기준)
+        s.bbox = None
+        if bbox is not None:
+            o_ = [0.0, 0.0, 0.0] if s.origin is None else s.origin.tolist()
+            s.bbox = ([float(bbox[0][k]) - o_[k] for k in range(3)], [float(bbox[1][k]) - o_[k] for k in range(3)])
         s.set_setting(N, iters)
         s.set_E(E)
         s.g_sub = s.g_skin = None
@@ -348,10 +465,25 @@ class VRGS:
     def reset(s):
         s.fr = 0
         s.x.copy_(s.X0); s.xp.copy_(s.X0); s.v.copy_(s.V0); s.q.zero_(); s.q[:, 3] = 1.0
+        if s.fixw:
+            s._pin()
+
+    def _pin(s):
+        """[final_pa_bl] 프레임 시작 시각 t 에 켜진 구간 고정 상자의 정점 역질량 0 (+ 속도 0), 꺼진 상자는 원래 역질량. 그래프는 s.w 를 그대로 읽음."""
+        t = s.fr * s.frame_dt
+        w = s.w_free.clone()
+        on = torch.zeros_like(s.fixed)
+        for (mw, t0, t1) in s.fixw:
+            if t0 <= t + 1e-6 < t1:
+                on |= mw
+        w[on] = 0.0
+        s.w.copy_(w)
+        s.v[on] = 0.0
 
     def _rec_sub(s):
         M = _mod()
         f_pred, f_zero, f_solve, f_floor, f_vel, f_kin = (M.get_function(k) for k in ("vg_predict", "vg_zero", "vg_solve", "vg_floor", "vg_vel", "vg_kin"))
+        f_hclear, f_hins, f_contact, f_addx, f_box = (M.get_function(k) for k in ("vg_hclear", "vg_hins", "vg_contact", "vg_addx", "vg_box"))
         B = 128
         gv = ((s.nv + B - 1) // B,)
         i32, f32 = np.int32, np.float32
@@ -363,6 +495,15 @@ class VRGS:
             for _ in range(s.iters):
                 for (o, c) in s.colors:
                     f_solve(((c + B - 1) // B,), (B,), (i32(o), i32(c), _P(s.T), _P(s.x), _P(s.w), _P(s.Dmi), _P(s.aR), _P(s.aV), _P(s.lam), _P(s.q), i32(s.nrot)))
+                if s.collide:                                                           # [final_fix_vrgs] 충돌 검출 = 반복마다 (서브스텝당 CD = 반복 수; 논문 표 1 충돌 장면 CD 5~20, Ring Toss·Table Brick·Toy 는 CD = 반복)
+                    ih, mk, hc = f32(1.0 / s.cd_d), np.uint32(s.hsize - 1), i32(s.hcap)
+                    f_hclear(((s.hsize + B - 1) // B,), (B,), (i32(s.hsize), _P(s.hcnt)))
+                    f_hins(gv, (B,), (i32(s.nv), _P(s.x), _P(s.comp), ih, mk, hc, _P(s.hcnt), _P(s.hslot)))
+                    f_contact(gv, (B,), (i32(s.nv), _P(s.x), _P(s.xp), _P(s.w), _P(s.comp), ih, mk, hc, _P(s.hcnt), _P(s.hslot), f32(s.cd_d), f32(s.cfric), _P(s.cdx)))
+                    f_addx(gv, (B,), (i32(s.nv), _P(s.x), _P(s.cdx)))
+                if s.bbox is not None:
+                    lo_, hi_ = s.bbox
+                    f_box(gv, (B,), (i32(s.nv), _P(s.x), _P(s.w), f32(lo_[0]), f32(lo_[1]), f32(lo_[2]), f32(hi_[0]), f32(hi_[1]), f32(hi_[2])))
                 if s.fz > -1e29:
                     f_floor(gv, (B,), (i32(s.nv), _P(s.x), _P(s.xp), _P(s.w), f32(s.fz)))
             f_vel(gv, (B,), (i32(s.nv), _P(s.x), _P(s.xp), _P(s.v), f32(1.0 / s.dt)))
@@ -393,6 +534,8 @@ class VRGS:
             s.capture()
         if s.rotg:
             s._drive()
+        if s.fixw:
+            s._pin()
         e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         e0.record()
         for _ in range(s.N):
@@ -400,6 +543,8 @@ class VRGS:
         s.g_skin.replay()
         e1.record()
         torch.cuda.synchronize()
+        if s.origin is not None:
+            s.xo += s.origin.float()
         s.fr += 1
         return e0.elapsed_time(e1)
 
@@ -413,7 +558,7 @@ class VRGS:
                 f = max(0.0, min(t + s.frame_dt, t1) - max(t, t0)) / s.frame_dt
                 rs += r_ * f; ts += t_ * f
             n_ = torch.tensor(nv_, device=s.x.device, dtype=torch.float32)
-            off = s.x - torch.tensor(pt, device=s.x.device, dtype=torch.float32)
+            off = s.x - torch.tensor(pt, device=s.x.device, dtype=torch.float32) + (0.0 if s.origin is None else s.origin.float())
             rp = off - (off @ n_)[:, None] * n_
             v = rs * torch.cross(rp, n_.expand_as(rp), dim=-1) + ts * n_
             vd[msk] = v[msk]
@@ -426,5 +571,5 @@ class VRGS:
         return (Ds @ s.Dmi.reshape(-1, 3, 3))[s.tid.long()]
 
     def info(s):
-        return dict(h=s.h, nv=s.nv, nt=s.nt, ncolor=len(s.colors), nfixed=int(s.fixed.sum()), mass_cage=s.mass_cage, mass_part=s.mass_part,
+        return dict(h=s.h, nv=s.nv, nt=s.nt, ncolor=len(s.colors), ncomp=s.ncomp, comp_sizes=s.comp_sizes, collide=s.collide, contact_d=s.cd_d, contact_fric=s.cfric, bbox=s.bbox, nfixed=int(s.fixed.sum()), nfixed_t=[int(q[0].sum()) for q in s.fixw], mass_cage=s.mass_cage, mass_part=s.mass_part,
                     bind_min=s.bind_min, N=s.N, iters=s.iters, dt=s.dt, damp=s.damp, E=s.E, nu=s.nu)
