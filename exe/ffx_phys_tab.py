@@ -13,8 +13,12 @@ MS = [("mpm", "정답 MPM (PG)"), ("ours", "우리"), ("ipg", "i-PG"), ("omni", 
 ELONLY = ("vrgs", "phystwin", "springgaus")
 SKIP = ("dV_series", "E_series")
 P, V = [], []
+import re
+OK_J = re.compile(r"^(mpm_(L000|pillow2sofa|bread|wolf)|ours_(L000|pillow2sofa|bread|wolf)_(def|k2|k4|be|mid|q1|nofpi|q27|q64|c075|c15|c20|ss\d+\.dump)|(vrgs|phystwin|springgaus)_(L000|pillow2sofa|bread|wolf)_n\d+)$")
 for d in sorted(glob.glob(f"{src}/*/")):
     j = os.path.basename(d.rstrip("/"))
+    if not OK_J.match(j):                                        # 이 실행기 (exe/ffx_phys_drv.sh) 작업 이름만 (같은 R2 폴더의 다른 에이전트 판 제외)
+        continue
     if os.path.exists(f"{d}/phys.json"):
         r = json.load(open(f"{d}/phys.json"))
         r = {k: v for k, v in r.items() if k not in SKIP}
@@ -92,7 +96,8 @@ AVARS = ["def", "be", "mid", "q1", "nofpi", "q27", "q64", "c075", "c15", "c20", 
 
 def amiss(rows):
     have = {(r["scene"], r["variant"]) for r in rows}
-    rows = rows + [dict(method="ours", scene=s, variant=v, N=v, note="미측정") for s, _ in SC for v in AVARS if (s, v) not in have]
+    FAILV = {("wolf", f"ss{n}.dump"): "실행 실패 (CUDA_ERROR_ILLEGAL_ADDRESS; 같은 판 시간 측정 runs_nd/wolf_ss%d_r1 도 실패/발산) -- 덤프 없음" % n for n in (32, 64, 128)}
+    rows = rows + [dict(method="ours", scene=s, variant=v, N=v, note=FAILV.get((s, v), "미측정")) for s, _ in SC for v in AVARS if (s, v) not in have]
     return sorted(rows, key=lambda r: ([s for s, _ in SC].index(r["scene"]), AVARS.index(r["variant"]) if r["variant"] in AVARS else 99))
 
 
@@ -197,14 +202,15 @@ for s_, sn in SC:
                  f(r.get("e_drift_max"), 1, 3), f(r.get("freefall_mom_err"), 100, 2), f(r.get("jitter_d2"), 1e3, 2),
                  f(v.get("niqe"), 1, 2), f(v.get("musiq"), 1, 1), f(v.get("clipiqa"), 1, 3), f(v.get("warp_err"), 1e3, 2), f(v.get("psnr"), 1, 2), f(v.get("lpips"), 1, 3)]
         if r.get("frames") is None:
-            cells = [r"\multicolumn{13}{c}{미측정}"]
-        L.append(f"{sn if i == 0 else ''} & " + r["variant"].replace(".dump", "").replace("_", r"\_") + " & " + " & ".join(cells) + r" \\")
+            cells = [r"\multicolumn{13}{c}{%s}" % ("실행 실패 (CUDA 잘못된 메모리 접근, 시간 측정 판도 실패)" if "실행 실패" in r.get("note", "") else "미측정")]
+        part = "덤프 일부" in r.get("note", "")
+        L.append(f"{sn if i == 0 else ''} & " + r["variant"].replace(".dump", "").replace("_", r"\_") + (f"$^\\dagger$({r['frames']})" if part else "") + " & " + " & ".join(cells) + r" \\")
     L.append(r"\midrule")
 L[-1] = r"\bottomrule"
 L += [r"\end{tabular}", "", r"\begin{minipage}{0.97\linewidth}\scriptsize",
       r"ablation 판마다 정답 없이 재는 물리 지표와 시각 품질 (파레토 표와 같은 정의$\cdot$같은 코드 \texttt{exe/ffx\_phys.py}$\cdot$\texttt{exe/ffx\_vis.py}, 정의 R2 \texttt{lbours/final\_fix/metrics\_def.md}). "
       r"덤프 = R2 \texttt{lbours/final\_fix/runs\_nd/<장면>\_<판>\_r1} (반복 1); ss$N$ (E, 프레임당 걸음 $N$, 50 프레임) 은 같은 명령에 덤프만 붙여 다시 돌림 (\texttt{ss$N$.dump}). "
-      r"지표 정의는 파레토 물리$\cdot$시각 표 주석과 같음; 관통$\cdot$자유낙하는 바닥 없는 장면 (pillow2sofa$\cdot$bread) 에서 --; PSNR$\cdot$LPIPS 는 같은 카메라 정답 MPM 렌더 대비 (ss$N$ 은 50 프레임까지).",
+      r"지표 정의는 파레토 물리$\cdot$시각 표 주석과 같음; 관통$\cdot$자유낙하는 바닥 없는 장면 (pillow2sofa$\cdot$bread) 에서 --; PSNR$\cdot$LPIPS 는 같은 카메라 정답 MPM 렌더 대비 (ss$N$ 은 50 프레임까지). $^\dagger$(n) = 덤프 판이 발산해 n 프레임까지만 (그 프레임까지로 잼); 레고$\cdot$wolf 자유낙하와 bread 에너지 비는 파레토 표와 같은 이유로 --.",
       r"\end{minipage}", r"\end{center}"]
 open(f"{paper}/ablation_final_1115_metrics.tex", "w").write("\n".join(L) + "\n")
 print("ok", len(P), len(V), len(AP), len(AV))

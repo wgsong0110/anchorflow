@@ -35,8 +35,9 @@ ready() {   # 입력 준비 여부
     ours) rclone lsf $RUNS/$2_$3_r1/metrics.json 2>/dev/null | grep -q . && rclone lsf $RUNS/$2_$3_r1/pred.pt 2>/dev/null | grep -q .;;
     springgaus) [ -f /root/pr/bl.done ] || return 1; [ "$3" != sg ] && return 0
                 [ -s $PO/springgaus_pillow2sofa_prep/sg_train.json ] && return 0
-                rclone lsf $OX/P2/p/springgaus_pillow2sofa_prep/sg_train.json 2>/dev/null | grep -q . || return 1
-                rclone copy $OX/P2/p/springgaus_pillow2sofa_prep $PO/springgaus_pillow2sofa_prep -q --transfers 8; [ -s $PO/springgaus_pillow2sofa_prep/sg_train.json ];;
+                SGP=${FX_SG_PREP:-$OX/P2/p/springgaus_pillow2sofa_prep}                    # final_fix_sg 준비 판 (R2 경로)
+                rclone lsf $SGP/sg_train.json 2>/dev/null | grep -q . || return 1
+                rclone copy $SGP $PO/springgaus_pillow2sofa_prep -q --transfers 8; [ -s $PO/springgaus_pillow2sofa_prep/sg_train.json ];;
     *) [ -f /root/pr/bl.done ];;
   esac
 }
@@ -122,8 +123,8 @@ worker() {   # $1 카드 (일꾼 번호 WID; 카드 하나에 일꾼 여럿 가�
   echo "[w${WID:-$1} $(date '+%F %T')] 일꾼 끝"
 }
 
-# 앞 인스턴스에서 끝난 작업 (R2 DONE) 은 건너뜀 -- bread 는 빼고 (앞 판의 bread 정답 렌더 폴더가 0 프레임뿐이었음)
-rclone lsf $RP --dirs-only 2>/dev/null | while read -r d; do J=${d%/}; case $J in *_bread*|*bread_*) continue;; esac
+# 앞 인스턴스에서 끝난 작업 (R2 DONE) 은 건너뜀 (11-16 02 시 이후 R2 DONE 은 bread 전 프레임 정답 폴더 판)
+rclone lsf $RP --dirs-only 2>/dev/null | while read -r d; do J=${d%/}
   rclone lsf $RP/$J/DONE 2>/dev/null | grep -q . && { mkdir -p $X/$J; touch $X/$J/DONE; echo "[건너뜀 R2 DONE] $J"; }; done
 NG=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l); NW_=${FX_WORKERS:-$NG}
 WP=""

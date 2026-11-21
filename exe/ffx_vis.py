@@ -25,6 +25,7 @@ ap.add_argument("--png", required=True)
 ap.add_argument("--ref", default="")
 ap.add_argument("--out", required=True)
 ap.add_argument("--iqa", default="niqe,brisque,musiq,clipiqa")
+ap.add_argument("--ref_only", action="store_true", help="기존 --out 의 값은 두고 정답 렌더 대비 (PSNR·SSIM·LPIPS) 만 다시 재어 합침")
 a = ap.parse_args()
 dev = "cuda"
 FR = sorted(glob.glob(f"{a.png}/*.png"))
@@ -39,11 +40,15 @@ def tens(x):
     return torch.as_tensor(x).permute(2, 0, 1)[None].to(dev)
 
 
+assert not a.ref or RF, f"정답 렌더 PNG 없음: {a.ref}"
 res = dict(frames=len(FR) - 1)
+if a.ref_only:
+    res = json.load(open(a.out))
 # ---- 무참조 IQA ----
-import pyiqa  # noqa: E402
-res["pyiqa_version"] = getattr(pyiqa, "__version__", "?")
-for name in [q for q in a.iqa.split(",") if q]:
+if not a.ref_only:
+    import pyiqa  # noqa: E402
+    res["pyiqa_version"] = getattr(pyiqa, "__version__", "?")
+for name in ([] if a.ref_only else [q for q in a.iqa.split(",") if q]):
     try:
         M = pyiqa.create_metric(name, device=dev)
         vs = []
@@ -57,6 +62,10 @@ for name in [q for q in a.iqa.split(",") if q]:
     print(name, res.get(name), flush=True)
 
 # ---- warping error (RAFT) ----
+if a.ref_only:
+    FR_W = []
+else:
+    FR_W = FR
 from torchvision.models.optical_flow import raft_large, Raft_Large_Weights  # noqa: E402
 W8 = Raft_Large_Weights.C_T_SKHT_V2
 RAFT = raft_large(weights=W8, progress=False).to(dev).eval()
@@ -88,8 +97,8 @@ def warp(x, f):
 
 
 ws, occ = [], []
-prev = tens(img(FR[0]))
-for p in FR[1:]:
+prev = tens(img(FR[0])) if FR_W else None
+for p in FR_W[1:]:
     cur = tens(img(p))
     fb = flow(cur, prev)                                                              # t+1 -> t
     ff = flow(prev, cur)                                                              # t -> t+1
@@ -101,9 +110,10 @@ for p in FR[1:]:
     n = Mk.sum()
     ws.append(float((e * Mk).sum() / n.clamp_min(1))); occ.append(float(1 - Mk.float().mean()))
     prev = cur
-res["warp_err"] = float(np.mean(ws)); res["warp_occ_frac"] = float(np.mean(occ))
-res["raft_weights"] = "torchvision raft_large C_T_SKHT_V2"
-print("warp_err", res["warp_err"], flush=True)
+if FR_W:
+    res["warp_err"] = float(np.mean(ws)); res["warp_occ_frac"] = float(np.mean(occ))
+    res["raft_weights"] = "torchvision raft_large C_T_SKHT_V2"
+    print("warp_err", res["warp_err"], flush=True)
 del RAFT; torch.cuda.empty_cache()
 
 # ---- 정답 렌더 대비 ----
