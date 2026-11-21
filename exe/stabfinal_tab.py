@@ -22,9 +22,9 @@ TAGS = dict(lego="_f5", pillow2sofa="_f5", ship_plastic_lego="_f7", mic_metal_le
 AN = {s: json.load(open(f"{root}/{s}/an.json")) for s in SC if os.path.exists(f"{root}/{s}/an.json")}
 VIS = {s: (json.load(open(f"{root}/{s}/vis/vis.json")) if os.path.exists(f"{root}/{s}/vis/vis.json") else {}) for s in SC}
 OLD = json.load(open(hexan))["shapes"]["lego"]["methods"]
-# 레고 기존 (11-12 표 stab_results.tex 그대로): N_min, 물리 (뒤집힘, 관통, 떨림, 자유낙하, Chamfer, 통과 표시)
-LEGO_OLD = dict(pg=(43, ["0.00", "0.61", "0.44", "0.00", "0.73"], [1, 1, 1, 1, 1]),
-                ipg=(8, ["0.00", "0.63", "0.39", "0.00", "0.52"], [0, 1, 1, 1, 1]))
+# 레고 기존 (11-12 표 stab_results.tex 그대로, 원자료 R2 에 없음): N_min, 물리 (뒤집힘, 관통, 떨림, 자유낙하, Chamfer, 통과 표시) -> repro/data/stab_lego_pg_ipg_1112.json
+_LO = json.load(open(os.environ.get("SF_LEGO_OLD") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "repro", "data", "stab_lego_pg_ipg_1112.json")))
+LEGO_OLD = {m: (_LO[m]["N_min"], _LO[m]["phys"], _LO[m]["ok"]) for m in ("pg", "ipg")}
 LEGO_REF = ["0.00", "0.54", "0.28", "0.00"]
 
 

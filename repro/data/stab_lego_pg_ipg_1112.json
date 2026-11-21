@@ -1,0 +1,9 @@
+{
+ "_설명": "안정성 표 (stab_avg) 레고 PhysGaussian·i-PhysGaussian 칸. 11-12 기존 결과를 재사용한 값으로, 원자료 (반복 확정 세 실행의 덤프·지표) 가 R2 에 없다 (클러스터 /home/dkta/work/stab/lego 에만 있었음; R2 lbours/stab, lbours/stabhex, lbours/k1new, stab_a5, _vastmirror/stab 을 찾아봤으나 없음). 값의 출처 = 논문 repo stab_results.tex (2026-10-14 표, 11-12 갱신) 의 '반복 확정값' 표와 '물리 정합성' 표. exe/stabfinal_tab.py·stabfinal_rank.py 가 이 파일을 읽는다 (예전 LEGO_OLD 하드코딩).",
+ "원자료": "없음 (반복 확정 실행). 정수 스캔 1 회 값만 R2 stab_scan_table.json (2026-10-14) 에 있어 N_min 을 대조한다 (repro/make_tables.sh).",
+ "출처_tex": "paper/stab_results.tex 25행 (lego & 43 (43) & 16 (16) & 8 (8)), 40·42행 (lego PG·i-PG 물리 정합성, 3 실행 평균)",
+ "phys_열": ["detneg", "pen", "jit", "ff", "cd"],
+ "phys_단위": "% (관통·떨림·Chamfer 는 L 대비), 문자열 = 표에 찍힌 자리수 그대로",
+ "pg":  {"N_min": 43, "phys": ["0.00", "0.61", "0.44", "0.00", "0.73"], "ok": [1, 1, 1, 1, 1], "scan_key": "pg"},
+ "ipg": {"N_min": 8,  "phys": ["0.00", "0.63", "0.39", "0.00", "0.52"], "ok": [0, 1, 1, 1, 1], "scan_key": "ipg"}
+}

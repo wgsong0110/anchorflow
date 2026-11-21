@@ -9,7 +9,8 @@ SC = ["lego", "pillow2sofa", "ship_plastic_lego", "mic_metal_lego"]
 SN = dict(lego="Lego", pillow2sofa="pillow2sofa", ship_plastic_lego="ship", mic_metal_lego="mic")
 TAGS = dict(lego="_f5", pillow2sofa="_f5", ship_plastic_lego="_f7", mic_metal_lego="_f7")
 MS = ["pg", "ipg", "omni", "ours"]
-LEGO_OLD = dict(pg=(43, [0.00, 0.61, 0.44, 0.00, 0.73]), ipg=(8, [0.00, 0.63, 0.39, 0.00, 0.52]))   # stabfinal_tab.py 와 같음 (% 값)
+_LO = json.load(open(os.environ.get("SF_LEGO_OLD") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "repro", "data", "stab_lego_pg_ipg_1112.json")))
+LEGO_OLD = {m: (_LO[m]["N_min"], [float(x) for x in _LO[m]["phys"]]) for m in ("pg", "ipg")}   # stabfinal_tab.py 와 같은 파일 (% 값, 원자료 R2 에 없음)
 # (이름, 출처, 키, 낮을수록 좋음)
 MET = [("최소 N", "nmin", None, True),
        ("뒤집힘", "phys", "detneg", True), ("관통", "phys", "pen", True), ("떨림", "phys", "jit", True), ("자유낙하", "phys", "ff", True), ("Chamfer", "phys", "cd", True),

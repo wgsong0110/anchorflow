@@ -7,7 +7,7 @@
   python3 exe/ffx_phys_merge.py <출력>"""
 import glob, json, os, sys
 
-LB = os.path.expanduser("~/r2/result/anchorflow/lbours")
+LB = os.environ.get("LB") or os.path.expanduser("~/r2/result/anchorflow/lbours")
 OUT = sys.argv[1]
 os.makedirs(OUT, exist_ok=True)
 for f in glob.glob(f"{OUT}/*"):
@@ -47,6 +47,11 @@ for d in sorted(glob.glob(f"{LB}/final_pa/blx/*/g/*_dump/")):
 for d in sorted(glob.glob(f"{LB}/final_fix/bl_mpm/*/")):
     if os.path.exists(f"{d}/phys.json") or os.path.exists(f"{d}/vis.json"):
         L[os.path.basename(d.rstrip("/"))] = d
+# [repro] 대표 판이 하위 폴더에 있는 i-PG·Omni 칸 (예: i-PG wolf = ipg_wolf/post_N25e5_fr) -> repro/data/pareto_mpmbl_sources.json (예전엔 phys·vis 표에 손으로 채움)
+_SP = json.load(open(os.environ.get("PARETO_MPMBL_SRC") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "repro", "data", "pareto_mpmbl_sources.json")))
+for _k, _v in _SP.items():
+    if isinstance(_v, dict) and _v.get("phys") and os.path.exists(f"{LB}/{_v['phys']}/phys.json"):
+        L[_k.replace(":", "_")] = f"{LB}/{_v['phys']}"
 for k, d in L.items():
     d = d.rstrip("/")
     if os.path.exists(f"{d}/vis_ffx.json"):                                          # 재질 확장 (final_blx) 폴더: vis.json = 정답 대비 (stab_vis), ffx_vis 결과는 vis_ffx.json -> 파일 단위 링크

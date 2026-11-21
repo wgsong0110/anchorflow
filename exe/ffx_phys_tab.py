@@ -14,7 +14,15 @@ ELONLY = ("vrgs", "phystwin", "springgaus")
 SKIP = ("dV_series", "E_series")
 P, V = [], []
 import re
-OK_J = re.compile(r"^(mpm_(L000|pillow2sofa|bread|wolf)|ours_(L000|pillow2sofa|bread|wolf)_(def|k2|k4|be|mid|q1|nofpi|q27|q64|c075|c15|c20|ss\d+\.dump)|(vrgs|phystwin|springgaus)_(L000|pillow2sofa|bread|wolf)_n\d+)$")
+OK_J = re.compile(r"^(mpm_(L000|pillow2sofa|bread|wolf)|ours_(L000|pillow2sofa|bread|wolf)_(def|k2|k4|be|mid|q1|nofpi|q27|q64|c075|c15|c20|ss\d+\.dump)|(vrgs|phystwin|springgaus)_(L000|pillow2sofa|bread|wolf)_(n\d+|nsg)"
+                  r"|(ipg|omni)_(L000|pillow2sofa|bread|wolf)(_corot|_n\d+)?)$")   # [repro] i-PG·OmniPhysGS (final_fix/bl_mpm, wolf Omni = corot 대표 + StVK 기록 n1072·n1999) 와 Spring-Gaus pillow2sofa (_nsg) 도 (예전엔 손으로 채움)
+# [repro] 시간을 A6000 이 아닌 카드에서 잰 칸 (fpa_summary.json 의 note '시간 <카드> 단독') 은 방법 이름에 $^\ast$ (예전엔 손으로 붙임)
+AST = set()
+if os.environ.get("FPA_SUMMARY") and os.path.exists(os.environ["FPA_SUMMARY"]):
+    for _p in json.load(open(os.environ["FPA_SUMMARY"]))["pareto"]:
+        _g = re.search(r"시간 (RTX [^;,]+?) 단독", _p.get("note") or "")
+        if _g and "A6000" not in _g.group(1):
+            AST.add((_p["method"], _p["scene"]))
 for d in sorted(glob.glob(f"{src}/*/")):
     j = os.path.basename(d.rstrip("/"))
     if not OK_J.match(j):                                        # 이 실행기 (exe/ffx_phys_drv.sh) 작업 이름만 (같은 R2 폴더의 다른 에이전트 판 제외)
@@ -123,8 +131,8 @@ def cell_or_note(r, cells):
     return cells
 
 
-def MN(m):
-    return dict(MS)[m]
+def MN(m, s=None):
+    return dict(MS)[m] + ("$^\\ast$" if (m, s) in AST else "")
 
 
 def Nlab(r):
@@ -145,7 +153,7 @@ for s, sn in SC:
         cells = [f(r.get("detneg_max"), 100, 3), f(r.get("detmin"), 1, 3), f(r.get("jdev_max"), 100, 2),
                  f(r.get("dV_last"), 100, 2), f(r.get("pen_depth_max"), 100, 2), f(r.get("pen_ratio_max"), 100, 2),
                  f(r.get("e_drift_max"), 1, 3), f(r.get("e_ratio_last"), 1, 3), f(r.get("freefall_mom_err"), 100, 2), f(r.get("jitter_d2"), 1e3, 2)]
-        L.append(f"{sn if i == 0 else ''} & {MN(r['method'])} & {Nlab(r)} & " + " & ".join(cell_or_note(r, cells)) + r" \\")
+        L.append(f"{sn if i == 0 else ''} & {MN(r['method'], s)} & {Nlab(r)} & " + " & ".join(cell_or_note(r, cells)) + r" \\")
     L.append(r"\midrule")
 L[-1] = r"\bottomrule"
 L += [r"\end{tabular}", "",
@@ -175,7 +183,7 @@ for s, sn in SC:
     for i, r in enumerate(rows):
         cells = [f(r.get("niqe"), 1, 2), f(r.get("brisque"), 1, 1), f(r.get("musiq"), 1, 1), f(r.get("clipiqa"), 1, 3),
                  f(r.get("warp_err"), 1e3, 2), f(r.get("psnr"), 1, 2), f(r.get("ssim"), 1, 3), f(r.get("lpips"), 1, 3)]
-        L.append(f"{sn if i == 0 else ''} & {MN(r['method'])} & {Nlab(r)} & " + " & ".join(cell_or_note(r, cells)) + r" \\")
+        L.append(f"{sn if i == 0 else ''} & {MN(r['method'], s)} & {Nlab(r)} & " + " & ".join(cell_or_note(r, cells)) + r" \\")
     L.append(r"\midrule")
 L[-1] = r"\bottomrule"
 L += [r"\end{tabular}", "",

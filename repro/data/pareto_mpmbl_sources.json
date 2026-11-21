@@ -1,0 +1,11 @@
+{
+ "_설명": "파레토 i-PG·OmniPhysGS 칸의 원자료 위치 (R2 lbours/ 기준). 기본은 final_fix/bl_mpm/pareto_mpmbl.json 의 행 (err·ms 3 회 중앙값, src 폴더의 phys.json·vis.json). 아래는 그 json 에 값이 없거나 대표 판이 다른 칸만 적는다. exe/pareto_mpmbl_cells.py 와 exe/ffx_phys_merge.py 가 읽는다 (예전 paper/results_all/tools/add_mpmbl.py 의 E=·DV= 손 값과 phys·vis 표 손 채움을 대체).",
+ "ipg:wolf": {
+  "N": 25,
+  "err": "final_fix/bl_mpm/ipg_wolf/N25e5_fr/err.json",
+  "ms": "final_fix/bl_mpm/ipg_wolf/N25e5_frt3/err.json",
+  "phys": "final_fix/bl_mpm/ipg_wolf/post_N25e5_fr",
+  "why": "pareto_mpmbl.json 의 i-PG wolf 행은 원판 (N 1000, 오차 없음). 논문 값 = 고친 판 (AF_FD_EPS=1e-5, AF_LS_REJECT=1, AF_IPG_FAST=1, 커밋 final_fix_mpmbl): 오차 = N25e5_fr 1 회 (덤프 판), 시간 = N25e5_frt3 1 회 (시간 판, 카드 단독). 지표 덤프 = post_N25e5_fr."
+ },
+ "ms_round": "i-PG·OmniPhysGS ms 는 정수 ms 로, 오차는 소수 둘째 자리로 반올림해 넣는다 (11-17 손 값과 같은 규칙; 평균은 results_all/tools/recompute_avg.py 가 표에 찍힌 값으로 다시 셈)"
+}

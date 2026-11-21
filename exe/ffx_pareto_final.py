@@ -71,7 +71,8 @@ for p in P:
         ph = dict(ph, freefall_mom_err=None)
     if ph.get("E0") is not None and abs(ph["E0"]) < 1e-12:
         ph = dict(ph, e_drift_max=None)
-    r = dict(err=p["err"], ms=p["ms"], ext=p.get("ext") == "material", N=p["N"], dir=d)
+    _g = __import__("re").search(r"시간 (RTX [^;,]+?) 단독", p.get("note") or "")              # [repro] A6000 이 아닌 카드에서 잰 시간 -> $^\ast$ + 각주 (예전엔 손으로 붙임)
+    r = dict(err=p["err"], ms=p["ms"], ext=p.get("ext") == "material", N=p["N"], dir=d, gpu=(_g.group(1) if _g and "A6000" not in _g.group(1) else None))
     for k, *_ in PHYS + [("jitter_hf",)]:
         r[k] = num(ph.get(k))
     for k, *_ in VIS:
@@ -93,7 +94,7 @@ def table(cols, first):
     for s, sn in SC:
         q = [(m, ROWS[(m, s)]) for m, _ in METH if (m, s) in ROWS]
         for i, (m, r) in enumerate(q):
-            lab = MN[m] + ("$^\\dagger$" if r["ext"] else "")
+            lab = MN[m] + ({(1, 1): "$^{\\dagger\\ast}$", (1, 0): "$^\\dagger$", (0, 1): "$^\\ast$"}.get((int(r["ext"]), int(bool(r["gpu"]))), ""))
             cells = ([f(r["err"], 1, 2), f(r["ms"], 1, 1)] if first else []) + [f(r[c[0]], c[2], c[3]) for c in cols]
             L.append(f"{sn if i == 0 else ''} & {lab} & " + " & ".join(cells) + r"\\")
         L.append(r"\midrule")
@@ -115,8 +116,9 @@ def table(cols, first):
 
 T = ["% 자동 생성 (exe/ffx_pareto_final.py) -- 방법마다 대표 설정 하나 (우리 = K=1)", r"\subsection*{오차$\cdot$속도$\cdot$정답 없는 물리 지표}"] + table(PHYS, True)
 T += [r"\subsection*{시각 지표 (행 구성은 위 표와 같음)}"] + table(VIS, False)
-T += [r"{\footnotesize $^\dagger$ 재질 확장 구현 (원 논문은 탄성 전용; wolf$\cdot$bread 에 PhysGaussian 소성 식을 넣음, 절 CM193 가지 final\_pa\_bl). "
-      r"평균 행 = 네 장면 산술 평균, 위첨자 = 값이 있는 장면 수 (4 가 아니면). -- = 해당 없음 (바닥 없는 장면의 관통$\cdot$운동량, $F$ 없는 스프링--질량의 뒤집힘$\cdot$부피, bread 에너지 비 $E_0{=}0$, Lego$\cdot$wolf 자유낙하 구간 없음) 또는 미측정. "
+AST_NOTE = "".join(f"$^\\ast$ {MN[m]} {dict(SC)[s_]} 의 시간은 {r['gpu']} 단독. " for (m, s_), r in ROWS.items() if r.get("gpu"))
+T += [r"{\footnotesize " + AST_NOTE + r"$^\dagger$ 재질 확장 구현 (원 논문은 탄성 전용; wolf$\cdot$bread 에 PhysGaussian 소성 식을 넣음, 절 CM193 가지 final\_pa\_bl). "
+      r"평균 행 = 네 장면 산술 평균, 위첨자 = 값이 있는 장면 수 (4 가 아니면). -- = 해당 없음 (바닥 없는 장면의 관통$\cdot$운동량, $F$ 없는 스프링--질량의 뒤집힘$\cdot$부피, bread 에너지 비 $E_0{=}0$, Lego$\cdot$wolf 자유낙하 구간 없음). "
       r"오차 = 롤아웃 평균 $|x-x_{gt}|/\mathrm{EXT}$, ms = RTX A6000 단독 3 회 중앙값. 정의 R2 \texttt{lbours/final\_fix/metrics\_def.md}.}"]
 open(f"{OUT}/pareto_final_1115_table.tex", "w").write("\n".join(T) + "\n")
 
