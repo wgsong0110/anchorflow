@@ -10,7 +10,7 @@
 #   결과 R2 lbours/rep4/<장면>/<판>/
 export PATH=/home/dkta/bin:$PATH
 H=$1; JOBS=$2
-RA=r2:storage/result/anchorflow; R4=$RA/lbours/rep4
+RA=r2:storage/result/anchorflow; R4=${REP_R2:-$RA/lbours/rep4}      # rep_final (11-15): REP_R2 = lbours/rep_final1115
 O=/dev/shm/dkta/rep4; mkdir -p $O /dev/shm/dkta/tmp
 export TMPDIR=/dev/shm/dkta/tmp TORCHINDUCTOR_CACHE_DIR=/dev/shm/dkta/rep4_inductor TRITON_CACHE_DIR=/dev/shm/dkta/rep4_triton PYTHONUTF8=1 OMP_NUM_THREADS=4
 PY=${PY:-python}; W=/home/dkta/work; PG=$W/i-physgaussian; GF=$W/GaussianFluent; AFX=$PWD
@@ -23,6 +23,7 @@ prep_pg() { local s=$1 IN=$O/in_$s m
   [ -s $IN/${s}_target.mp4 ] || rclone copyto $RA/archive_20261009/r10/${s}_target.mp4 $IN/${s}_target.mp4 -q
   m=$(basename $($PY -c "import numpy as np; print(np.load('$IN/aux_$s.npz', allow_pickle=True)['model'])"))
   [ -d $W/pgmodel/$m/point_cloud/iteration_30000 ] || rclone copy $RA/pgmodel/$m $W/pgmodel/$m -q --exclude "chkpnt*" --exclude "point_cloud/iteration_7000/**" --exclude "point_cloud/iteration_60000/**"; }
+pgm_of() { case $1 in bread*) echo bread-trained;; *) echo ${1%%_*};; esac; }
 prep_ns() { local s=$1 IN=$O/in_$1 GT=r2:storage/datasets/anchorflow/nshape/gt/$1 MD=r2:storage/datasets/anchorflow/nshape/model/${1%%_*}
   rclone lsf r2:storage/datasets/anchorflow/nshape/gt_pg/$s/simulation_ply 2>/dev/null | grep -q . && GT=r2:storage/datasets/anchorflow/nshape/gt_pg/$s   # 원본 PhysGaussian 정답 (CM186 PG 경로)
   mkdir -p $IN
@@ -32,6 +33,18 @@ prep_ns() { local s=$1 IN=$O/in_$1 GT=r2:storage/datasets/anchorflow/nshape/gt/$
     if rclone lsf $R4/inputs/$s/gflow_$s.npz 2>/dev/null | grep -q .; then rclone copy $R4/inputs/$s $IN -q; else
       $PY -u exe/rep_prep_gf.py --h5_dir $O/h5_$s --name $s --out_dir $IN > $O/prep_$s.log 2>&1; say "prep $s $(tail -1 $O/prep_$s.log | cut -c1-200)"
       rclone copy $IN $R4/inputs/$s -q; fi; fi
+  pgm_of $s > $IN/pgmodel.txt; local PM=$(cat $IN/pgmodel.txt)      # 렌더·가우시안 수용 3DGS = lb_render MODEL 과 같은 것 (bread_foam_drop_lego = bread-trained)
+  [ -d $W/pgmodel/$PM/point_cloud ] || { rclone lsf $RA/_vastmirror/pgmodel/$PM/point_cloud/ 2>/dev/null | grep -q iteration_ && rclone copy $RA/_vastmirror/pgmodel/$PM $W/pgmodel/$PM -q --transfers 16 --exclude "chkpnt*" || rclone copy r2:storage/datasets/anchorflow/nshape/model/$PM $W/pgmodel/$PM -q --transfers 16 --exclude "chkpnt*"; }
+  [ -s $IN/kf.txt ] || $PY - $W/pgmodel/$PM $IN/config.json > $IN/kf.txt <<'PYEOF'
+import sys, os, json, numpy as np
+from plyfile import PlyData
+mp, cf = sys.argv[1], sys.argv[2]
+it = max(int(q.split("_")[-1]) for q in os.listdir(f"{mp}/point_cloud") if q.startswith("iteration_"))
+op = np.asarray(PlyData.read(f"{mp}/point_cloud/iteration_{it}/point_cloud.ply")["vertex"]["opacity"], dtype=np.float64)
+print(int((1 / (1 + np.exp(-op)) > float(json.load(open(cf)).get("opacity_threshold", 0.02))).sum()))
+PYEOF
+  say "가우시안 수 $s ($PM) $(cat $IN/kf.txt)"
+  [ -n "${NOVIS:-}" ] && return 0      # NOVIS: GF 렌더 경로 (정답 렌더) 안 함 -- 영상은 exe/rep_final_vid.sh (lb_render, 같은 카메라)
   [ -d $GF/gaussian-splatting ] || rclone copy $RA/_vastmirror/GaussianFluent $GF --exclude "model/**" --exclude ".git/**" --exclude "demo/**" --exclude "static/**" --transfers 32 -q
   [ -d $GF/model_$s ] || { mkdir -p $GF/model_$s; rclone copy $MD $GF/model_$s -q --exclude "chkpnt*" --exclude "point_cloud/iteration_7000/**"; }
   if [ ! -d $O/gt_frames_$s ]; then
@@ -41,6 +54,7 @@ prep_ns() { local s=$1 IN=$O/in_$1 GT=r2:storage/datasets/anchorflow/nshape/gt/$
     say "정답 렌더 $s $(tail -1 $O/gt_render_$s.log | cut -c1-120) $(ls $O/gt_frames_$s | wc -l) 장"; fi; }
 one() { local s=$1 v=$2 g=$3 D=$O/$1/$2 n=hex_$1 IN=$O/in_$1 c R=$R4/$1/$2
   mkdir -p $D/metrics
+  [ -n "$(ls $D/*.npz* 2>/dev/null)" ] || rclone copy $R $D -q --exclude "*.frames/**" --exclude "render/**"      # 다른 인스턴스에서 이어 돌리기: R2 의 끝난 결과·체크포인트를 먼저 받음
   ( while :; do sleep 600; rclone copy $D $R -q --exclude "*.frames/**" --exclude "render/*_frames/**"; done ) & local SY=$!
   case $s in
   wolf|bread)
@@ -52,7 +66,7 @@ one() { local s=$1 v=$2 g=$3 D=$O/$1/$2 n=hex_$1 IN=$O/in_$1 c R=$R4/$1/$2
     ;;
   *)
     local DX=$($PY -c "import json; c=json.load(open('$IN/config.json')); print(c.get('grid_lim',2.0)/c.get('n_grid',50))")
-    local KF=$(cd $GF && $PY $AFX/exe/rep_render_gf.py --gf $GF --model_path $GF/model_$s --config $IN/config.json --count 1 2>&1 | grep -a GS_NUM | tail -1 | awk '{print $2}')
+    local KF=$(cat $IN/kf.txt)      # 앞 KF 입자 = 불투명도 필터 뒤 가우시안 (lb_render 와 같은 규칙)
     local B="exe/rep_track_sg.py --opt riem --tb none --flow $IN/gflow_$s.npz --aux $IN/aux_$s.npz"
     case $v in
       hex|base|feas|fix|fixL) c="$B --method hex --riem_energy logbarrier --riem_eps 1e-3 --riem_lr 0.5 --hex_dx $DX $(flags_of $v)";;
@@ -77,4 +91,8 @@ one() { local s=$1 v=$2 g=$3 D=$O/$1/$2 n=hex_$1 IN=$O/in_$1 c R=$R4/$1/$2
 for s in $(for j in $JOBS; do echo ${j%%:*}; done | sort -u); do case $s in wolf|bread) prep_pg $s;; *) prep_ns $s;; esac; done
 say "입력 $(ls $O | tr '\n' ' ')"
 NG=$(nvidia-smi -L | wc -l); GM=(${GPUMAP:-}); P=""; i=0; for j in $JOBS; do one ${j%%:*} ${j#*:} ${GM[$i]:-$((i % NG))} & P="$P $!"; i=$((i + 1)); sleep 5; done
-wait $P; say "끝"
+wait $P; say "추적 끝"
+if [ -n "${REP_VID:-}" ]; then      # rep_final: 장면별 비교 영상 (exe/rep_final_vid.sh, lb_render 같은 카메라)
+  for s in $(for j in $JOBS; do echo ${j%%:*}; done | sort -u); do case $s in wolf|bread) ;; *) bash exe/rep_final_vid.sh $s $R4 >> $L 2>&1; say "영상 $s 끝";; esac; done
+fi
+say "끝"

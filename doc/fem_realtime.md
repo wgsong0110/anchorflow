@@ -11874,3 +11874,28 @@ bloc 2 는 chair 무게중심을 프레임 9 까지 정답에 맞춤 (0.361 대 
 - 공식 3 단계 학습 끝 n_step 200 (exe/sg_resume.py 정확 이어 돌리기 경로, 재질 확장 휴지 길이 재시도 복원 2190f3cc 포함). RTX 6000 Ada 단독 (final_blx_sgada 61002543): **12.59 %, 210.6 ms**; 물리 떨림 1.07e-3 L (F 없음·바닥 없음·E0=0 칸은 해당 없음); 시각 NIQE 9.90, BRISQUE 88.6, MUSIQ 61.2, CLIP-IQA 0.544, warp 0.14e-3, PSNR 26.12, SSIM 0.927, LPIPS 0.090. R2 lbours/final_pa/blx/SGB/{grid.json, g/springgaus_bread_n200_*}.
 - 표 (논문 폴더 pareto_final_1115_table·phys·vis.tex): bread Spring-Gaus 칸·평균 행 갱신 (exe/blx_fin_sgb.py), 각주 'RTX 6000 Ada 단독' 한 줄 (조정자: 반복 횟수·학습 이력은 결과 문서·표에 쓰지 않음). 원본 backup_20261031/*_pre_sgbread.tex.
 - 지배 판정: bread 우리 K=1 1.83 %·18.7 ms -- 지배 없음.
+## CM190. 표현력 실험 최종 (정답 궤적 L2 추적, 장면 4 x 방법 4) -- **우리 (육면체) 판이 네 장면 모두 최저: wolf 0.56 %, bread 0.30 %, drums 0.21 %, chair 0.22 % (다음은 PhysTwin k=1: 2.23 · 0.69 · 0.39 · 0.71 %), 우리 판 고침 필요 없음** -- 가지 repfinal (nshape 0b99445 에서), 커밋 4a51f98 · b2c753b · 2500348 · acc4dfc · 2372fb0, 결과 R2 lbours/rep_final1115/
+### CM190.1 범위·설정 (조정자 11-15, 사용자 확정)
+- 장면: wolf (기존 결과 재사용: lbours/repflow_hex·repflow_vrgs·repflow1115/sg·archive_20261009/r10), bread = bread_foam_drop_lego (foam), drums = drums_honey_lego (foam), chair = chair_paste_lego (plasticine). 정답 = R2 datasets/anchorflow/nshape/gt_pg/<장면> (레고 L000 세팅, PG 사본 러너, 80 프레임, 입자 전부: bread 143,676 · drums 및 chair 는 채움 포함 전부, 부분표본 없음).
+- 방법: 우리 hex (ε 1e-3, η 0.5), PhysTwin 공식 강성 k = 1·10·100·1000 (ε 1e-3, η 10, --pt_realtime), VR-GS 직접 구현 vrgsx (ε 1e-3, η 1), Spring-Gaus 공식 초기 표현 (tune_pick ε 1e-3, η 100). ε·η 는 기존 규칙 (wolf 앞 3 프레임) 값 그대로. 지표 = 프레임 평균 RMSE / L 만.
+- 실행: exe/go_rep4.sh (REP_R2 = lbours/rep_final1115, NOVIS), 가우시안 수 = lb_render 와 같은 불투명도 규칙 (bread 53,606 · drums 331,869 · chair 185,144).
+### CM190.2 결과 (RMSE/L %, 표 writing/anchorflow/rep_final_1115.tex)
+| 방법 | wolf | bread | drums | chair |
+|---|---|---|---|---|
+| 우리 (육면체) | **0.56** | **0.300** | **0.215** | **0.217** |
+| PhysTwin k=1 | 2.23 | 0.695 | 0.389 | 0.709 |
+| PhysTwin k=10 | 3.73 | 1.809 | 0.775 | 1.132 |
+| PhysTwin k=100 | 6.51 | 6.265 | 1.569 | 2.314 |
+| PhysTwin k=1000 | 9.66 | 11.694 | 2.669 | 4.150 |
+| VR-GS | 14.25 | 15.905 | 13.774 | 10.072 |
+| Spring-Gaus | 6.82 | 3.666 | 2.345 | 2.559 |
+- 옛 0.3 m 낙하 chair_paste 에서 보였던 우리 판 큰 오차 (10 프레임 14.9 %) 는 레고 세팅에서는 나오지 않음 (chair 10 프레임 0.20 %).
+### CM190.3 영상 (같은 카메라 3x2: 정답·우리·PhysTwin 최저 k·VR-GS·Spring-Gaus)
+- 새 형상 셋: lb_render, plastfix 레고 영상과 같은 카메라 (--cam_back 1.6 --elev 40 --back2 1.1, 위 = 세계 위 R 셋째 행 -> 위에서 내려다보고 중력이 화면 아래), 방법 궤적은 exe/rep_final_vid.py to_h5 (정규화 -> 시뮬 좌표, F = 저장 F, PhysTwin 은 누적 R), 0 프레임 대응 오차 ≤ 2.7e-7.
+- wolf: 기존 영상 다섯 개 (같은 PG 카메라, 800x800) 를 같은 격자로 (wolf 는 속도장 목표라 중력 없음).
+- 파일: R2 lbours/rep_final1115/vid/rep_final_{wolf,bread_foam_drop_lego,drums_honey_lego,chair_paste_lego}_cmp.mp4 = ~/vidcache/final/rep/ (2400x1600, yuv420p, faststart, 디코드 오류 0).
+### CM190.4 실행 기록·모름
+- 우리 판 hex 추적이 CPU 한 코어 100 %, GPU 1 % 로 느림 (프레임당 1~2 분): 매 프레임 격자를 다시 깔아 크기가 바뀌어 torch.compile 이 cache_size_limit (8) 에 걸린 뒤 eager 로 돎 (로그 "hit config.cache_size_limit"). wolf 기존 판도 같은 경로라 결과 일관성을 위해 이번엔 바꾸지 않음 (상한을 올리면 반올림 수준 값 변화).
+- 19:30 크레딧 0 (자동 충전 실패) 으로 인스턴스가 모두 멈춤 -> 충전 뒤 R2 체크포인트에서 이어 돌림 (go_rep4: 판 폴더가 비면 R2 결과·체크포인트를 먼저 받음; drums hex "프레임 50 까지 완료 -> 51 부터" 확인). 마지막은 1 장 인스턴스 하나에서 drums 7 판 + bread·chair hex.
+- 전력 제한 호스트 blocklist: 48659 (400 W), 148731·143272 (250 W), 67911 (350 W). intended stopped 로 컨테이너가 안 생긴 새 인스턴스 다섯 대는 destroy (원인 모름).
+- 인스턴스 전부 destroy (plastfix_a/b 의 회귀 확인 결과는 lbours/plastfix/rg_sync_{a,b} 로 동기화 뒤).
