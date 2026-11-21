@@ -107,6 +107,12 @@ PT_REPO = os.environ.get("ST_PT_REPO", f"{W}/PhysTwin")
 SG_REPO = os.environ.get("ST_SG_REPO", f"{W}/Spring-Gaus")
 RETRY = int(os.environ.get("ST_RETRY", "4"))                                         # 덤프·시간 판 다시 시도 수 (절 S.8)
 VR_IT = int(os.environ.get("PR2_VR_IT", "1"))   # [final_fix_vrgs] 논문 6.1 PG 비교 설정 "XPBD iteration per substep to 1" (raw HTML alttext="1"; 예전 11 은 텍스트 추출 오독). PR2_VR_IT=11 이면 예전 판
+VR_IT_BLX = ("wolf", "bread")                                                        # [paper 합침] final_pa_bl (재질 확장, 반복 11 시절) 의 wolf·bread 는 반복 11 로 잼 (논문 파레토 값 = pred_400x11·pred_100x11)
+
+
+def vr_it(t):
+    """[paper 합침] 장면별 VR-GS 반복 수: PR2_VR_IT 를 주면 그 값, 아니면 final_pa_bl 장면 (wolf·bread) 은 11, 나머지는 final_fix_vrgs 판 1."""
+    return int(os.environ["PR2_VR_IT"]) if os.environ.get("PR2_VR_IT") else (11 if t in VR_IT_BLX else VR_IT)
 
 
 def da_elastic(t):
@@ -164,8 +170,8 @@ def build(m, t, N, mode, O, E=None):
         return [PY, "-u", f"{D}/exe/gt_sens.py", "--out", O] + mpm_args(t) + x, f"{W}/i-physgaussian", {}
     if m == "vrgs":
         if mode == "probe":
-            return [PY, "-u", "exe/pareto_vrgs.py", "--mode", "fit", "--out", O] + da_elastic(t) + ["--set", f"{N}x{VR_IT}"], D, {}
-        return [PY, "-u", "exe/pareto_vrgs.py", "--mode", "run", "--out", O, "--E", repr(E)] + da_elastic(t) + ["--set", f"{N}x{VR_IT}"] \
+            return [PY, "-u", "exe/pareto_vrgs.py", "--mode", "fit", "--out", O] + da_elastic(t) + ["--set", f"{N}x{vr_it(t)}"], D, {}
+        return [PY, "-u", "exe/pareto_vrgs.py", "--mode", "run", "--out", O, "--E", repr(E)] + da_elastic(t) + ["--set", f"{N}x{vr_it(t)}"] \
             + (["--dump_F"] if mode == "dump" else []), D, {}
     if m == "bnv":
         nh = {"L000": "0.028284", "ficus": "0.056569"}[t]
@@ -585,7 +591,7 @@ def ensure_E(t):
         r = run_free("vrgs", t, N, "probe", O)
     r = json.load(open(f"{O}/res.json"))
     VR_E[t] = r["E"]
-    say(f"[VR-GS E] {t}: 논문 절차 (황금분할 10 회, N {N} x 반복 {VR_IT}) E = {r['E']}")
+    say(f"[VR-GS E] {t}: 논문 절차 (황금분할 10 회, N {N} x 반복 {vr_it(t)}) E = {r['E']}")
 
 
 if a.jobs:
