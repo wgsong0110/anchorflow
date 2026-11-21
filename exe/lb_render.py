@@ -40,6 +40,8 @@ ap.add_argument("--mark", default="", help="사용자 10-30 발산 셀 입자 �
                 "등방 가우시안 (축 = 가우시안 축 길이 중앙값 x --mark_size, 공분산 F s² Fᵀ) 을 더해 그린다). 나머지는 SH 그대로 (래스터라이저와 같은 식으로 colors_precomp)")
 ap.add_argument("--mark_fade", type=float, default=1.0, help="--mark: 표시 안 한 가우시안 불투명도 배율 (투시 칸, 1 = 그대로)")
 ap.add_argument("--mark_size", type=float, default=1.0)
+ap.add_argument("--aniso_json", default="", help="절 CM194: 주면 프레임마다 가우시안 공분산 FΣFᵀ 의 σmax/σmin (고윳값 비의 제곱근) 최대·상위 1%% 값 (그리고 정지 Σ 대비 배율) -> json (렌더 불변)")
+ap.add_argument("--aniso_only", type=int, default=0, help="절 CM194: 1 이면 이방성 json 만 (렌더·영상 쓰기 건너뜀)")
 ap.add_argument("--png", default="", help="주면 프레임마다 무손실 PNG 도 이 폴더에 (%04d.png; 시각 품질 PSNR·SSIM·LPIPS 용, doc/pareto.md 절 S)")
 ap.add_argument("--mark_px", default="", help="--mark: 프레임마다 표시 입자 화면 위치 (중앙·범위 픽셀) -> json (확대 칸 중심)")
 ap.add_argument("--cells", default="", help="절 CM14.3: 칸별 장벽 에너지 bener.pt (exe/fem_an_rt_sim.py --bar_ecell) -- 렌더 위에 그 칸 (프레임 끝 꼭짓점 8 개) 을 같은 카메라로 반투명 상자 (보이는 면) 로 겹침, "
@@ -76,7 +78,9 @@ for _dg, _ax in zip(cfg.get("rotation_degree") or [], cfg.get("rotation_axis") o
     _R = {0: [[1, 0, 0], [0, _c, -_s], [0, _s, _c]], 1: [[_c, 0, _s], [0, 1, 0], [-_s, 0, _c]], 2: [[_c, -_s, 0], [_s, _c, 0], [0, 0, 1]]}[int(_ax)]
     _RT = torch.tensor(_R, device=dev, dtype=torch.float32) @ _RT
 ROT = bool((_RT - torch.eye(3, device=dev)).abs().max() > 0)
-if cfg.get("sim_area") is not None:                                  # [stabfinal] PG gs_simulation 과 같이 회전 뒤 sim_area 안의 가우시안만 (pillow2sofa 등; 없으면 그대로)
+if cfg.get("sim_area") is not None and os.environ.get("LB_NO_SIMAREA", "0") != "1":   # [stabfinal] PG gs_simulation 과 같이 회전 뒤 sim_area 안의 가우시안만 (pillow2sofa 등; 없으면 그대로)
+    # [paper 합침] gq_justify 절 CM194 는 같은 자르기를 pillow2sofa 에만 (그 장면에서는 이 판과 같은 식). final_fix_lego 판에는 자르기가 없었음 (CM194: 가우시안-입자 대응이 틀린 판)
+    #   -> 그 옛 렌더를 그대로 다시 만들려면 LB_NO_SIMAREA=1.
     _XR = gs.get_xyz[KIDX] @ _RT.T if ROT else gs.get_xyz[KIDX]
     _b = cfg["sim_area"]; _m = torch.ones(_XR.shape[0], dtype=torch.bool, device=_XR.device)
     for _i in range(3):
@@ -193,6 +197,7 @@ if a.cells:                                                                     
         ph_ = torch.cat([pos, torch.ones_like(pos[:, :1])], 1) @ full_proj
         nd = ph_[:, :3] / (ph_[:, 3:4] + 1e-7)
         return torch.stack([((nd[:, 0] + 1.0) * W_ - 1.0) * 0.5, ((nd[:, 1] + 1.0) * H_ - 1.0) * 0.5], 1)
+ANI = []
 for fi, p in enumerate(files):
     with h5py.File(p) as h:
         x = torch.as_tensor(np.array(h["x"][:NG]), device=dev).float()
@@ -210,6 +215,21 @@ for fi, p in enumerate(files):
         if ROT:
             cov = _RT.T @ cov @ _RT
     cc = torch.stack([cov[:, 0, 0], cov[:, 0, 1], cov[:, 0, 2], cov[:, 1, 1], cov[:, 1, 2], cov[:, 2, 2]], 1)
+    if a.aniso_json:                                                            # 절 CM194: 공분산 이방성 (렌더 불변) -- FΣFᵀ = (F L)(F L)ᵀ, L = R diag(s) (f64 특이값; f32 공분산 고윳값은 납작 가우시안에서 반올림에 묻힘)
+        if "_L0" not in globals():
+            from utils.general_utils import build_rotation as _bro
+            _L0 = (_bro(gs._rotation[KIDX]).double() * gs.get_scaling[KIDX].double()[:, None, :])
+            if ROT:
+                _L0 = _RT.double() @ _L0
+            _s0 = torch.linalg.svdvals(_L0); _r0 = _s0[:, 0] / _s0[:, 2].clamp_min(1e-300)
+        _ok = torch.isfinite(F.reshape(NG, 9)).all(1)
+        _sv = torch.linalg.svdvals(F[_ok].double() @ _L0[_ok])
+        _r = _sv[:, 0] / _sv[:, 2].clamp_min(1e-300)
+        _rr = _r / _r0[_ok]
+        ANI.append(dict(fi=fi, n=int(NG), nbad=int((~_ok).sum()), max=float(_r.max()) if _r.numel() else None, p99=float(torch.quantile(_r.float(), 0.99)) if _r.numel() else None,
+                        rel_max=float(_rr.max()) if _rr.numel() else None, rel_p99=float(torch.quantile(_rr.float(), 0.99)) if _rr.numel() else None))
+        if a.aniso_only:
+            continue
     Pm = (x - 1.0) / SO + MEAN
     if ROT:
         Pm = Pm @ _RT
@@ -255,6 +275,10 @@ for fi, p in enumerate(files):
         os.makedirs(a.png, exist_ok=True)
         imageio.imwrite(os.path.join(a.png, f"{fi:04d}.png"), _fr)
 WR.close()
+if a.aniso_json:
+    json.dump(dict(frames=ANI, max=max((q["max"] for q in ANI if q["max"] is not None), default=None), p99=max((q["p99"] for q in ANI if q["p99"] is not None), default=None),
+                   rel_max=max((q["rel_max"] for q in ANI if q["rel_max"] is not None), default=None), rel_p99=max((q["rel_p99"] for q in ANI if q["rel_p99"] is not None), default=None),
+                   rest_max=ANI[0]["max"] if ANI else None, rest_p99=ANI[0]["p99"] if ANI else None, nbad=sum(q["nbad"] for q in ANI)), open(a.aniso_json, "w"), indent=1)
 if MK is not None and a.mark_px:
     json.dump(dict(W=int(cam["width"]), H=int(cam["height"]), frames=PXL, n_gauss=int(MG.numel()), n_fill=int(MF.numel())), open(a.mark_px, "w"))
 print(f"[영상] {a.out} ({len(files)} 프레임)", flush=True)
