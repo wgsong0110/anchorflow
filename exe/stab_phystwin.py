@@ -106,7 +106,11 @@ RMASK = C.rot_membership(x0[psel], S["ROT"]) if S["ROT"] else []                
 for _m in RMASK:
     ctrl = ctrl | _m
 REAL = bool(ctrl.any())
-PINW = [(C.in_boxes(x0[psel][~ctrl], [b_]), b_[2], b_[3]) for b_ in S["BOXW"]]      # [final_pa_bl] 시간 구간 cuboid 안 질량점 (조작점 아님) -- 구간 동안만 고정 (아래 (7))
+PINW = [(C.in_boxes(x0[psel][~ctrl], [b_]), b_[2], b_[3], (0.0, 0.0, 0.0)) for b_ in S["BOXW"]]      # [final_pa_bl] 시간 구간 cuboid 안 질량점 (조작점 아님) -- 구간 동안만 고정 (아래 (7))
+PINW += [(C.in_boxes(x0[psel][~ctrl], [b_]), b_[2], b_[3], tuple(float(q) * K / c for q in b_[4])) for b_ in S["MOV"]]   # [blx] 구간 등속 구동 (bread 당김; PhysTwin 단위 속도)
+PLAST = C.plastic_params(S["cfg"]) if S["cfg"].get("material", "jelly") in ("sand", "plasticine") else None          # [blx] 재질 확장 (아래 (8))
+if PLAST is not None:
+    assert not REAL, "소성 확장은 조작점 없는 synthetic 경로만 (wolf·bread)"
 obj_idx, ctl_idx = psel[~ctrl], psel[ctrl]
 B = to_pt(S["X"][:, obj_idx])                                  # [L+1, M, 3]
 CP = to_pt(x0[ctl_idx])                                        # [Nc, 3] 처음 위치
@@ -196,6 +200,101 @@ if G0:                                                         # (6) 정답 conf
         v_new[tid] = v2
     _smw.update_vel_from_force = _update_vel_from_force_g0
     print("[PhysTwin] config 중력 0 -> 공식 커널의 중력 9.8 항 뺀 커널로", flush=True)
+_PL = dict(sp=None)                                            # (8) [blx] 마지막 eval_springs 의 (스프링, 휴지 길이, 질량점 수) -- 소성 갱신 커널이 씀
+if PLAST is not None:
+    #  (8) [blx] 재질 확장 (원 논문은 탄성 전용) -- 스프링 소성 휴지 길이 (stab_bl_common.spring_plastic_update 와 같은 식): 서브스텝마다 적분 커널 (x_{i+1}) 뒤에
+    #      휴지 길이를 갱신 (다음 서브스텝 힘부터 반영). 휴지 길이는 미분 안 하는 상태 (enable_backward=False; 학습 2 단계의 프레임 단위 역전파에서 eval_springs 역방향은
+    #      프레임 끝 휴지 길이를 읽음 -- 근사), 롤아웃 시작 (set_controller_target(1)) 마다 처음 값으로 되돌림.
+    @wp.kernel(enable_backward=False)
+    def _pl_zero(acc: wp.array(dtype=float), cnt: wp.array(dtype=float)):
+        tid = wp.tid()
+        acc[tid] = 0.0
+        cnt[tid] = 0.0
+
+    @wp.kernel(enable_backward=False)
+    def _pl_acc(x: wp.array(dtype=wp.vec3), springs: wp.array(dtype=wp.vec2i), rest: wp.array(dtype=float), nobj: int,
+                acc: wp.array(dtype=float), cnt: wp.array(dtype=float)):
+        tid = wp.tid()
+        i1 = springs[tid][0]
+        i2 = springs[tid][1]
+        if i1 < nobj and i2 < nobj:
+            e = wp.log(wp.max(wp.length(x[i2] - x[i1]), 1e-12) / wp.max(rest[tid], 1e-12))
+            wp.atomic_add(acc, i1, e)
+            wp.atomic_add(acc, i2, e)
+            wp.atomic_add(cnt, i1, 1.0)
+            wp.atomic_add(cnt, i2, 1.0)
+
+    @wp.kernel(enable_backward=False)
+    def _pl_upd(x: wp.array(dtype=wp.vec3), springs: wp.array(dtype=wp.vec2i), rest: wp.array(dtype=float), nobj: int,
+                acc: wp.array(dtype=float), cnt: wp.array(dtype=float), mat: int, ey: float, cdp: float):
+        tid = wp.tid()
+        i1 = springs[tid][0]
+        i2 = springs[tid][1]
+        if i1 < nobj and i2 < nobj:
+            l = wp.max(wp.length(x[i2] - x[i1]), 1e-12)
+            r = wp.max(rest[tid], 1e-12)
+            e = wp.log(l / r)
+            if mat == 5:                                           # plasticine: |ε| > ε_y 이면 휴지 길이가 따라감
+                if wp.abs(e) > ey:
+                    sg = 1.0
+                    if e < 0.0:
+                        sg = -1.0
+                    rest[tid] = l * wp.exp(-sg * ey)
+            if mat == 2:                                           # sand (근사): 끝점 체적 변형률 평균 tr, 축 편차 e − tr/3, δγ = sqrt(3/2)|e'| + cdp tr
+                tr = 1.5 * (acc[i1] / wp.max(cnt[i1], 1.0) + acc[i2] / wp.max(cnt[i2], 1.0))
+                ed = e - tr / 3.0
+                en = 1.2247448713915890 * wp.abs(ed)
+                dg = en + cdp * tr
+                if dg > 0.0:
+                    if tr > 0.0:
+                        rest[tid] = l
+                    else:
+                        e2 = ed * (1.0 - dg / wp.max(en, 1e-30))
+                        rest[tid] = l * wp.exp(-(tr / 3.0 + e2))
+    _nob = int((~ctrl).sum())                                    # 그래프 잡는 중에 할당하지 않게 미리 (질량점 수)
+    _PL_BUF = {_nob: (wp.zeros(_nob, dtype=float, device="cuda:0"), wp.zeros(_nob, dtype=float, device="cuda:0"))}
+    _PL_MAT = {"sand": 2, "plasticine": 5}[PLAST["material"]]
+    print(f"[PhysTwin] 재질 확장 {PLAST['material']}: ε_y {PLAST['eps_y']:.4g} cdp {PLAST['cdp']:.4g} (마찰각 {PLAST['friction_angle']}, ν {PLAST['nu']})", flush=True)
+
+
+def _plastic_after(x_new):
+    if PLAST is None or _PL["sp"] is None:
+        return
+    springs, rest, nobj = _PL["sp"]
+    n = int(x_new.shape[0])
+    if n not in _PL_BUF:
+        _PL_BUF[n] = (wp.zeros(n, dtype=float, device="cuda:0"), wp.zeros(n, dtype=float, device="cuda:0"))
+    acc, cnt = _PL_BUF[n]
+    if _PL_MAT == 2:
+        wp.launch(_pl_zero, dim=n, inputs=[acc, cnt])
+        wp.launch(_pl_acc, dim=int(springs.shape[0]), inputs=[x_new, springs, rest, int(nobj), acc, cnt])
+    wp.launch(_pl_upd, dim=int(springs.shape[0]), inputs=[x_new, springs, rest, int(nobj), acc, cnt, _PL_MAT, float(PLAST["eps_y"]), float(PLAST["cdp"])])
+
+
+if PLAST is not None and not PINW:                              # (8) 고정 없는 소성 장면: 공식 적분 커널 그대로, launch 만 가로채 뒤에 소성 갱신
+    _int0 = _smw.integrate_ground_collision
+
+    class _WpLaunchProxyP:
+        def __getattr__(self, k):
+            return getattr(wp, k)
+
+        def launch(self, *args, **kw):
+            k_ = kw.get("kernel", args[0] if args else None)
+            if k_ is _smw.eval_springs:
+                _PL["sp"] = (kw["inputs"][5], kw["inputs"][6], kw["inputs"][4])
+            r_ = wp.launch(*args, **kw)
+            if k_ is _int0:
+                _plastic_after(kw["outputs"][0])
+            return r_
+    _smw.wp = _WpLaunchProxyP()
+if PLAST is not None:
+    _init_sms0 = _smw.SpringMassSystemWarp.__init__
+
+    def _init_sms(self, *x, **k):
+        rl = k["init_rest_lengths"] if "init_rest_lengths" in k else x[2]
+        self.af_rest0 = rl.detach().clone()                    # 공식 __init__ 이 그래프를 잡기 전 처음 휴지 길이 (wp_rest_lengths 는 이 텐서와 메모리 공유)
+        _init_sms0(self, *x, **k)
+    _smw.SpringMassSystemWarp.__init__ = _init_sms
 if PINW:                                                       # (7) [final_pa_bl] PG 시간 구간 cuboid: 공식 integrate_ground_collision 과 같은 커널에 '고정이면 x 그대로·v 0' 만 더한 것으로
     #     바꿔 끼우고 (공식 파일은 안 고침), 고정 배열은 step() 의 launch 에 덧붙임 (spring_mass_warp 모듈의 wp 를 launch 만 가로채는 대리로).
     #     고정 집합은 공식 set_controller_target(frame_idx) 가 불릴 때 (CMA·학습·추론 모두 프레임마다) 프레임 시작 시각 (frame_idx−1) 프레임 간격 으로 정함
@@ -203,7 +302,7 @@ if PINW:                                                       # (7) [final_pa_b
     @wp.kernel
     def _integrate_ground_collision_pin(x: wp.array(dtype=wp.vec3), v: wp.array(dtype=wp.vec3), collide_elas: wp.array(dtype=float),
                                         collide_fric: wp.array(dtype=float), dt: float, reverse_factor: float, pin: wp.array(dtype=wp.int32),
-                                        x_new: wp.array(dtype=wp.vec3), v_new: wp.array(dtype=wp.vec3)):
+                                        pinv: wp.array(dtype=wp.vec3), x_new: wp.array(dtype=wp.vec3), v_new: wp.array(dtype=wp.vec3)):
         tid = wp.tid()
         x0 = x[tid]
         v0 = v[tid]
@@ -227,13 +326,14 @@ if PINW:                                                       # (7) [final_pa_b
             v1 = v0
             toi = 0.0
         xn = x0 + v0 * toi + v1 * (dt - toi)
-        if pin[tid] != 0:
-            xn = x0
-            v1 = wp.vec3(0.0, 0.0, 0.0)
+        if pin[tid] != 0:                                       # [blx] 구동 상자면 pinv ≠ 0 (등속), 고정이면 0
+            v1 = pinv[tid]
+            xn = x0 + v1 * dt
         x_new[tid] = xn
         v_new[tid] = v1
 
     _PIN = wp.zeros(int((~ctrl).sum()), dtype=wp.int32, device="cuda:0")
+    _PINV = wp.zeros(int((~ctrl).sum()), dtype=wp.vec3, device="cuda:0")
     _PIN_ON = {}                                                                # 켜진 구간 번호 묶음 -> 고정 배열 (GPU, 미리 만들어 둠)
     _PIN_LAST = [None]
 
@@ -243,27 +343,42 @@ if PINW:                                                       # (7) [final_pa_b
 
         def launch(self, *args, **kw):
             k_ = kw.get("kernel", args[0] if args else None)
+            if k_ is _smw.eval_springs:
+                _PL["sp"] = (kw["inputs"][5], kw["inputs"][6], kw["inputs"][4])
             if k_ is _integrate_ground_collision_pin:
                 assert int(kw["dim"]) == _PIN.shape[0], f"질량점 수 {kw['dim']} != 고정 배열 {_PIN.shape[0]}"
-                kw["inputs"] = list(kw["inputs"]) + [_PIN]
-            return wp.launch(*args, **kw)
+                kw["inputs"] = list(kw["inputs"]) + [_PIN, _PINV]
+            r_ = wp.launch(*args, **kw)
+            if k_ is _integrate_ground_collision_pin:
+                _plastic_after(kw["outputs"][0])
+            return r_
     _smw.integrate_ground_collision = _integrate_ground_collision_pin
     _smw.wp = _WpLaunchProxy()
     _sct0 = _smw.SpringMassSystemWarp.set_controller_target
 
     def _set_controller_target(self, frame_idx, pure_inference=False):
         t = (frame_idx - 1) * S["frame_dt"]                                     # 프레임 시작의 시뮬 시각 (PG config 단위)
-        key = tuple(i for i, (m_, t0_, t1_) in enumerate(PINW) if C.box_active(t0_, t1_, t))
+        key = tuple(i for i, (m_, t0_, t1_, v_) in enumerate(PINW) if C.box_active(t0_, t1_, t))
         if _PIN_LAST[0] != key:
             if key not in _PIN_ON:
                 on = torch.zeros(_PIN.shape[0], dtype=torch.int32)
+                vv = torch.zeros(_PIN.shape[0], 3, dtype=torch.float32)
                 for i in key:
                     on[PINW[i][0]] = 1
-                _PIN_ON[key] = wp.from_torch(on.cuda().contiguous(), dtype=wp.int32)
-            wp.copy(_PIN, _PIN_ON[key]); _PIN_LAST[0] = key
+                    vv[PINW[i][0]] = torch.tensor(PINW[i][3], dtype=torch.float32)
+                _PIN_ON[key] = (wp.from_torch(on.cuda().contiguous(), dtype=wp.int32), wp.from_torch(vv.cuda().contiguous(), dtype=wp.vec3))
+            wp.copy(_PIN, _PIN_ON[key][0]); wp.copy(_PINV, _PIN_ON[key][1]); _PIN_LAST[0] = key
         return _sct0(self, frame_idx, pure_inference)
     _smw.SpringMassSystemWarp.set_controller_target = _set_controller_target
-    print(f"[PhysTwin] 시간 구간 고정 (PG cuboid): " + ", ".join(f"{int(m_.sum())} 질량점 [{t0_}, {t1_}) s" for (m_, t0_, t1_) in PINW), flush=True)
+    print(f"[PhysTwin] 시간 구간 고정·구동: " + ", ".join(f"{int(m_.sum())} 질량점 [{t0_}, {t1_}) s v {v_}" for (m_, t0_, t1_, v_) in PINW[:8]) + (" ..." if len(PINW) > 8 else ""), flush=True)
+if PLAST is not None:                                          # (8) 롤아웃 시작 (frame 1) 마다 휴지 길이 되돌림 -- CMA·학습·실행 모두 프레임마다 set_controller_target 을 부름
+    _sct1 = _smw.SpringMassSystemWarp.set_controller_target
+
+    def _set_controller_target_pl(self, frame_idx, pure_inference=False):
+        if int(frame_idx) == 1:
+            wp.to_torch(self.wp_rest_lengths, requires_grad=False).copy_(self.af_rest0)
+        return _sct1(self, frame_idx, pure_inference)
+    _smw.SpringMassSystemWarp.set_controller_target = _set_controller_target_pl
 from qqtt.engine.cma_optimize_warp import OptimizerCMA         # noqa: E402
 from qqtt.engine.trainer_warp import InvPhyTrainerWarp         # noqa: E402
 import wandb                                                   # noqa: E402
@@ -343,7 +458,7 @@ R = C.Roll(a, S, N, extra=dict(method="phystwin", N0=N0, dt=cfg.dt, real=REAL, n
 print(f"[run] N {N} dt {cfg.dt:.4g} (PhysTwin 단위), 스프링 {sim.n_springs}", flush=True)
 for f in range(1, L + 1):
     torch.cuda.synchronize(); t0 = time.perf_counter()
-    if REAL:
+    if REAL or PINW or PLAST is not None:                       # [blx] 조작점 없는 장면도 구간 고정·구동·소성 되돌림 훅이 프레임마다 돌게 (공식 함수는 조작점 없으면 할 일 없음)
         sim.set_controller_target(f, pure_inference=True)
     if sim.object_collision_flag:
         sim.update_collision_graph()

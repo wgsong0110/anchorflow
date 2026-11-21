@@ -11839,3 +11839,38 @@ bloc 2 는 chair 무게중심을 프레임 9 까지 정답에 맞춤 (0.361 대 
 - N 1·2·4·8·16·32·64·128: 오차 4.25 (옛 판 그대로)·3.51·3.35·2.66·2.17·1.80·1.76·1.86 %, ms 21 (그대로)·24.9·41.9·78.5·158.7·320.0·642.3·1516.6.
 - 물리·시각 지표는 덤프 판 wolf_ssN.dump.bs2.gran_r1 -> R2 final_fix/phys/ours_wolf_ssN.dump_gran (exe/ffx_mq_worker.sh, 대기열 final_fix_wolft_granmq).
 - 물리·시각 (덤프 판, 표 ablation_final_1115_metrics.tex wolf ssN): N2~64 det≤0 0 %, N128 만 det≤0 0.001 % (det 최소 −1.0, 입자 소수 뒤집힘); 떨림 0.83~1.45 (옛 0.80~1.26), PSNR 29.4~30.8 (옛 29.3~29.4) -- 원본 표 갱신 writing/anchorflow 6ec5781 (02:28 KST). 덤프 ss32·64·128 은 다른 작업과 카드 공유 중 실행 (시간 무관).
+## CM193. 가속 베이스라인 재질 확장 (원 논문은 탄성 전용) -- VR-GS·PhysTwin·Spring-Gaus 의 wolf (PG 모래)·bread (PG tear_bread + plasticine σy 200) 측정 (조정자 11-16 위임, 사용자 "지원 안 하면 지원하게 만들어서 재야지") -- **VR-GS·PhysTwin 4 칸 완료 (3/3 완주, 발산 없음), Spring-Gaus 2 칸은 공식 3 단계 학습 중** -- 가지 final_pa_bl, 커밋 702f93d (확장 구현·경계·pr2_grid·부팅) · 9ac2755 (지표 = final_fix b06c860 의 exe/ffx_phys.py·ffx_vis.py 그대로) · 44cc2cf (VR-GS SVD 단정밀도, bread 정답 렌더 궤적 전 프레임) · 680b54f (다른 태그 시각 지표); vast.ai final_blx_a 60859392 (RTX A6000, machine 141683, 300 W = 기본; 연기 시험·VR-GS 맞춤·PhysTwin 준비·시간·덤프, R2 대조 뒤 destroy), final_blx_sgw 60860715 (RTX 4090, Spring-Gaus wolf 준비), final_blx_sgb 60860713 (RTX 6000 Ada, Spring-Gaus bread 준비); 결과 R2 lbours/final_pa/blx/{A,SGW,SGB,smoke,smoke_full,pareto_blx.json,code}, 논문 폴더 pareto_final_1115_table.tex (해당 칸) · pareto_final_1115_blx.tex (설명·물리·시각 지표, notes 에서 \input; 원본 backup_20261031/*_pre_blx.tex)
+
+### CM193.1 확장 원칙
+표현·적분기는 그대로, 재질 모델만 PG 원본 (R2 _vastmirror/PhysGaussian_upstream_8339ed6 mpm_solver_warp/mpm_utils.py) 소성 식.
+- VR-GS (lib/anchorflow/vrgs_xpbd.py): 사면체마다 Dmi = Dm⁻¹ F_p⁻¹ 상태 (총 F = Ds Dm⁻¹ 는 Dmi0 로 렌더·지표). 매 서브스텝 구속 반복 뒤 vg_plast: F_e = Ds Dmi 의 SVD (야코비, warp svd3 와 같은 부호 규약 -- U·V 회전, 뒤집힘이면 σ3 < 0) -> PG sand_return_mapping (|σ| 1e-14 바닥, tr>0 이면 U Vᵀ) / von_mises_return_mapping_with_damage (σ 0.01 바닥, ε̂ 노름 +1e-6, softening 0.1 로 항복 응력 감소, ≤ 0 이면 사면체 dead = mu·lam 0) 를 줄 단위로, Dmi <- Dmi V diag(s_new/σ) Vᵀ. 모래 탄성은 PG 와 같은 Hencky: C1 = ‖log Σ‖ (α 1/(2μV)), C2 = tr log Σ (α 1/(λV)) -- 2x2 결합 풀이는 기존 그대로. plasticine 은 기존 고정 공회전 (PG material 5 = FCR 응력). mu·lam 은 논문 절차로 맞춘 E, 소성 매개변수는 config.
+  SVD 는 처음 배정밀도였는데 A6000 에서 wolf 400x11 프레임 6.8 s -> 단정밀도 (warp svd3 와 같음) 0.81 s.
+- PhysTwin·Spring-Gaus (exe/stab_phystwin.py (8) · exe/stab_sg.py · exe/stab_bl_common.spring_plastic_update): 스프링 소성 휴지 길이. plasticine ε_y = sqrt(3/2) σy/E = 0.1225 (단축 응력에서 PG von Mises 항복이 되는 로그 축 변형률), |ε| > ε_y 면 l0 = l exp(−sign ε ε_y). 모래 = 근사: 점 체적 변형률 = 그 점 스프링 ε 평균 x 3, 스프링 tr = 두 끝점 평균, e = ε − tr/3, δγ = sqrt(3/2)|e| + (3λ+2μ)/(2μ) α tr (PG 와 같은 α·ν; cdp 1.061), δγ>0·tr>0 이면 l0 = l (인장 무응력, PG U Vᵀ), δγ>0·tr≤0 이면 e 를 δγ 만큼 줄임. 서브스텝마다 적분 뒤 갱신 (PhysTwin: 공식 integrate 커널 launch 를 가로채 같은 CUDA 그래프에 잡힘, Spring-Gaus: 공식 step 뒤), 휴지 길이는 미분 안 하는 상태 (PhysTwin 학습 2 단계 역전파의 eval_springs 역방향은 프레임 끝 휴지 길이를 읽음 -- 근사), 롤아웃 시작 (frame 1) 마다 처음 값. Spring-Gaus 강성 정규화 K/origin_len 은 공식 그대로 처음 길이.
+- 경계 (exe/stab_bl_common.parse_bcs, pareto_vrgs 도 같은 함수): wolf release_particles_sequentially = PG 와 같은 50 상자 구간 고정, bread 당김 띠 = 구간 등속 구동 (VR-GS 질량 무한 정점 + vg_kin, PhysTwin 고정 커널에 속도 pinv, Spring-Gaus 앵커). 상자 판정은 처음 위치 (PG selection 과 같음).
+- 물성: VR-GS E = 황금분할 10 회 (Δt 1e-4 s·반복 11: wolf N 400, bread N 100) -> wolf 7.751e5 (정답 5e7, 오차 3.29 %), bread 4876 (정답 2000, 4.86 %). PhysTwin = CMA-ES 20 + 학습 200 (synthetic 경로, wolf N0 400 0.19 h, bread N0 200 0.35 h). Spring-Gaus = 공식 3 단계 (wolf 4090 17.7 s/반복 n_step 100, bread 진행 중).
+
+### CM193.2 결과 (A6000 단독 3 회 중앙값, R2 lbours/final_pa/blx/A/grid.json)
+| 장면 | 방법 | 설정 | 완주 | 오차 % | ms |
+|---|---|---|---|---|---|
+| wolf | VR-GS | 400 x 11 | 3/3 | 3.29 | 855.4 |
+| wolf | PhysTwin | N0 400 | 3/3 | 4.56 | 41.8 |
+| bread | VR-GS | 100 x 11 | 3/3 | 4.86 | 167.7 |
+| bread | PhysTwin | N0 200 | 3/3 | 4.96 | 28.6 |
+물리 (ffx_phys) wolf VR-GS det≤0 0 %·|J−1| 최대 0.447 (모래 인장 투영 U Vᵀ 로 부피 증가)·관통 0, PhysTwin 관통 18.3 % (깊이 0.76 % L); 시각 (ffx_vis) PSNR wolf 29.7/31.7, bread 25.7/27.4 (VR-GS/PhysTwin). 전체 값은 pareto_final_1115_blx.tex.
+연기 시험 (짧은 프레임, R2 smoke·smoke_full): 세 방법 wolf·bread 모두 완주.
+
+### CM193.3 Spring-Gaus (11-16 갱신)
+- wolf: 첫 학습 (final_blx_sgw, RTX 4090 24 GB) 이 반복 271 NaN -> 공식 규약 n_step 200->300 증가 -> 메모리 부족 사망. A100 80 GB (final_blx_sgw2) 에서 공식 그대로 다시 -> NaN 없이 끝 (n_step 200, 2.47 h). 측정 final_blx_tw (RTX A6000 단독 3 회): **6.72 %, 540.2 ms** (540.2·521.7·540.5), 물리·시각 지표 R2 blx/TW/g/springgaus_wolf_n200_dump.
+- bread (final_blx_sgb, RTX 6000 Ada): vast 전체 정지 (06:3x UTC) 로 1 차 학습 중단 -> 처음부터 다시 -> 다른 에이전트 ablEig 가 같은 카드 37 GB 를 써 메모리 부족 사망 (15:17 UTC, 약 230/300) -> q3 다시 -> 조정자 결정으로 q4 (exe/sg_resume.py 정확한 이어 돌리기, 5 반복마다 저장, SG_NO_EMPTY_CACHE=1; final_fix_sg 담당 에이전트가 띄움) -> 19:3x UTC vast 결제 실패 (billing_failed, 크레딧 0) 로 9 대 모두 정지, 저장점 n_step 150 구간 (R2 blx/SGB/p/springgaus_bread_prep/sg_resume/cur). 크레딧이 돌아오면 로컬 tmux blxfinish (exe/blx_finish_bread.sh) 가 start -> q4 가 저장점부터 학습 -> 같은 카드 단독 시간 1 회 (조정자: 6000 Ada 에서 바로, 2·3 회는 맨 뒤) + 덤프·지표 -> MEAS_DONE -> pareto_blx.json·BREAD_SG_READY·notify.
+- 지배 판정 (우리 K=1 기준): wolf VR-GS 3.29 %·855 ms (더 정확, 49 배 느림), PhysTwin 4.56 %·41.8 ms, Spring-Gaus 6.72 %·540 ms -- 지배 없음; bread VR-GS 4.86 %·167.7 ms, PhysTwin 4.96 %·28.6 ms -- 지배 없음 (우리 1.81 %·18.3 ms).
+
+### CM193.4 Spring-Gaus bread: 공식 학습 실패 (11-17)
+- 공식 3 단계 학습의 동역학 반복 246 (sg_resume 저장점 245 에서 정확 재개), 프레임 203 에서 공식 is_nan -> 공식 train_step 규약대로 n_step 200 -> 250 -> ... -> 550 > MAX_N_STEP 500 -> `AssertionError: Train dynamic failed!` (train.py 443).
+- 세 판 모두 같은 자리: final_blx_sgf (6000 Ada, empty_cache 끔, n_step 400 에서 48 GB 메모리 부족으로 먼저 죽음), 조정자 재시작 판 (empty_cache 켬, 같은 메모리 부족), final_blx_sg80 (A100 80GB, 500 너머까지 올라가 공식 실패). 첫 6000 Ada 학습 (final_blx_sgb) 의 반복 230 대 메모리 부족은 다른 에이전트 프로세스 때문이었음.
+- 확인한 것: 재질 확장의 휴지 길이 상태가 공식 재시도 때 프레임 시작 값으로 안 돌아가던 버그를 고친 판 (2190f3cc, 재시도 없으면 결과 불변) 도 같은 자리에서 같은 실패 -> 그 버그가 원인은 아님. 원인 (학습된 강성·감쇠와 찢김 구간 스프링 상태에서 명시 적분 불안정으로 추정) 은 확인 못 함.
+- 기록: 표 칸 '공식 학습 실패' + 각주, R2 pareto_blx.json (fail=official_training_failed), 근거 R2 lbours/final_pa/blx/SGB/fail_sg80 (log_4.txt·sg_resume 저장점·증거 줄). 근사·우회 없음 (조정자 지시). final_blx_sg80 R2 업로드 뒤 destroy.
+
+### CM193.5 Spring-Gaus bread 결과 (11-17)
+- 공식 3 단계 학습 끝 n_step 200 (exe/sg_resume.py 정확 이어 돌리기 경로, 재질 확장 휴지 길이 재시도 복원 2190f3cc 포함). RTX 6000 Ada 단독 (final_blx_sgada 61002543): **12.59 %, 210.6 ms**; 물리 떨림 1.07e-3 L (F 없음·바닥 없음·E0=0 칸은 해당 없음); 시각 NIQE 9.90, BRISQUE 88.6, MUSIQ 61.2, CLIP-IQA 0.544, warp 0.14e-3, PSNR 26.12, SSIM 0.927, LPIPS 0.090. R2 lbours/final_pa/blx/SGB/{grid.json, g/springgaus_bread_n200_*}.
+- 표 (논문 폴더 pareto_final_1115_table·phys·vis.tex): bread Spring-Gaus 칸·평균 행 갱신 (exe/blx_fin_sgb.py), 각주 'RTX 6000 Ada 단독' 한 줄 (조정자: 반복 횟수·학습 이력은 결과 문서·표에 쓰지 않음). 원본 backup_20261031/*_pre_sgbread.tex.
+- 지배 판정: bread 우리 K=1 1.83 %·18.7 ms -- 지배 없음.
