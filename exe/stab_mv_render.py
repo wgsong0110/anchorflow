@@ -20,7 +20,7 @@ import os
 import sys
 
 W = "/home/dkta/work"
-MODEL = {"lego": "lego_whitebg-trained", "ficus": "ficus_whitebg-trained", "mic": "mic_whitebg-trained", "hotdog": "hotdog_whitebg-trained",
+MODEL = {"vasedeck": "vasedeck_whitebg-trained", "plane": "plane-trained", "pillow2sofa": "pillow2sofa_whitebg-trained", "lego": "lego_whitebg-trained", "ficus": "ficus_whitebg-trained", "mic": "mic_whitebg-trained", "hotdog": "hotdog_whitebg-trained",
          "wolf": "wolf_whitebg-trained", "bread": "bread-trained"}                     # [blx] PG 소성 씬 (lb_render 와 같은 3DGS)
 ap = argparse.ArgumentParser()
 ap.add_argument("--sim", required=True)
@@ -61,7 +61,15 @@ for _dg, _ax in zip(cfg.get("rotation_degree") or [], cfg.get("rotation_axis") o
     _R = {0: [[1, 0, 0], [0, _c, -_s], [0, _s, _c]], 1: [[_c, 0, _s], [0, 1, 0], [-_s, 0, _c]], 2: [[_c, -_s, 0], [_s, _c, 0], [0, 0, 1]]}[int(_ax)]
     _RT = torch.tensor(_R, device=dev, dtype=torch.float32) @ _RT
 ROT = bool((_RT - torch.eye(3, device=dev)).abs().max() > 0)
-TP, SO, MEAN = transform2origin(gs.get_xyz[KIDX] @ _RT.T if ROT else gs.get_xyz[KIDX], float(cfg.get("scale", 1.0)))
+_XR = gs.get_xyz[KIDX] @ _RT.T if ROT else gs.get_xyz[KIDX]
+if a.shape in ("vasedeck", "plane", "pillow2sofa") and cfg.get("sim_area") is not None:                     # PG 전처리 sim_area 자르기 (paper_remeasure2)
+    _b = cfg["sim_area"]
+    _m = torch.ones(_XR.shape[0], dtype=torch.bool, device=_XR.device)
+    for _i in range(3):
+        _m = _m & (_XR[:, _i] > _b[2 * _i]) & (_XR[:, _i] < _b[2 * _i + 1])
+    KIDX = KIDX[_m]
+    _XR = _XR[_m]
+TP, SO, MEAN = transform2origin(_XR, float(cfg.get("scale", 1.0)))
 TP = shift2center111(TP)
 NG = KIDX.numel()
 with h5py.File(meta["h5"]) as h:                                 # lb_render 와 같은 대응 검산

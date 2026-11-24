@@ -14,7 +14,7 @@ import os
 import sys
 
 W = "/home/dkta/work"
-MODEL = {"lego": "lego_whitebg-trained", "mic": "mic_whitebg-trained", "ficus": "ficus_whitebg-trained",
+MODEL = {"vasedeck": "vasedeck_whitebg-trained", "plane": "plane-trained", "pillow2sofa": "pillow2sofa_whitebg-trained", "lego": "lego_whitebg-trained", "mic": "mic_whitebg-trained", "ficus": "ficus_whitebg-trained",
          "hotdog": "hotdog_whitebg-trained", "wolf": "wolf_whitebg-trained", "bread": "bread-trained"}          # 절 AG: PG 소성 씬
 MODEL.update({"mic_elastic": "mic", "ship_elastic": "ship", "chair_elastic": "chair", "ship_plastic": "ship", "mic_plastic": "mic", "mic_metal": "mic", "ship_plastic_lego": "ship", "mic_metal_lego": "mic", "hotdog_plastic_lego": "hotdog"})      # 탄성 새 장면 (elastic_new: pgmodel/<물체>, 공식 3DGS 기본값 학습)
 MODEL.update({"chair_plasticine": "chair", "drums_foam": "drums", "materials_sand": "materials", "materials_metal": "materials", "ball_metal": "ball"})      # 절 CM186 새 형상 (pgmodel/<물체>, 직접 학습한 3DGS·DreamPhysics ball)

@@ -47,6 +47,7 @@
 - **vast.ai(최종 실행 대부분):**
   - 이미지 `pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel`.
   - 부팅 때 `pip install taichi==1.6.0 cupy-cuda12x kaolin==0.18.0 warp-lang==1.6.2` 와 휠 2개를 설치한다. 그 밖의 패키지는 버전이 고정돼 있지 않다.
+  - 기록된 실행은 부팅 때 `exe/pr2_patch_models.py`·`exe/ffx_phys_patch_render.py` (3DGS 모델 이름 표·sim_area 자르기) 를 코드 사본에 적용했다. 이 가지에는 그 결과가 이미 들어 있다 (두 스크립트는 다시 불러도 그대로). pillow2sofa 정답 경로는 `W=<작업 폴더> bash repro/setup_gtnew.sh` 로 준비한다.
   - 코드는 R2 의 `code/<접두>_<커밋>.tar` 로 받는다. 부팅 스크립트 예: `exe/vast_ffx.sh`, `exe/vast_rep4.sh`.
 - **클러스터:** conda 환경 `/home/dkta/.conda/envs/af`.
 - **시간 측정:** RTX A6000 단독.

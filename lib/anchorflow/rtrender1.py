@@ -25,7 +25,7 @@ import numpy as np
 import torch
 
 W = "/home/dkta/work"
-MODEL = {"lego": "lego_whitebg-trained", "ficus": "ficus_whitebg-trained", "wolf": "wolf_whitebg-trained", "bread": "bread-trained"}
+MODEL = {"vasedeck": "vasedeck_whitebg-trained", "plane": "plane-trained", "pillow2sofa": "pillow2sofa_whitebg-trained", "lego": "lego_whitebg-trained", "ficus": "ficus_whitebg-trained", "wolf": "wolf_whitebg-trained", "bread": "bread-trained"}
 MODEL.update({"chair_plasticine": "chair", "drums_foam": "drums", "materials_sand": "materials", "materials_metal": "materials", "ball_metal": "ball"})
 MODEL.update({"chair_paste": "chair", "drums_honey": "drums", "bread_foam_drop": "bread-trained", "chair_paste_lego": "chair", "drums_honey_lego": "drums", "bread_foam_drop_lego": "bread-trained"})      # 절 CM189 plastfix
 MODEL.update({"chair_elastic": "chair", "ship_plastic": "ship", "mic_metal": "mic", "mic_plastic": "mic", "mic_elastic": "mic", "ship_elastic": "ship", "ship_plastic_lego": "ship", "mic_metal_lego": "mic", "hotdog_plastic_lego": "hotdog"})      # elastic_new      # 절 CM186 새 형상 (pgmodel/<물체>, 직접 학습한 3DGS·DreamPhysics ball)
@@ -75,7 +75,15 @@ def _setup_pg():
         R_ = {0: [[1, 0, 0], [0, c_, -s_], [0, s_, c_]], 1: [[c_, 0, s_], [0, 1, 0], [-s_, 0, c_]], 2: [[c_, -s_, 0], [s_, c_, 0], [0, 0, 1]]}[int(ax)]
         RT = torch.tensor(R_, device=dev, dtype=torch.float32) @ RT
     ROT = bool((RT - torch.eye(3, device=dev)).abs().max() > 0)
-    TP, SO, MEAN = transform2origin(gs.get_xyz[KIDX] @ RT.T if ROT else gs.get_xyz[KIDX], float(cfg.get("scale", 1.0)))
+    _XR = gs.get_xyz[KIDX] @ RT.T if ROT else gs.get_xyz[KIDX]
+    if C.shape in ("vasedeck", "plane") and cfg.get("sim_area") is not None:
+        _b = cfg["sim_area"]
+        _m = torch.ones(_XR.shape[0], dtype=torch.bool, device=_XR.device)
+        for _i in range(3):
+            _m = _m & (_XR[:, _i] > _b[2 * _i]) & (_XR[:, _i] < _b[2 * _i + 1])
+        KIDX = KIDX[_m]
+        _XR = _XR[_m]
+    TP, SO, MEAN = transform2origin(_XR, float(cfg.get("scale", 1.0)))
     TP = shift2center111(TP)
     NG = KIDX.numel()
     with h5py.File(meta["h5"]) as h:
