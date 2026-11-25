@@ -1,0 +1,91 @@
+{
+ "opacity_threshold": 0.02,
+ "rotation_degree": [
+  119.5764,
+  -6.4234,
+  138.3083
+ ],
+ "rotation_axis": [
+  0,
+  1,
+  2
+ ],
+ "substep_dt": 2.000800320128051e-05,
+ "frame_dt": 0.016666666666666666,
+ "frame_num": 80,
+ "E": 20000.0,
+ "nu": 0.4,
+ "material": "foam",
+ "density": 1400,
+ "g": [
+  0.0,
+  0.0,
+  -9.8
+ ],
+ "n_grid": 100,
+ "particle_filling": {
+  "n_grid": 100,
+  "density_threshold": 100.0,
+  "search_threshold": 1.0,
+  "search_exclude_direction": 2,
+  "ray_cast_direction": 4,
+  "max_particles_num": 2000000,
+  "max_partciels_per_cell": 1,
+  "boundary": [
+   0.4,
+   1.6,
+   0.4,
+   1.6,
+   0.4,
+   1.6
+  ],
+  "smooth": true,
+  "visualize": true
+ },
+ "boundary_conditions": [
+  {
+   "type": "bounding_box"
+  },
+  {
+   "type": "surface_collider",
+   "point": [
+    1,
+    1,
+    0.2
+   ],
+   "normal": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "surface": "sticky",
+   "friction": 0.0,
+   "start_time": 0,
+   "end_time": 1000.0
+  }
+ ],
+ "mpm_space_vertical_upward_axis": [
+  0,
+  0,
+  1
+ ],
+ "mpm_space_viewpoint_center": [
+  1,
+  1,
+  0.75
+ ],
+ "default_camera_index": -1,
+ "show_hint": false,
+ "init_azimuthm": 30,
+ "init_elevation": 15,
+ "init_radius": 4.5,
+ "move_camera": false,
+ "delta_a": 0.0,
+ "delta_e": 0.0,
+ "delta_r": 0.0,
+ "yield_stress": 50.0,
+ "plastic_viscosity": 200.0,
+ "_nshape_changes": "PG wolf_config 기준. 바꾼 것: release_particles_sequentially 뺌, sticky 바닥 z 0.48->0.2 (0.3 m 낙하), n_grid 200->100, 재질 키, 카메라(렌더만)",
+ "_floor_gap": 0.003729709149228453,
+ "_plastfix_lego": "drums_honey.json 에서 레고 L000 세팅으로 (조정자 11-15): 회전 L000 초기 R, substep_dt 2.0008e-5, frame_dt 1/60, 80 프레임, 초기 속도 0, n_grid 100, 경계 = bounding_box + sticky 바닥 (z = 최저점 - lift 0.00373, 실행 때 elastic_new_floor.py), 재질·채우기는 원래 장면 그대로"
+}

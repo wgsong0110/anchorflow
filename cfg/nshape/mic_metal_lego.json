@@ -1,0 +1,90 @@
+{
+ "opacity_threshold": 0.02,
+ "rotation_degree": [
+  119.5764,
+  -6.4234,
+  138.3083
+ ],
+ "rotation_axis": [
+  0,
+  1,
+  2
+ ],
+ "substep_dt": 2.000800320128051e-05,
+ "frame_dt": 0.016666666666666666,
+ "frame_num": 80,
+ "E": 100000.0,
+ "nu": 0.3,
+ "material": "metal",
+ "density": 1000,
+ "g": [
+  0.0,
+  0.0,
+  -9.8
+ ],
+ "n_grid": 100,
+ "particle_filling": {
+  "n_grid": 100,
+  "density_threshold": 100.0,
+  "search_threshold": 1.0,
+  "search_exclude_direction": 2,
+  "ray_cast_direction": 4,
+  "max_particles_num": 2000000,
+  "max_partciels_per_cell": 1,
+  "boundary": [
+   0.4,
+   1.6,
+   0.4,
+   1.6,
+   0.4,
+   1.6
+  ],
+  "smooth": true,
+  "visualize": true
+ },
+ "boundary_conditions": [
+  {
+   "type": "bounding_box"
+  },
+  {
+   "type": "surface_collider",
+   "point": [
+    1,
+    1,
+    0.2
+   ],
+   "normal": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "surface": "sticky",
+   "friction": 0.0,
+   "start_time": 0,
+   "end_time": 1000.0
+  }
+ ],
+ "mpm_space_vertical_upward_axis": [
+  0,
+  0,
+  1
+ ],
+ "mpm_space_viewpoint_center": [
+  1,
+  1,
+  0.75
+ ],
+ "default_camera_index": -1,
+ "show_hint": false,
+ "init_azimuthm": 30,
+ "init_elevation": 15,
+ "init_radius": 4.5,
+ "move_camera": false,
+ "delta_a": 0.0,
+ "delta_e": 0.0,
+ "delta_r": 0.0,
+ "yield_stress": 100.0,
+ "grid_v_damping_scale": 0.9999,
+ "_elastic_new": "레고 L000 과 같은 세팅 (조정자 11-15): lbdata/config.json 의 substep_dt 2.0008e-5·frame_dt 1/60·n_grid 100·sticky surface_collider·bounding_box, 프레임 수 = L000 궤적 80 (config frame_num 60 이지만 L000 은 80 으로 생성·평가), 초기 속도 0 (config init_velocity), 회전 = L000 초기 회전 R (x 119.5764, y -6.4234, z 138.3083), 바닥 = L000 정의 (물체 최저점 - lift 0.00373; 레고 바닥 0.48 은 lb_gen 이 물체를 바닥 위 lift 로 옮긴 것, PG 는 물체를 (1,1,1) 중심에 두므로 바닥을 최저점 - lift 로). 재질만 다름: PG metal (PG 공식 plane_config 값 그대로)",
+ "_floor_gap": 0.003729709149228453
+}

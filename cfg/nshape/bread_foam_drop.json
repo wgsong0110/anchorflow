@@ -1,0 +1,86 @@
+{
+ "opacity_threshold": 0.02,
+ "rotation_degree": [
+  25.0
+ ],
+ "rotation_axis": [
+  1
+ ],
+ "substep_dt": 0.0001,
+ "frame_dt": 0.04,
+ "frame_num": 50,
+ "E": 20000.0,
+ "nu": 0.4,
+ "material": "foam",
+ "density": 1400,
+ "scale": 0.6,
+ "g": [
+  0.0,
+  0.0,
+  -9.8
+ ],
+ "n_grid": 100,
+ "particle_filling": {
+  "n_grid": 100,
+  "density_threshold": 100.0,
+  "search_threshold": 0.2,
+  "search_exclude_direction": -1,
+  "ray_cast_direction": 4,
+  "max_particles_num": 2000000,
+  "max_partciels_per_cell": 1,
+  "smooth": true,
+  "boundary": [
+   0.64,
+   1.36,
+   0.64,
+   1.36,
+   0.64,
+   1.36
+  ],
+  "visualize": true
+ },
+ "boundary_conditions": [
+  {
+   "type": "bounding_box"
+  },
+  {
+   "type": "surface_collider",
+   "point": [
+    1,
+    1,
+    "FLOOR"
+   ],
+   "normal": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "surface": "sticky",
+   "friction": 0.0,
+   "start_time": 0,
+   "end_time": 1000.0
+  }
+ ],
+ "mpm_space_vertical_upward_axis": [
+  0,
+  0,
+  1
+ ],
+ "mpm_space_viewpoint_center": [
+  1,
+  1,
+  1
+ ],
+ "default_camera_index": -1,
+ "show_hint": false,
+ "init_azimuthm": 55,
+ "init_elevation": 13,
+ "init_radius": 2.0,
+ "move_camera": false,
+ "delta_a": 0.05,
+ "delta_e": 0.1,
+ "delta_r": 0.0,
+ "yield_stress": 50.0,
+ "plastic_viscosity": 200.0,
+ "_nshape_changes": "PG tear_bread_config 기준 (사용자 11-15 'bread 를 점탄성으로 바닥에 떨구기'). 바꾼 것: 양쪽 당김 enforce_particle_translation 2 개 뺌, 재질 jelly -> foam (PG 에 점탄성 없음 -> 점성 항 있는 foam, 값은 drums_honey 와 같음: E 2e4, nu 0.4, yield_stress 50, plastic_viscosity 200, density 1400), rpic_damping 0.5·grid_v_damping_scale 0.9995 뺌 (drums_honey 계열에 없음), g 0 -> -9.8, frame_dt 0.01 -> 0.04, frame_num 300 -> 50, n_grid 150 -> 100 (다른 새 형상 장면과 같음), sticky 바닥 z = 처음 최저점 - 0.3 m (FLOOR 는 실행 때 정답 0 프레임에서 채움). 회전 25 도 (축 1)·scale 0.6·채우기 그대로."
+}

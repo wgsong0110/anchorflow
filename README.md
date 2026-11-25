@@ -1,207 +1,177 @@
-# FusedGS (코드 이름 anchorflow)
+# FusedGS — code to reproduce the paper results
 
-3DGS 위에서 도는 실시간 물리 시뮬레이터. 매 프레임 현재 입자(가우시안) 상태에서 격자 기반 육면체 메시를 다시 만들고, 그 메시를 FEM 한 스텝(K=1)으로 진행한 뒤 결과를 입자로 되돌린다. MPM 의 반복 P2G/G2P·서브스텝이 없고, 메시를 매번 새로 만들어서 찢김 같은 위상 변화가 따로 처리 없이 나온다.
+FusedGS simulates 3D Gaussian Splatting scenes in real time. At every frame it rebuilds a hexahedral mesh from the current particles (Gaussians), advances the mesh by one implicit FEM step (2×2×2 Gauss points per cell), and maps the result back to the particles. Because the mesh is rebuilt every frame, topological changes such as tearing need no special handling.
 
-- 논문: `paper/cvpr2027/` (repo `wgsong0110/anchorflow-paper`, 폴더 `/home/wgsong/workspace/FusedGS/paper`)
-- 코드: 이 repo (`wgsong0110/anchorflow`). 폴더 `/home/wgsong/workspace/FusedGS/master` 와 worktree `*_wt`
-- 결과: R2 `r2:storage/result/anchorflow/lbours/` (FUSE `~/r2/result/anchorflow/lbours/`)
-- 데이터: R2 `r2:storage/datasets/anchorflow/`, PG 계열 자산은 `lbours/_vastmirror/`
+This folder contains only the code that produced the paper's numbers. The FusedGS solver is a set of modifications that were layered on top of a base solver during development. `exe/run_fusedgs.py` applies exactly the modifications and flags of the recorded paper runs, so every paper setting is selected by a name.
 
-> **논문 결과용 코드는 브랜치 `paper` 에 있다.** 실험별 끝 브랜치 8개를 11-21 에 합친 브랜치다. master 는 11-02 에서 멈췄고 이 README 만 갖고 있다.
->
-> ```bash
-> git checkout paper
-> bash repro/fetch_raw.sh     # R2 원자료(작은 파일만, 약 50 MB) → ~/.cache/fusedgs_raw
-> bash repro/make_tables.sh   # 원자료 → 논문 repo 의 cvpr2027/tab/*.tex, fig/{pareto_mean,robust_bar}.pdf
-> ```
->
-> - 이 명령으로 논문 표·그림의 숫자가 지금 논문과 바이트 단위로 같게 나온다(11-21 확인).
-> - 집계 안에는 손으로 넣은 값이 없다. 자세한 내용은 `repro/README.md` 에 있다.
+## 1. Layout
 
-## 1. 실험별 원래 브랜치 (모두 `paper` 에 합쳐짐)
-
-| 논문 결과 | 브랜치 (worktree) | 끝 커밋 |
-|---|---|---|
-| 표 `stab_avg` 안정성 | `stabfinal` (`sfin_wt`) | d2a99e82 |
-| 그림 `pareto_mean` 속도-정확도, 표 `abl_design`, 그림 `robust_bar` | `final_fix_lego` (`ffl_wt`, `final_pa`·`final_fix_wolfN` 포함) | e5ae450b |
-| 파레토 i-PG·OmniPhysGS | `final_fix_mpmbl` (`mpmbl_wt`) | 3e34a1ef |
-| 파레토·빵 찢김의 가속 베이스라인(PhysTwin·Spring-Gaus·VR-GS 소성 확장) | `final_pa_bl` (`fpabl_wt`), `final_fix_vrgs` (`vrgs_wt`) | e20a92e7, 1f29037a |
-| ablation 1³ 시간 | `gq_justify` (`gqj_wt`) | 77cac21d |
-| 표 `rep_l2` 표현력 | `repfinal` (`repfinal_wt`) | b2c6d5a0 |
-| 새 형상(ship·mic·drums·chair) 정답 MPM | `nshape` (`nshape_wt`) | 0b99445f |
-
-- 갈래 구조: master → k1new → nshape(0b99445f) → 위 끝 브랜치 8개.
-- master 에만 있는 34 커밋(절 AM, 수박)은 끝 브랜치에 들어 있지 않다.
-- `paper` 는 final_fix_lego 위에 mpmbl → vrgs → final_fix → final_pa_bl → repfinal → stabfinal → gq_justify 를 `--no-ff` 로 합쳤다. 원래 커밋 해시는 그대로다.
-- 충돌은 각 브랜치가 자기 플래그로 돌 때 동작이 그대로 남도록 합집합으로 풀었다. 풀이는 merge 메시지에 적었다.
-  - VR-GS 접촉은 `--vg_contact auto` 가 재질로 가른다. 탄성이면 final_fix_vrgs 판, 소성이면 final_pa_bl 판이다.
-  - `pr2_grid` 의 VR-GS 반복 수는 장면별 기본값을 쓴다(wolf·bread 11, 나머지 1).
-- 확인은 정적으로만 했다(실행 안 함): R2 에 기록된 명령줄 253개의 플래그가 모두 합친 코드에 있다.
-- 실험별 명령 생성기는 그대로 남아 있다. 실험마다 "기본 판"이 다르기 때문이다(3절).
-
-## 2. 환경
-
-- **CUDA 커널:** 전부 cupy `RawModule` 런타임 컴파일이라 따로 빌드하지 않는다.
-  - 핵심 코드: `lib/anchorflow/fem_an_rt.py`(시뮬레이터), `fem_mat_rt.py`·`fem_ao_rt.py`(재질), 실행기 `exe/fem_an_rt_sim.py`.
-- **렌더 휠:** `diff_gaussian_rasterization`, `simple_knn`. GitHub 릴리스 `cuda-3dgs-torch251` 에 있고, sm80/90 판은 브랜치 `cuda-sm80-wheel` 에 있다.
-- **vast.ai(최종 실행 대부분):**
-  - 이미지 `pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel`.
-  - 부팅 때 `pip install taichi==1.6.0 cupy-cuda12x kaolin==0.18.0 warp-lang==1.6.2` 와 휠 2개를 설치한다. 그 밖의 패키지는 버전이 고정돼 있지 않다.
-  - 코드는 R2 의 `code/<접두>_<커밋>.tar` 로 받는다. 부팅 스크립트 예: `exe/vast_ffx.sh`, `exe/vast_rep4.sh`.
-- **클러스터:** conda 환경 `/home/dkta/.conda/envs/af`.
-- **시간 측정:** RTX A6000 단독.
-  - Ours: CUDA 그래프 재생 GPU 시간(CUDA 이벤트, `fem_an_rt.py`).
-  - 대부분의 베이스라인: 동기화 뒤 벽시계 시간.
-
-## 3. 공통 입력과 기본 판
-
-### 장면
-
-| 장면 | 3DGS | 물성 config | 우리 입력(.pt) / 정답 MPM |
-|---|---|---|---|
-| 레고 | `_vastmirror/pgmodel/lego_whitebg-trained` | `_vastmirror/lbdata/config.json` (jelly E1e6 ν0.3) | `vastpkg/L000.pt` / `_vastmirror/lbdata/test_low/L000` (lb_gen 21bc4e2, 시드 7001, 서브스텝 2.0008e-5) |
-| pillow2sofa | PG 공식 | `assets/pillow2sofa_config.json` | `lbours/paper_remeasure2/scenes/pillow2sofa/` (`exe/pr2_scene_fetch.sh`) |
-| bread | `pgmodel/bread-trained` | `bread_plastic_config.json` (PG tear_bread 형상, plasticine 항복 200) | `lbours/fem_ag_data/bread.pt` / `_vastmirror/topo/pg_bread_plastic` |
-| wolf | `wolf_whitebg-trained` | PG `wolf_config.json` (sand) | `lbours/fem_ag_data/wolf.pt` / `_vastmirror/topo/pg_wolf_sand` |
-| ship·mic·drums·chair | NeRF-synthetic 을 직접 학습(3DGS `train.py` 30k), `datasets/anchorflow/nshape/model/` | `exe/nshape_cfg/<장면>_lego.json` (`exe/plastfix_lego_cfg.py`) | `datasets/anchorflow/nshape/gt_pg/<장면>` (`exe/vast_plastfix_lego.sh`) |
-
-- PG 정답을 `.pt` 로 바꿀 때는 `exe/pg_h5_to_pt.py` 를 쓴다.
-- 새 형상 정답은 원본 PhysGaussian(8339ed6)이 600 초 안에 0 프레임으로 끝나서 쓰지 못했다. 대신 i-physgaussian 사본의 명시적 러너 `gs_simulation.py` 로 만들었다(`gt_pg/<장면>/RUNNER`).
-
-### FusedGS 기본 판(실험마다 다르다)
-- 모든 실행은 진단 감싸개 사슬(`ssfix_wrap → startpt_wrap → … → ext2_wrap → fem_an_rt_sim.py`)을 앞에 붙인 긴 명령이다. 각 R2 실행 폴더에 `cmd.txt`·`commit.txt` 가 남아 있다.
-- 판의 변천(문서 `doc/fem_realtime.md` 절 CM189~196):
-  - CM190: `exe/fpa_cmd.py <장면> def <반복> <out>` = `--cg 4 --wrx_col 0 --mlow 1e-3 --ue_loc 51` + `ssfix_wrap --ssf_bec 1 --ssf_split 3 --ssf_bigT 0.5 --ssf_tsum 1`.
-  - CM191: CM190 에 `--fpi_el 1` 추가.
-  - CM192: CM191 에 `--wrx_el 1` 추가. 명령은 `FFX_ND=2 python exe/ffx_cmd.py <장면> def.bs2 <반복> <out>` 로 만든다(레고·pillow2sofa 는 `.wel`).
-  - CM193/196: `--be_sub 2`·gran. K>1 에서만 영향이 있다.
-- 실험별로 쓴 판:
-  - 안정성 레고·pillow2sofa: `_f5` = CM190.
-  - 안정성 ship·mic: `_f7` = CM191 + `--ssf_cgk 0.5`(`exe/nshape_cmd.py`).
-  - 파레토·ablation·강건성·빵 찢김: CM192.
-
-## 4. 결과별 재현
-
-표기: **원자료** = R2 위치, **실행** = 숫자를 만든 명령, **집계** = 원자료에서 논문 tex 까지.
-
-### 4.1 표 `stab_avg` 안정성 (`stabfinal`)
-- **원자료:** `lbours/stabfinal/res/{lego,pillow2sofa,ship_plastic_lego,mic_metal_lego}/`
-  - `an.json`(`exe/stab1115_an.py`): 최소 N 과 관통·떨림·Chamfer.
-  - `extra.json`(`exe/stab_extra.py`): ΔV·깜빡임.
-  - `vis/vis.json`(`exe/stab_vis.py`): PG N1024 렌더 대비 PSNR·LPIPS.
-  - 지표 정의: `lbours/final_fix/metrics_def.md`.
-- **실행:** `bash exe/stabfinal_launch.sh new <offer> <TAG> '<장면:단계>' <커밋> 4` 로 띄우고, 사다리는 `exe/stab1115_drv.py` 가 돈다.
-  - 사다리 방식: N 을 2 의 거듭제곱으로 올린 뒤 사이 정수를 아래부터 본다. 같은 N 이 3 회 모두 안정이면 확정한다(mic 은 1 회).
-  - PG/i-PG: `exe/stab_mpm.py --method {pg|ipg} --h5 … --config … --substeps N`, i-physgaussian 사본에서 실행한다.
-  - OmniPhysGS: `exe/stab_omni.py --repo OmniPhysGS(5ab915b0)`.
-  - Ours: 템플릿 `exe/stab1115_base.txt`, 큐 `lbours/stabfinal/queue/ours.txt`.
-  - ship i-PG: `AF_IPG_MATRESTORE=1`(8145a086)로 재질 상태 되돌림을 고친 판이고, N7 은 1 회 판정이다. 후처리는 `exe/ship_ipg_post.sh`.
-- **집계:**
-  1. 원자료를 `C=~/.cache/stabfinal_col` 로 받는다(예전 `/tmp/sf_collect.sh`, repo 밖).
-  2. `sfin_wt` 에서 `python3 exe/stabfinal_rank.py $C $P && SF_OVERWRITE=1 python3 exe/stabfinal_tab.py $C $C/stabhex_an.json $P` 를 돌린다. 여기서 `P=paper 폴더` 이고, 결과는 `paper/stab_final_1115.tex` 다.
-  3. 논문 repo 의 `results_all/tools/rebuild.sh` 와 `paper_tables.py` 를 차례로 돌린다(5절).
-- **주의:**
-  - 레고 PG N43·i-PG N8 은 11-12 실행 값이다(`repro/data/stab_lego_pg_ipg_1112.json`). 그 3 회 실행의 원자료는 R2 에 없고, N_min 만 스캔 기록과 대조된다.
-  - pillow2sofa PG ΔV 는 판 a 를 뺀 값이다(`stabfinal_jdevfix.py`).
-  - 안정 판정의 에너지 문턱은 (E−E0)/|E0| ≤ 1 이다.
-
-### 4.2 그림 `pareto_mean` 속도-정확도 (`final_fix_lego` 외)
-- **Ours 원자료:**
-  - 레고·pillow2sofa: `lbours/final_fix/runs/{L000,pillow2sofa}_def.wel_r{1,2,3}` (289ad4a).
-  - bread·wolf: `runs_wolfN/{bread,wolf}_def.bs2_r{1,2,3}` (39a7abe·035f2b5).
-  - 물리·시각 지표용 덤프: `final_fix/phys/ours_*`.
-- **베이스라인 원자료** (`lbours/` 아래):
-
-  | 방법 | 위치 |
-  |---|---|
-  | GT MPM | `final_pa/bl/T1/g/mpm_L000_n833_r*`, `paper_remeasure2/final2/all.json` |
-  | i-PG·Omni | `final_fix/bl_mpm/`, `exe/pareto_mpmbl.py` |
-  | VR-GS | `final_fix/vrgs_*.json`, `final_pa/blx/A/g/vrgs_*` |
-  | PhysTwin | `final_pa/bl/T1/g/phystwin_*`, `final_pa/blx` |
-  | Spring-Gaus | `final_fix/sg_pillow2sofa.json`, `final_pa/blx/SGB` |
-
-- **집계:**
-  1. `exe/ffx_cm192_refresh.sh` 로 원본 표 세 개 `paper/pareto_final_1115_{table,phys,vis}.tex` 를 만든다. 이 스크립트는 다음을 돌린다.
-     - `ffx_nd2_cache.sh` + `fpa_table.py`: 3 회 중앙값.
-     - `ffx_phys_merge.py`·`ffx_phys.py`·`ffx_vis.py`: `lb_render.py` 렌더, pyiqa 0.1.16, RAFT, alex LPIPS.
-  2. 논문 repo 의 `rebuild.sh` 가 `add_mpmbl.py → recompute_avg.py → figs.py` 를 돌려 `cvpr2027/fig/pareto_mean.pdf` 를 만든다.
-- **주의:**
-  - i-PG·Omni 칸은 `exe/pareto_mpmbl_cells.py` 가 R2 에서 만든다. i-PG wolf 는 오차를 `N25e5_fr` 에서, 시간을 `N25e5_frt3` 에서 가져온다(`repro/data/pareto_mpmbl_sources.json`).
-  - VR-GS 반복 수가 장면마다 다르다(레고·pillow2sofa 1, bread·wolf 11).
-  - Spring-Gaus bread 는 RTX 6000 Ada 에서 쟀다.
-  - wolf Omni 는 Corotated 판(`omni_wolf_corot`)이다.
-
-### 4.3 표 `abl_design` (`final_fix_lego`, `gq_justify`)
-- **원자료:**
-  - 2³ 기본: 파레토 Ours 와 같은 실행.
-  - 1³ 오차: `runs/*_q1.wel_r*`, `runs_wolfN/*_q1.bs2_r*` (`q27_wrap --q1pt 1`).
-  - F 전달 교환: `*_nofpi.*`.
-  - 영 에너지 모드: `final_fix/abl_eig/<장면>_<판>/eig.json` (`exe/q27_eig.py`).
-- **집계:** `ffl_wt/exe/fpa_table.py` → `paper/ablation_final_1115_{tables,metrics}.tex` → 논문 repo `rebuild.sh`(`build_ablation.py` 등) → `paper_tables.py`.
-- **주의:**
-  - 1³ ms 17.9 는 `lbours/gq_justify/runs/*_q1_base_time_r1/gq.json` 1 회 측정이다. 같은 실행의 2³ 시간은 13.0 ms 다.
-  - 1³ 영 에너지 모드 수는 하한값이다(bread 의 고윳값이 수렴하지 않음).
-
-### 4.4 그림 `robust_bar` (`final_fix_lego`)
-- **값:** `cvpr2027/tab/abl_robust.tex` 의 Err.% 열(4.3 과 같은 집계 사슬)을 `results_all/tools/robust_bar.py` 로 그린다.
-- **원자료:**
-  - 칸·가우스점: `final_fix/runs*` 의 셀·GQ 판, 3 회 중앙값.
-  - N 1..128: 50 프레임 1 회. wolf N>1 은 `runs_wolfN/wolf_ssN.bs2.gran_r1`(29496e17)이다.
-- **주의:** N 막대와 다른 두 묶음은 기준이 달라서, 같은 기본 판인데도 N=1 은 2.21, 칸×1 은 3.25 로 나온다.
-
-### 4.5 그림 `bread_tear` (`final_fix_lego`, `final_pa_bl`)
-- **렌더 PNG:** 원본 위치와 받는 명령은 `results_all/tools/bread_tear.py` 머리 주석에 있다.
-  - 정답: `final_fix/phys/mpm_bread`.
-  - Ours: `final_fix/phys/ours_bread_def_bs2` (`ffx_phys_drv.sh`, 39a7abe).
-  - PhysTwin·VR-GS: `final_pa/blx/A/g/*_dump`.
-  - Spring-Gaus: `final_pa/blx/SGB/g/*_dump`.
-- **합성:** `python3 results_all/tools/bread_tear.py <PNG 폴더>` 를 돌린 뒤 `cp fig/bread_tear_strip_1116.png cvpr2027/fig/bread_tear.png` 한다.
-- **주의:** Spring-Gaus 덤프는 det F=1 로 고정돼 있어, 그 행의 가우시안은 변형 없이 렌더됐다.
-
-### 4.6 표 `rep_l2` 표현력 (`repfinal`)
-- **bread·drums·chair:**
-  - 실행: `bash exe/rep_final_launch.sh <offer> <태그> '<장면:판 …>' <커밋>`(b2c753b·2372fb0).
-  - 원자료: `lbours/rep_final1115/<장면>/<판>/<판>_<장면>.log` 의 `RMSE` 줄.
-  - 판별 명령(모두 `exe/rep_track_sg.py --opt riem`):
-    - Ours: `--method hex --riem_energy logbarrier --riem_lr 0.5 --hex_dx 0.02`.
-    - PhysTwin: `--method phystwin --riem_k 1 --pt_realtime --riem_lr 10`.
-    - VR-GS: `--method vrgsx --riem_lr 1`.
-    - Spring-Gaus: `--method springgaus --riem_lr 100`.
-  - 입력: `exe/rep_prep_gf.py --h5_dir <정답 h5>` 로 만든 `rep_final1115/inputs/<장면>/`.
-- **wolf 열:** `paper/repflow_results.tex` 의 값을 복사한 것이다. 네 칸이 서로 다른 실행에서 왔다.
-
-  | 방법 | 원자료 | 코드·커밋 |
-  |---|---|---|
-  | Ours | `lbours/repflow_hex/main/wolf_hex.log` | `exe/rep_track_hex.py`, ff365f0 |
-  | PhysTwin | `archive_20261009/r10/wolf_phystwin_k1` | `exe/rep_track2.py`, 224443c |
-  | VR-GS | `lbours/repflow_vrgs/main/wolf_vrgsx.log` | 8942d80 |
-  | Spring-Gaus | `lbours/repflow1115/sg/main/wolf/sg_wolf.log` | 47e462b |
-
-- **집계:** `exe/make_rep_final_tex.py --pt best --table_out …` 로 `rep_final_1115.tex`·`results_all/rep_table.tex` 를 만든다(PhysTwin 은 k=1 한 행). 그다음 `paper_tables.py` 를 돌린다.
-- **주의:** wolf 의 목표는 정답 MPM 이 아니라 가우시안 속도장(`exe/gauss_flow.py --pts`)이다.
-
-## 5. 논문 표·그림 다시 만들기
-
-원본 표 tex 까지 포함한 전체 과정은 `repro/make_tables.sh` 가 맡는다. 아래는 논문 repo 쪽 뒷단이다.
-
-`paper/results_all/tools/` 의 스크립트는 자기 위치에서 논문 repo 뿌리를 찾는다. 다른 곳을 쓰려면 `PAPER=` 로 지정한다. 중간 파일은 `results_all/build/` 에 쓴다(git 에서 제외).
-
-```bash
-cd /home/wgsong/workspace/FusedGS/paper
-bash results_all/tools/rebuild.sh            # 원본 표 → results_all/*_marked.tex, pareto_mean.pdf, 결과 모음 PDF
-python3 results_all/tools/paper_tables.py    # → cvpr2027/tab/{stab_avg,rep_l2,abl_design,abl_robust,...}.tex
-python3 results_all/tools/robust_bar.py      # → cvpr2027/fig/robust_bar.pdf
-python3 results_all/tools/bread_tear.py <PNG 폴더>   # → fig/bread_tear_strip_1116.png
+```
+FusedGS_code/
+  README.md
+  cfg/settings.json        paper settings: scene -> setting -> frames + solver arguments
+  cfg/nshape/*.json        PhysGaussian configs of the NeRF-synthetic scenes (ship, mic, drums, chair, ...)
+  exe/run_fusedgs.py       FusedGS entry point: expands a setting and installs the lib/ components in the recorded order
+  exe/evaluation.py        stability analysis, physics / visual metrics, 3DGS rendering, zero-energy modes
+  exe/expressiveness.py    tracking targets and the tracking comparison (expressiveness table)
+  exe/tools.py             data conversion (PhysGaussian .h5 -> FusedGS input), new-shape configs, substep-stability driver
+  exe/baseline_mpm.py      PhysGaussian, i-PhysGaussian, OmniPhysGS (stability and speed-accuracy runners, i-PG source patches, ground-truth timing)
+  exe/baseline_spring.py   PhysTwin and Spring-Gaus on top of their official code
+  exe/baseline_vrgs.py     VR-GS (XPBD on a tetrahedral cage; no public code, our implementation -- see its docstring)
+  lib/hexfem/               FEM core: per-frame hexahedral grid, implicit FEM step (Newton + multigrid PCG), materials
+                            (elastic, plasticine, sand, foam), B-spline/particle transfer; simulate.py = per-scene simulation loop
+  lib/quadrature/           Gauss-point rules (1^3, 3^3, 4^3) and deformation-gradient interpolation (F transfer)
+  lib/stability/            substep control and robustness: contact barrier, ghost-penalty / light-cell terms, escape and
+                            retry logic, rotating boundary conditions, stability statistics
+  lib/realtime/             real-time execution: per-frame time budget, CUDA graphs, fused kernels
+  lib/gsrender/             3DGS side: in-loop renderer, Gaussian deformation/skinning helpers used by evaluation and tracking
+  lib/xpbd/                 XPBD kernels of the VR-GS baseline
+                            every package = __init__.py + <package>.cu (CUDA sources, compiled at run time by cupy)
 ```
 
-11-21 에 논문 repo 사본에서 위 명령을 다시 돌려 확인했다. `cvpr2027/tab/*.tex`·`results_all/*.tex` 는 지금 논문과 바이트 단위로 같았고, `bread_tear.png` 는 md5 가 같았다.
+Run every command from the `FusedGS_code` folder. Each script prints its subcommands and options with `--help`. Comments in the source are partly in Korean.
 
-## 6. 처음부터 다시 돌릴 때 걸리는 것
+## 2. Environment
 
-1. 레고 PG·i-PG 의 안정성 물리 값은 원자료가 없다(4.1).
-2. 실험마다 FusedGS 기본 판이 다르다(3절).
-3. 반복 수와 GPU 가 칸마다 섞여 있다. 안정성 실행의 대부분은 A6000 이고, 일부는 A40·L40S·Ada 다.
-4. i-physgaussian 사본과 vast pip 패키지는 버전이 고정돼 있지 않다.
-5. `k1new_wt` 에 커밋 안 된 코드(CM159 `--fl_bnd`, CM188 `--aq_ctan`, 기본 꺼짐)가 있다.
+- Linux, CUDA 12.x, one NVIDIA GPU. All timings in the paper were measured on one RTX A6000 with no other process on the card.
+- Python 3.10/3.11, PyTorch 2.5.1 (CUDA 12.1), then:
+  ```bash
+  pip install cupy-cuda12x taichi==1.6.0 warp-lang==1.6.2 kaolin==0.18.0 numpy scipy h5py plyfile tqdm imageio pyiqa==0.1.16 kornia einops cma ftfy regex
+  pip install --no-deps git+https://github.com/openai/CLIP.git   # CLIP-IQA in evaluation.py pareto-vis
+  ```
+- 3DGS rasterizer: `diff_gaussian_rasterization` and `simple_knn` from the official 3D Gaussian Splatting repository.
+- PhysTwin (`exe/baseline_spring.py phystwin`) needs open3d and warp-lang 1.x (we used warp-lang 1.4.2, open3d 0.18.0, numpy 1.26.4; the paper runs used warp-lang 1.9.1, open3d 0.19.0, numpy 2.4). open3d older than 0.19 crashes with numpy 2 in the spring search; the script stops with a message in that case.
+- FusedGS itself needs no compilation.
+- External code goes into one work folder, given by the environment variable `FUSEDGS_WORK`:
+  ```
+  $FUSEDGS_WORK/PhysGaussian       official PhysGaussian (ground truth, scene configs, 3DGS loader)
+  $FUSEDGS_WORK/i-physgaussian     public i-PhysGaussian re-implementation (patched by exe/baseline_mpm.py patch-*)
+  $FUSEDGS_WORK/OmniPhysGS         official OmniPhysGS
+  $FUSEDGS_WORK/PhysTwin           official PhysTwin
+  $FUSEDGS_WORK/Spring-Gaus        official Spring-Gaus
+  $FUSEDGS_WORK/pgmodel/<model>    trained 3DGS models: lego_whitebg-trained, pillow2sofa_whitebg-trained, bread-trained,
+                                   wolf_whitebg-trained (PhysGaussian), ship, mic, drums, chair (NeRF-synthetic, 3DGS 30k iterations)
+  $FUSEDGS_WORK/stab/<scene>/      stability-table scenes: init/sim_0000000000.h5, config.json, rr/ (render trajectory)
+  ```
 
-과거 판(앵커 시뮬레이터·학습 stepper, 2026-07~09)에 대한 설명은 git 기록의 옛 README 에 있다.
+## 3. Scene data
+
+Every scene has a ground-truth trajectory from PhysGaussian MPM (official code, substep of the scene config; Lego 2.0008e-5 s = 833 substeps per frame). Convert it once into the FusedGS input and a trajectory folder:
+
+```bash
+export FUSEDGS_WORK=/path/to/work
+export PYTHONUTF8=1      # logs and json files contain non-ASCII text
+D=/path/to/data          # scene inputs
+O=/path/to/outputs       # results
+cd FusedGS_code
+python exe/tools.py pg-h5-to-pt --h5_dir <PhysGaussian output>/simulation_ply --config <scene config>.json --out_pt $D/<scene>.pt --out_dir $D/gt_<scene>
+```
+
+This gives `$D/<scene>.pt` and `$D/gt_<scene>/` (`sim_*.h5`, `meta.json`, `config.json`). The scenes are lego, pillow2sofa, bread, and wolf (PhysGaussian assets; bread uses the plasticine config of the tearing scene), plus ship, mic, drums, and chair. The configs of the new shapes come from `python exe/tools.py plastfix-lego-cfg`, which writes `cfg/nshape/<scene>_lego.json`. The pillow2sofa config refers to its PhysGaussian `.h5` folder for the boundary conditions; keep that path valid.
+
+## 4. Reproducing each result
+
+FusedGS runs write their output folder: the log on stdout, per-frame error and timing, and for most settings `pred.pt` (particle positions and deformation gradients per frame). The error printed at the end ("평균 …%" = mean over frames) is the error of the speed–accuracy figure. The solver uses a 16.7 ms per-frame time budget (real-time setting), so two runs of the same setting differ slightly (about ±3 % relative on the mean error). Use `--extra '--tb 1e5'` to remove the budget.
+
+### 4.1 Speed–accuracy (Fig. Pareto) and tearing (Fig. bread)
+
+FusedGS, 3 repeats per scene, median:
+
+```bash
+for s in lego pillow2sofa bread wolf; do for r in 1 2 3; do
+  python exe/run_fusedgs.py --scene $s --setting default --data $D/$s.pt --gt $D/gt_$s --out $O/ours_${s}_r$r
+done; done
+```
+
+Physics and visual metrics of one run (`--floor vel` for lego and wolf, `none` for pillow2sofa and bread):
+
+```bash
+s=bread; F=none; R=$O/ours_${s}_r1
+python exe/evaluation.py phys --method ours --scene $s --N default --data $D/$s.pt --pred $R/pred.pt --floor $F --out $R/phys.json
+python exe/evaluation.py roll-to-h5 --dump $R/pred.pt --traj $D/gt_$s --out $R/traj
+python exe/evaluation.py render --sim $R/traj --config $D/gt_$s/config.json --shape $s --png $R/png --out $R/$s.mp4
+mkdir -p $O/gt_$s
+python exe/evaluation.py render --sim $D/gt_$s --config $D/gt_$s/config.json --shape $s --png $O/gt_$s/png --out $O/gt_$s/$s.mp4
+python exe/evaluation.py pareto-vis --png $R/png --ref $O/gt_$s/png --out $R/vis.json
+```
+
+The tearing figure shows frames 0, 30, …, 300 of these bread renders, with the same renders of the baselines below.
+
+Baselines. Scene flags: lego `--floor vel`, pillow2sofa and bread `--floor none --cfg_bc --pg_vdamp`, wolf `--floor vel --cfg_bc`. Frames: lego 80, pillow2sofa 300, bread 300, wolf 50. PG below means the PhysGaussian `.h5` folder of the scene.
+
+| Method | Command (one scene) | Paper cells |
+|---|---|---|
+| Ground-truth MPM timing | `python exe/baseline_mpm.py gt-timing --gt PG --pt $D/$s.pt --config CFG --nsub 833 --time --out $O/mpm_$s` | substeps of the config |
+| i-PhysGaussian | `python exe/baseline_mpm.py patch-<name> --ipg $FUSEDGS_WORK/i-physgaussian` (all 8 patches, once), then `python exe/baseline_mpm.py pareto --method ipg --nsub N --gt PG --config CFG --pt $D/$s.pt --frames T --pg_cfg --time --dump --out $O/ipg_$s` | N = 42 / 10 / 10 / 1000 (lego / pillow2sofa / bread / wolf). Prefix `AF_IPG_FUSED=1` for the elastic scenes lego and pillow2sofa (fused kernel, same numbers, ~20x faster); bread and wolf run with `AF_IPG_FUSED=0`. lego is run without `--pg_cfg`. |
+| OmniPhysGS | `python exe/baseline_mpm.py pareto --method omni --nsub N --gt PG --config CFG --pt $D/$s.pt --frames T --pg_cfg --time --dump --out $O/omni_$s` | N = 56 / 67 / 34 (`--omni_yield 200`) / 1072 (`--omni_fric 30 --omni_elas corotated`) |
+| VR-GS | `python exe/baseline_vrgs.py --mode fit ...` (E by the paper's procedure), then `python exe/baseline_vrgs.py --mode run --data $D/$s.pt --tag $s --frames T <scene flags> --E E --set NxIT --out $O/vrgs_$s` | lego 167×1 (E 2.646e5), pillow2sofa 200×1 (E 7.736e3), bread 100×11 (E 4.876e3), wolf 400×11 (E 7.751e5) |
+| PhysTwin | `python exe/baseline_spring.py phystwin --mode fit --phystwin $FUSEDGS_WORK/PhysTwin --data $D/$s.pt --tag $s --frames T <scene flags> --out $O/pt_${s}_prep`, then `--mode run --fit $O/pt_${s}_prep --N N --out $O/pt_$s` | N = 162 / 143 / 200 / 400 |
+| Spring-Gaus | `python exe/evaluation.py multiview --sim $D/gt_$s --config CFG --shape $s --out $O/sg_${s}_prep/mv`, then `python exe/baseline_spring.py springgaus --mode prep --sg $FUSEDGS_WORK/Spring-Gaus --fit $O/sg_${s}_prep --mv $O/sg_${s}_prep/mv --data $D/$s.pt --tag $s --frames T <scene flags> --out $O/sg_${s}_prep`, `--mode train` (same arguments), `--mode run --N 200 --out $O/sg_$s` | N = 200 |
+
+The same `evaluation.py phys / roll-to-h5 / render / pareto-vis` commands give the baselines' metrics and renders (`--method <name>`, `--pred <run>/pred.pt`).
+
+### 4.2 Design ablation and robustness (Tab. ablation, Tab./Fig. robustness)
+
+```bash
+for s in lego pillow2sofa bread wolf; do
+  for st in gauss1 gauss1_timing no_ftransfer gauss27 gauss64 cell0.75 cell1.5 cell2 \
+            substeps1 substeps2 substeps4 substeps8 substeps16 substeps32 substeps64 substeps128; do
+    python exe/run_fusedgs.py --scene $s --setting $st --data $D/$s.pt --gt $D/gt_$s --out $O/${st}_$s
+  done
+done
+```
+
+The reference row is `default` (Section 4.1). Error and time come from the runs. The 1³ time column comes from `gauss1_timing`, and min det F and ΔV come from `evaluation.py phys`. The zero-energy modes come from the first-frame stiffness matrix that each run saves:
+
+```bash
+python exe/evaluation.py zero-energy-modes --pred $O/gauss1_bread/pred.pt --solver $O/gauss1_bread/q27solver.pt --q 1 --frames 0 --out $O/gauss1_bread/eig.json
+```
+
+Use `--q 1 / 8 / 27 / 64` for 1³ / 2³ (default) / 3³ / 4³ Gauss points.
+
+### 4.3 Substep stability (Tab. stability)
+
+Scenes: lego, pillow2sofa, ship_plastic_lego, and mic_metal_lego in `$FUSEDGS_WORK/stab/<scene>` (ship and mic also need `gt/`, from `tools.py pg-h5-to-pt`). The driver raises the number of substeps N in powers of two, scans the integers below the first stable power, and confirms the smallest stable N three times. It does this for PhysGaussian, i-PhysGaussian, OmniPhysGS, and FusedGS (`exe/run_fusedgs.py --setting stability --N n`):
+
+```bash
+python exe/tools.py hex-input $FUSEDGS_WORK/stab/lego $FUSEDGS_WORK/stab/lego/hex_in.pt 60
+python exe/tools.py stability-ladder --scene lego --stages main,vis,speed
+python exe/evaluation.py analyze --scene lego --out $FUSEDGS_WORK/stab/lego/an.json
+python exe/evaluation.py extra --scene lego
+```
+
+One FusedGS run of the ladder, as an example:
+
+```bash
+python exe/run_fusedgs.py --scene lego --setting stability --N 4 --data $FUSEDGS_WORK/stab/lego/hex_in.pt \
+    --gt $FUSEDGS_WORK/stab/lego/rr --gt_cfg $FUSEDGS_WORK/stab/lego/config.json --out $O/stab_lego_N4
+```
+
+A run is stable if it finishes all frames, the total energy satisfies (E−E0)/|E0| ≤ 1, and floor penetration is at most 0.5 L.
+
+### 4.4 Expressiveness (Tab. L2 tracking)
+
+Targets come from the ground-truth trajectories of bread_foam_drop_lego, drums_honey_lego, and chair_paste_lego. The wolf target is a Gaussian velocity field (`expressiveness.py flow --pts ...`). Then each representation tracks the target:
+
+```bash
+s=bread_foam_drop_lego
+mkdir -p $O/rep_$s
+python exe/expressiveness.py gf-target --h5_dir <ground truth of $s>/simulation_ply --name $s --out_dir $O/rep_in_$s
+for m in "hex --riem_energy logbarrier --riem_lr 0.5 --hex_dx 0.02" \
+         "phystwin --riem_energy elastic --riem_lr 10 --riem_k 1 --pt_realtime" \
+         "vrgsx --riem_energy logbarrier --riem_lr 1" \
+         "springgaus --riem_energy elastic --riem_lr 100"; do
+  set -- $m
+  python exe/expressiveness.py track --opt riem --tb none --riem_eps 1e-3 --flow $O/rep_in_$s/gflow_$s.npz --aux $O/rep_in_$s/aux_$s.npz \
+      --method $m --out $O/rep_$s/$1.npz
+done
+```
+
+The RMSE is printed at the end of each run. `hex` is the FusedGS representation; the others are PhysTwin, VR-GS, and Spring-Gaus.
+
+## 5. Notes
+
+- A PhysGaussian / i-PhysGaussian run below its stable substep count stops at the first substep where particles leave the grid (`[diverged] ...`), saves the frames done so far and exits normally; `evaluation.py` and the stability driver count it as a blow-up.
+- wolf with 2 or more substeps (sand) runs with two safeguards that are inactive in normal frames: particles that leave the ground-truth MPM domain are put back at frame end, and a frame in which a particle moves much faster than its neighbourhood is solved again (up to 3 times). They prevent the occasional blow-up of the 128-substep run; the log ends with how often they acted.
+- Results are not bit-identical from run to run, because of the per-frame time budget and floating-point atomics on the GPU. Repeated runs of the original code differ by about the same amount as the minimized code differs from it.
+- The settings table `cfg/settings.json` was generated from the command generators of the original experiment code. Diagnostic-only components of those runs (per-frame logging) are switched off; we checked that this does not change the results.
